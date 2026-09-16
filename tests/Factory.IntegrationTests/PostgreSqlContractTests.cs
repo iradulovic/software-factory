@@ -1,0 +1,28 @@
+namespace Factory.IntegrationTests;
+
+public sealed class PostgreSqlContractTests
+{
+    [Fact]
+    public void Migration_prevents_duplicate_active_tasks_for_an_issue()
+    {
+        var sql = ReadMigration();
+        Assert.Contains("ux_factory_task_active_issue", sql);
+        Assert.Contains("status NOT IN ('Completed', 'Failed', 'Cancelled')", sql);
+    }
+
+    [Fact]
+    public void Claiming_uses_skip_locked_and_updates_the_candidate()
+    {
+        var source = File.ReadAllText(Path.Combine(Root(), "src", "Factory.Infrastructure", "Database.cs"));
+        Assert.Contains("FOR UPDATE SKIP LOCKED", source);
+        Assert.Contains("UPDATE factory.task t SET status='Claimed'", source);
+    }
+
+    private static string ReadMigration() => File.ReadAllText(Path.Combine(Root(), "database", "migrations", "001_initial.sql"));
+    private static string Root()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null && !File.Exists(Path.Combine(current.FullName, "SoftwareFactory.slnx"))) current = current.Parent;
+        return current?.FullName ?? throw new InvalidOperationException("Repository root not found.");
+    }
+}

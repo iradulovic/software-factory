@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: software_factory
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+    ports: ["5432:5432"]
+    volumes: ["factory-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory -d software_factory"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  factory-api:
+    build:
+      context: .
+      dockerfile: src/Factory.Api/Dockerfile
+    environment:
+      Factory__ConnectionString: Host=postgres;Port=5432;Database=software_factory;Username=factory;Password=factory
+      ASPNETCORE_URLS: http://+:8080
+    ports: ["5080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+  factory-web:
+    build:
+      context: web/Factory.Web
+      args: { NEXT_PUBLIC_FACTORY_API_URL: "http://localhost:5080" }
+    ports: ["3000:3000"]
+    depends_on: [factory-api]
+volumes:
+  factory-postgres:

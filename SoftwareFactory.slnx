@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Factory.Api/Factory.Api.csproj" />
+    <Project Path="src/Factory.Core/Factory.Core.csproj" />
+    <Project Path="src/Factory.GitHubSync/Factory.GitHubSync.csproj" />
+    <Project Path="src/Factory.Infrastructure/Factory.Infrastructure.csproj" />
+    <Project Path="src/Factory.Orchestrator/Factory.Orchestrator.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Factory.Api.Tests/Factory.Api.Tests.csproj" />
+    <Project Path="tests/Factory.Core.Tests/Factory.Core.Tests.csproj" />
+    <Project Path="tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj" />
+    <Project Path="tests/Factory.IntegrationTests/Factory.IntegrationTests.csproj" />
+  </Folder>
+</Solution>

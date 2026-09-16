@@ -1,0 +1,124 @@
+using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
+using Dapper;
+using Factory.Core;
+using Microsoft.Extensions.Options;
+using Npgsql;
+
+namespace Factory.Infrastructure;
+
+internal sealed class GitHubIssueRow
+{
+    public long Id { get; init; }
+    public long RepositoryId { get; init; }
+    public long GitHubIssueId { get; init; }
+    public int IssueNumber { get; init; }
+    public string Title { get; init; } = "";
+    public string Body { get; init; } = "";
+    public string State { get; init; } = "";
+    public string Author { get; init; } = "";
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; init; }
+}
+
+internal sealed class GitHubCommentRow
+{
+    public long GitHubCommentId { get; init; }
+    public string Author { get; init; } = "";
+    public string Body { get; init; } = "";
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; init; }
+
+    public GitHubComment ToModel() => new(GitHubCommentId, Author, Body, Offset(CreatedAt), Offset(UpdatedAt));
+    private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
+}
+
+public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
+{
+    public async Task<IReadOnlyList<GitHubIssue>> GetOpenIssuesAsync(GitHubRepository repository, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh", ["issue", "list", "--repo", $"{repository.Owner}/{repository.Name}", "--state", "all", "--limit", "100", "--json", "id,number,title,body,state,author,createdAt,updatedAt,closedAt,labels,comments"], Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
+        if (!result.Succeeded) throw new InvalidOperationException($"GitHub CLI failed: {result.StandardError}");
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        return document.RootElement.EnumerateArray().Select(issue => Parse(repository.Id, issue)).ToList();
+    }
+
+    private static GitHubIssue Parse(long repositoryId, JsonElement issue)
+    {
+        static DateTimeOffset Date(JsonElement element, string name) => DateTimeOffset.Parse(element.GetProperty(name).GetString()!);
+        var labels = issue.GetProperty("labels").EnumerateArray().Select(x => x.GetProperty("name").GetString()!).ToList();
+        var comments = issue.GetProperty("comments").EnumerateArray().Select((x, index) => new GitHubComment(
+            StableLong(x.TryGetProperty("id", out var id) ? id.GetString() ?? $"{issue.GetProperty("number").GetInt32()}:{index}" : $"{issue.GetProperty("number").GetInt32()}:{index}"),
+            x.GetProperty("author").GetProperty("login").GetString() ?? "unknown", x.GetProperty("body").GetString() ?? "",
+            Date(x, "createdAt"), Date(x, "updatedAt"))).ToList();
+        var nodeId = issue.GetProperty("id").GetString() ?? issue.GetProperty("number").GetInt32().ToString();
+        var githubId = StableLong(nodeId);
+        return new GitHubIssue(0, repositoryId, githubId, issue.GetProperty("number").GetInt32(), issue.GetProperty("title").GetString()!,
+            issue.GetProperty("body").GetString() ?? "", issue.GetProperty("state").GetString()!, issue.GetProperty("author").GetProperty("login").GetString() ?? "unknown",
+            Date(issue, "createdAt"), Date(issue, "updatedAt"), labels, comments);
+    }
+
+    private static long StableLong(string value) => BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(value)), 0) & long.MaxValue;
+}
+
+public sealed class PostgresGitHubStore(IOptions<FactoryOptions> options) : IGitHubStore
+{
+    private NpgsqlConnection Connection() => new(options.Value.ConnectionString);
+
+    public async Task<IReadOnlyList<GitHubRepository>> GetEnabledRepositoriesAsync(CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        return (await c.QueryAsync<GitHubRepository>(new CommandDefinition("SELECT id,owner,name,clone_url AS CloneUrl,default_branch AS DefaultBranch,is_enabled AS IsEnabled FROM github.repository WHERE is_enabled", cancellationToken: cancellationToken))).AsList();
+    }
+
+    public async Task<GitHubRepository?> GetRepositoryAsync(long id, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        return await c.QuerySingleOrDefaultAsync<GitHubRepository>(new CommandDefinition("SELECT id,owner,name,clone_url AS CloneUrl,default_branch AS DefaultBranch,is_enabled AS IsEnabled FROM github.repository WHERE id=@id", new { id }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        var row = await c.QuerySingleOrDefaultAsync<GitHubIssueRow>(new CommandDefinition("SELECT id,repository_id AS \"RepositoryId\",github_issue_id AS \"GitHubIssueId\",issue_number AS \"IssueNumber\",title,body,state,author,created_at AS \"CreatedAt\",updated_at AS \"UpdatedAt\" FROM github.issue WHERE id=@id", new { id }, cancellationToken: cancellationToken));
+        if (row is null) return null;
+        var labels = (await c.QueryAsync<string>(new CommandDefinition("SELECT name FROM github.issue_label WHERE issue_id=@id ORDER BY name", new { id }, cancellationToken: cancellationToken))).AsList();
+        var commentRows = (await c.QueryAsync<GitHubCommentRow>(new CommandDefinition("SELECT github_comment_id AS \"GitHubCommentId\",author,body,created_at AS \"CreatedAt\",updated_at AS \"UpdatedAt\" FROM github.issue_comment WHERE issue_id=@id ORDER BY created_at", new { id }, cancellationToken: cancellationToken))).AsList();
+        var comments = commentRows.Select(comment => comment.ToModel()).ToList();
+        return new GitHubIssue(row.Id, row.RepositoryId, row.GitHubIssueId, row.IssueNumber, row.Title, row.Body, row.State, row.Author,
+            Offset(row.CreatedAt), Offset(row.UpdatedAt), labels, comments);
+    }
+
+    private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
+
+    public async Task UpsertRepositoryAsync(GitHubRepository r, CancellationToken cancellationToken)
+    {
+        const string sql = "INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled) VALUES(@Owner,@Name,@CloneUrl,@DefaultBranch,@IsEnabled) ON CONFLICT(owner,name) DO UPDATE SET clone_url=excluded.clone_url,default_branch=excluded.default_branch,is_enabled=excluded.is_enabled,updated_at=now()";
+        await using var c = Connection(); await c.ExecuteAsync(new CommandDefinition(sql, r, cancellationToken: cancellationToken));
+    }
+
+    public async Task MarkRepositorySyncedAsync(long repositoryId, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("UPDATE github.repository SET last_synced_at=now(),updated_at=now() WHERE id=@repositoryId", new { repositoryId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<GitHubIssue> UpsertIssueAsync(long repositoryId, GitHubIssue issue, CancellationToken cancellationToken)
+    {
+        await using var c = Connection(); await c.OpenAsync(cancellationToken); await using var tx = await c.BeginTransactionAsync(cancellationToken);
+        const string issueSql = """
+            INSERT INTO github.issue(repository_id,github_issue_id,issue_number,title,body,state,author,created_at,updated_at,last_synced_at)
+            VALUES(@repositoryId,@GitHubIssueId,@IssueNumber,@Title,@Body,@State,@Author,@CreatedAt,@UpdatedAt,now())
+            ON CONFLICT(repository_id,github_issue_id) DO UPDATE SET title=excluded.title,body=excluded.body,state=excluded.state,author=excluded.author,updated_at=excluded.updated_at,last_synced_at=now()
+            RETURNING id;
+            """;
+        var id = await c.ExecuteScalarAsync<long>(new CommandDefinition(issueSql, new { repositoryId, issue.GitHubIssueId, issue.IssueNumber, issue.Title, issue.Body, issue.State, issue.Author, issue.CreatedAt, issue.UpdatedAt }, tx, cancellationToken: cancellationToken));
+        await c.ExecuteAsync(new CommandDefinition("DELETE FROM github.issue_label WHERE issue_id=@id", new { id }, tx, cancellationToken: cancellationToken));
+        foreach (var label in issue.Labels) await c.ExecuteAsync(new CommandDefinition("INSERT INTO github.issue_label(issue_id,name) VALUES(@id,@label)", new { id, label }, tx, cancellationToken: cancellationToken));
+        const string commentSql = "INSERT INTO github.issue_comment(issue_id,github_comment_id,author,body,created_at,updated_at) VALUES(@id,@GitHubCommentId,@Author,@Body,@CreatedAt,@UpdatedAt) ON CONFLICT(issue_id,github_comment_id) DO UPDATE SET author=excluded.author,body=excluded.body,updated_at=excluded.updated_at";
+        foreach (var comment in issue.Comments) await c.ExecuteAsync(new CommandDefinition(commentSql, new { id, comment.GitHubCommentId, comment.Author, comment.Body, comment.CreatedAt, comment.UpdatedAt }, tx, cancellationToken: cancellationToken));
+        await tx.CommitAsync(cancellationToken);
+        return issue with { Id = id, RepositoryId = repositoryId };
+    }
+}

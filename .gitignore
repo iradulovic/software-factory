@@ -1,0 +1,15 @@
+bin/
+obj/
+.dotnet/
+.appdata/
+.nuget/
+.vs/
+.idea/
+node_modules/
+.next/
+out/
+.env*.local
+factory-data/
+logs/
+*.user
+*.suo
