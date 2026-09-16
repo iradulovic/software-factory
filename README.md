@@ -32,6 +32,8 @@ The application stores no GitHub or model credentials.
 docker compose up -d postgres
 ```
 
+If `docker` is not on `PATH` for a Windows terminal or coding agent, use the user-local Docker Desktop CLI discovery documented in [`docs/development.md`](docs/development.md#docker-desktop-on-windows).
+
 The development credentials in Compose are local-only defaults. Override `Factory__ConnectionString` for any non-local environment.
 
 ## 2. Configure a repository

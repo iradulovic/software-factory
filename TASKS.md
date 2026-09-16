@@ -24,15 +24,6 @@ No task is currently claimed.
 
 ### Finish the bootstrap dashboard
 
-- [ ] **SF-102 — Complete task execution details**
-  - Outcome: Task Details contains enough evidence to understand and troubleshoot an execution without querying PostgreSQL.
-  - Acceptance criteria:
-    - Issue comments are returned and displayed.
-    - Agent result JSON, changed files, risks, and human-action reason are persisted and displayed.
-    - Build and test validation are visually distinct from the agent's self-reported tests.
-    - Retry and cancel actions are available only for valid states and show their outcome.
-    - Backend tests and frontend verification pass.
-
 - [ ] **SF-103 — Add the Runs screen**
   - Outcome: the existing Runs navigation item opens a functional operational view.
   - Acceptance criteria:
@@ -155,6 +146,7 @@ No tasks are currently blocked.
 
 ## Completed
 
+- [x] **SF-102 — Complete task execution details** — Completed 2026-09-16. Issue comments and structured agent results are persisted and displayed; independent validation is distinct from agent-reported tests; valid retry/cancel actions report outcomes. Verified by .NET build, 21 backend tests including live PostgreSQL persistence, frontend lint, type-check, and production build.
 - [x] **SF-101 — Complete task-table controls** — Completed 2026-09-16. Repository, agent, search, sorting, and pagination are URL-backed and server-side; Started and Result columns are visible. Verified by .NET build, 19 backend tests, frontend lint, type-check, and production build.
 - [x] **SF-001 — Bootstrap solution and project structure** — Completed 2026-09-16. Verified by a clean .NET build.
 - [x] **SF-002 — PostgreSQL schema and migrations** — Completed 2026-09-16. Verified against PostgreSQL 17 in Docker.

@@ -47,10 +47,32 @@ public sealed class PostgresStoreIntegrationTests
             Assert.NotNull(claimed);
             Assert.Equal(issueId, claimed.GitHubIssueId);
             Assert.Equal(FactoryTaskStatus.Claimed, claimed.Status);
+
+            var runId = await tasks.StartRunAsync(claimed.Id, "integration-worker", CancellationToken.None);
+            var stepId = await tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
+            var agentResult = new AgentResult("needs-human", "Review required", ["dotnet test"], true,
+                ["src/Feature.cs"], ["Manual rollout"], true, "Approve deployment");
+            var agentStartedAt = DateTimeOffset.UtcNow;
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), claimed.Id, runId, stepId, "Codex", agentStartedAt,
+                agentStartedAt.AddSeconds(1), 1, 0, "Succeeded", "output", "", false, null, 1, true, agentResult), CancellationToken.None);
+
+            var persisted = await connection.QuerySingleAsync<(string Summary, string Files, string Risks, string HumanReason)>(
+                "SELECT result_summary,files_changed::text,risks::text,human_reason FROM factory.agent_run WHERE task_id=@taskId",
+                new { taskId = claimed.Id });
+            Assert.Equal("Review required", persisted.Summary);
+            Assert.Contains("src/Feature.cs", persisted.Files);
+            Assert.Contains("Manual rollout", persisted.Risks);
+            Assert.Equal("Approve deployment", persisted.HumanReason);
         }
         finally
         {
-            if (issueId != 0) await connection.ExecuteAsync("DELETE FROM factory.task WHERE github_issue_id=@issueId; DELETE FROM github.issue WHERE id=@issueId", new { issueId });
+            if (issueId != 0) await connection.ExecuteAsync("""
+                DELETE FROM factory.agent_run WHERE task_id IN (SELECT id FROM factory.task WHERE github_issue_id=@issueId);
+                DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id IN (SELECT id FROM factory.task WHERE github_issue_id=@issueId));
+                DELETE FROM factory.run WHERE task_id IN (SELECT id FROM factory.task WHERE github_issue_id=@issueId);
+                DELETE FROM factory.task WHERE github_issue_id=@issueId;
+                DELETE FROM github.issue WHERE id=@issueId;
+                """, new { issueId });
             await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
         }
     }

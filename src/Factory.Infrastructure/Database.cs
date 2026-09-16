@@ -2,6 +2,7 @@ using Dapper;
 using Factory.Core;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using System.Text.Json;
 
 namespace Factory.Infrastructure;
 
@@ -176,8 +177,30 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 
     public async Task SaveAgentRunAsync(AgentRunRecord r, CancellationToken cancellationToken)
     {
-        const string sql = "INSERT INTO factory.agent_run(id,task_id,run_id,step_id,agent,started_at,completed_at,duration_seconds,exit_code,status,stdout,stderr,quota_detected,quota_reset_at,attempt_number,needs_human) VALUES(@Id,@TaskId,@RunId,@StepId,@Agent,@StartedAt,@CompletedAt,@DurationSeconds,@ExitCode,@Status,@StandardOutput,@StandardError,@QuotaDetected,@QuotaResetAt,@AttemptNumber,@NeedsHuman)";
-        await using var c = Connection(); await c.ExecuteAsync(new CommandDefinition(sql, r, cancellationToken: cancellationToken));
+        const string sql = """
+            INSERT INTO factory.agent_run(
+              id,task_id,run_id,step_id,agent,started_at,completed_at,duration_seconds,exit_code,status,stdout,stderr,
+              quota_detected,quota_reset_at,attempt_number,needs_human,result_json,result_summary,tests_run,tests_passed,files_changed,risks,human_reason)
+            VALUES(
+              @Id,@TaskId,@RunId,@StepId,@Agent,@StartedAt,@CompletedAt,@DurationSeconds,@ExitCode,@Status,@StandardOutput,@StandardError,
+              @QuotaDetected,@QuotaResetAt,@AttemptNumber,@NeedsHuman,CAST(@ResultJson AS jsonb),@ResultSummary,CAST(@TestsRun AS jsonb),@TestsPassed,
+              CAST(@FilesChanged AS jsonb),CAST(@Risks AS jsonb),@HumanReason)
+            """;
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var parameters = new
+        {
+            r.Id, r.TaskId, r.RunId, r.StepId, r.Agent, r.StartedAt, r.CompletedAt, r.DurationSeconds, r.ExitCode, r.Status,
+            r.StandardOutput, r.StandardError, r.QuotaDetected, r.QuotaResetAt, r.AttemptNumber, r.NeedsHuman,
+            ResultJson = r.Result is null ? null : JsonSerializer.Serialize(r.Result, jsonOptions),
+            ResultSummary = r.Result?.Summary,
+            TestsRun = r.Result is null ? null : JsonSerializer.Serialize(r.Result.TestsRun, jsonOptions),
+            TestsPassed = r.Result?.TestsPassed,
+            FilesChanged = r.Result is null ? null : JsonSerializer.Serialize(r.Result.FilesChanged, jsonOptions),
+            Risks = r.Result is null ? null : JsonSerializer.Serialize(r.Result.Risks, jsonOptions),
+            HumanReason = r.Result?.HumanReason
+        };
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
     }
 
     public async Task CompleteRunAsync(Guid runId, ExecutionStatus status, CancellationToken cancellationToken)

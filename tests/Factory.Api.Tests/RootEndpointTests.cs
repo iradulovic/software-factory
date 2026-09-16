@@ -36,6 +36,32 @@ public sealed class RootEndpointTests : IClassFixture<RootEndpointTests.FactoryA
         Assert.Equal(expectedDirection, query.Direction);
     }
 
+    [Fact]
+    public void Agent_run_details_maps_persisted_result_fields()
+    {
+        var row = new AgentRunDetailsRow
+        {
+            Id = Guid.NewGuid(),
+            RunId = Guid.NewGuid(),
+            Agent = "Codex",
+            Status = "Succeeded",
+            ResultJson = "{\"status\":\"completed\"}",
+            TestsRunJson = "[\"dotnet test\"]",
+            TestsPassed = true,
+            FilesChangedJson = "[\"src/Feature.cs\"]",
+            RisksJson = "[\"Migration required\"]",
+            HumanReason = "Approve rollout"
+        };
+
+        var result = AgentRunDetailsMapper.Map(row);
+
+        Assert.Equal("completed", result.ResultJson?.GetProperty("status").GetString());
+        Assert.Equal("dotnet test", Assert.Single(result.TestsRun));
+        Assert.Equal("src/Feature.cs", Assert.Single(result.FilesChanged));
+        Assert.Equal("Migration required", Assert.Single(result.Risks));
+        Assert.Equal("Approve rollout", result.HumanReason);
+    }
+
     public sealed class FactoryApplication : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder) => builder.UseEnvironment("Testing");

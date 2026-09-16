@@ -39,7 +39,7 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, IGitHubS
             await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), task.Id, runId, agentStep, "Codex", result.Process.StartedAt,
                 result.Process.CompletedAt, result.Process.Duration.TotalSeconds, result.Process.ExitCode,
                 result.Process.Succeeded ? "Succeeded" : "Failed", result.Process.StandardOutput, result.Process.StandardError,
-                result.QuotaDetected, null, 1, result.Result?.NeedsHuman ?? false), cancellationToken);
+                result.QuotaDetected, null, 1, result.Result?.NeedsHuman ?? false, result.Result), cancellationToken);
 
             if (result.QuotaDetected)
             {
@@ -50,6 +50,13 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, IGitHubS
             if (!result.Process.Succeeded || result.Result is null)
                 throw new InvalidOperationException(result.ValidationError ?? $"Codex exited with code {result.Process.ExitCode}.");
             await tasks.CompleteStepAsync(agentStep, ExecutionStatus.Succeeded, null, result.Result.Summary, cancellationToken);
+            if (result.Result.NeedsHuman || result.Result.Status == "needs-human")
+            {
+                await tasks.TransitionAsync(task.Id, FactoryTaskStatus.Implementing, FactoryTaskStatus.NeedsHuman,
+                    result.Result.HumanReason ?? result.Result.Summary, cancellationToken);
+                await tasks.CompleteRunAsync(runId, ExecutionStatus.Succeeded, cancellationToken);
+                return;
+            }
 
             await tasks.TransitionAsync(task.Id, FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null, cancellationToken);
             var config = await configurationReader.ReadAsync(location.Path, cancellationToken);

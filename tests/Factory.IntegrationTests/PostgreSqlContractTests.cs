@@ -18,6 +18,16 @@ public sealed class PostgreSqlContractTests
         Assert.Contains("UPDATE factory.task t SET status='Claimed'", source);
     }
 
+    [Fact]
+    public void Agent_result_migration_preserves_structured_execution_evidence()
+    {
+        var sql = File.ReadAllText(Path.Combine(Root(), "database", "migrations", "002_agent_result.sql"));
+        Assert.Contains("result_json JSONB", sql);
+        Assert.Contains("files_changed JSONB", sql);
+        Assert.Contains("risks JSONB", sql);
+        Assert.Contains("human_reason TEXT", sql);
+    }
+
     private static string ReadMigration() => File.ReadAllText(Path.Combine(Root(), "database", "migrations", "001_initial.sql"));
     private static string Root()
     {
