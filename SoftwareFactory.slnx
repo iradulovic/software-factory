@@ -11,5 +11,6 @@
     <Project Path="tests/Factory.Core.Tests/Factory.Core.Tests.csproj" />
     <Project Path="tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj" />
     <Project Path="tests/Factory.IntegrationTests/Factory.IntegrationTests.csproj" />
+    <Project Path="tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj" />
   </Folder>
 </Solution>

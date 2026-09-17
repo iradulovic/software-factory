@@ -13,6 +13,7 @@ public interface ITaskStore
 {
     Task<FactoryTask?> ClaimNextAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken);
     Task<bool> RenewLeaseAsync(Guid taskId, string workerId, TimeSpan lease, CancellationToken cancellationToken);
+    Task ReleaseLeaseAsync(Guid taskId, string workerId, CancellationToken cancellationToken);
     Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken);
     Task TransitionAsync(Guid taskId, FactoryTaskStatus expected, FactoryTaskStatus next, string? failureReason, CancellationToken cancellationToken);
     Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken);
@@ -23,6 +24,8 @@ public interface ITaskStore
     Task CompleteStepAsync(Guid stepId, ExecutionStatus status, string? error, string? output, CancellationToken cancellationToken);
     Task SaveAgentRunAsync(AgentRunRecord run, CancellationToken cancellationToken);
     Task CompleteRunAsync(Guid runId, ExecutionStatus status, CancellationToken cancellationToken);
+    Task SetRunConfigurationAsync(Guid runId, RepositoryConfiguration configuration, CancellationToken cancellationToken);
+    Task CloseExecutionAsync(Guid runId, ExecutionStatus status, string reason, CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore
@@ -44,6 +47,7 @@ public interface IWorktreeManager
     Task<WorktreeLocation> CreateAsync(GitHubRepository repository, FactoryTask task, CancellationToken cancellationToken);
 }
 public sealed record WorktreeLocation(string BranchName, string Path);
-public interface IRepositoryConfigurationReader { Task<RepositoryConfiguration> ReadAsync(string worktreePath, CancellationToken cancellationToken); }
+public interface IRepositoryConfigurationReader { Task<RepositoryConfiguration> ReadAsync(string worktreePath, string baseRef, CancellationToken cancellationToken); }
+public interface IWorktreeInspector { Task<bool> HasChangesAsync(string worktreePath, string baseRef, CancellationToken cancellationToken); }
 public interface ITaskContextWriter { Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, CancellationToken cancellationToken); }
 public interface IAgentResultReader { Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken); }

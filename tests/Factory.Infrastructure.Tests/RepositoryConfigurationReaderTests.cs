@@ -1,0 +1,85 @@
+using Factory.Core;
+
+namespace Factory.Infrastructure.Tests;
+
+public sealed class RepositoryConfigurationReaderTests
+{
+    [Fact]
+    public void Partial_configuration_merges_with_defaults()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("""{"buildCommands":["dotnet build --nologo"],"maxImplementationAttempts":3}""", "origin/main");
+
+        Assert.Equal(new[] { "dotnet build --nologo" }, configuration.BuildCommands);
+        Assert.Equal(RepositoryConfiguration.Default.TestCommands, configuration.TestCommands);
+        Assert.Equal(3, configuration.MaxImplementationAttempts);
+        Assert.Equal(RepositoryConfiguration.Default.MaxReviewAttempts, configuration.MaxReviewAttempts);
+        Assert.Equal("main", configuration.BaseBranch);
+        Assert.True(configuration.RequireHumanMerge);
+    }
+
+    [Theory]
+    [InlineData("""{"maxImplementationAttempts":0}""")]
+    [InlineData("""{"testCommands":["dotnet test",""]}""")]
+    [InlineData("not json")]
+    public void Invalid_configuration_fails_clearly(string json) =>
+        Assert.Contains(".factory/config.json", Assert.Throws<InvalidOperationException>(() => RepositoryConfigurationReader.Parse(json, "origin/main")).Message);
+
+    [Fact]
+    public async Task Configuration_is_read_from_the_base_reference_not_the_worktree()
+    {
+        var runner = new StubRunner(0, """{"testCommands":["npm test"]}""", "");
+        var configuration = await new RepositoryConfigurationReader(runner).ReadAsync("/worktrees/issue-1", "origin/main", CancellationToken.None);
+
+        Assert.Equal(new[] { "npm test" }, configuration.TestCommands);
+        Assert.NotNull(runner.Request);
+        Assert.Equal("git", runner.Request.FileName);
+        Assert.Equal(new[] { "show", "origin/main:.factory/config.json" }, runner.Request.Arguments);
+        Assert.Equal("/worktrees/issue-1", runner.Request.WorkingDirectory);
+    }
+
+    [Fact]
+    public async Task Missing_configuration_at_the_base_reference_uses_defaults()
+    {
+        var runner = new StubRunner(128, "", "fatal: path '.factory/config.json' does not exist in 'origin/main'");
+        Assert.Equal(RepositoryConfiguration.Default, await new RepositoryConfigurationReader(runner).ReadAsync(".", "origin/main", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Unreadable_base_reference_fails_instead_of_silently_using_defaults()
+    {
+        var runner = new StubRunner(128, "", "fatal: invalid object name 'origin/nope'.");
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new RepositoryConfigurationReader(runner).ReadAsync(".", "origin/nope", CancellationToken.None));
+        Assert.Contains("origin/nope", error.Message);
+    }
+
+    [Fact]
+    public async Task Task_context_writer_removes_a_stale_agent_result()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-context-");
+        try
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(root.FullName, ".factory"));
+            await File.WriteAllTextAsync(Path.Combine(directory.FullName, "result.json"), "{\"status\":\"completed\"}");
+            var task = new FactoryTask(Guid.NewGuid(), 1, 2, 7, "Title", "Body", "GitHubIssue", 0, FactoryTaskStatus.Preparing, null, "main",
+                null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);
+
+            await new TaskContextWriter().WriteAsync(root.FullName, new GitHubRepository(1, "acme", "billing", "url", "main", true), null, task, CancellationToken.None);
+
+            Assert.False(File.Exists(Path.Combine(directory.FullName, "result.json")));
+            Assert.Contains("GitHub issue: #7", await File.ReadAllTextAsync(Path.Combine(directory.FullName, "task.md")));
+        }
+        finally { root.Delete(true); }
+    }
+
+    private sealed class StubRunner(int exitCode, string stdout, string stderr) : IProcessRunner
+    {
+        public ProcessRequest? Request { get; private set; }
+
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
+        {
+            Request = request;
+            var now = DateTimeOffset.UtcNow;
+            return Task.FromResult(new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, now, now, exitCode, stdout, stderr, false, false));
+        }
+    }
+}

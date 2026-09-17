@@ -263,7 +263,7 @@ app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, I
     var worktreePath = (string?)item.configurationWorktreePath;
     RepositoryConfiguration? configuration = null;
     if (!string.IsNullOrWhiteSpace(worktreePath) && Directory.Exists(worktreePath))
-        configuration = await configurationReader.ReadAsync(worktreePath, ct);
+        configuration = await configurationReader.ReadAsync(worktreePath, $"origin/{(string)item.defaultBranch}", ct);
     return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration });
 });
 app.MapGet("/api/agents", Query("SELECT COALESCE(preferred_agent,'Codex') AS agent,count(*) AS tasks,count(*) FILTER(WHERE status='Completed') AS successful FROM factory.task GROUP BY 1"));

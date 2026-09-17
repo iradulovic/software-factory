@@ -18,14 +18,6 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
-No task is currently claimed.
-
-## Next up
-
-Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
-
-### Restore and harden the vertical slice
-
 - [ ] **SF-206 — Harden the task executor**
   - Outcome: the executor cannot be misled by agent output and never leaves execution state half-open (review items 3.2, 3.3, 3.4, 3.5, 3.8, 3.13, 3.14).
   - Acceptance criteria:
@@ -37,6 +29,13 @@ Ordered per `docs/concept-review.md` section 6: restore a working vertical slice
     - `.factory/` is excluded from Git in every worktree via the cache's `info/exclude`.
     - A partial `.factory/config.json` merges with defaults instead of failing with a null reference.
     - Executor tests cover each of the above.
+
+
+## Next up
+
+Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
+
+### Restore and harden the vertical slice
 
 - [ ] **SF-207 — Extract the task execution pipeline**
   - Outcome: `Worker` only claims, heartbeats, and delegates; execution is an ordered list of steps that is unit-testable with fakes.
