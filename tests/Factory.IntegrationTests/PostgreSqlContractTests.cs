@@ -28,6 +28,15 @@ public sealed class PostgreSqlContractTests
         Assert.Contains("human_reason TEXT", sql);
     }
 
+    [Fact]
+    public void Lease_recovery_has_a_partial_expiry_index()
+    {
+        var sql = File.ReadAllText(Path.Combine(Root(), "database", "migrations", "003_task_lease_recovery.sql"));
+        Assert.Contains("ix_factory_task_expired_lease", sql);
+        Assert.Contains("lease_until", sql);
+        Assert.Contains("Implementing", sql);
+    }
+
     private static string ReadMigration() => File.ReadAllText(Path.Combine(Root(), "database", "migrations", "001_initial.sql"));
     private static string Root()
     {

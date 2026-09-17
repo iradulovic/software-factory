@@ -7,6 +7,7 @@ public interface IAgentRunner { Task<AgentRunResult> RunAsync(AgentRunRequest re
 public interface ITaskStore
 {
     Task<FactoryTask?> ClaimNextAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken);
+    Task<bool> RenewLeaseAsync(Guid taskId, string workerId, TimeSpan lease, CancellationToken cancellationToken);
     Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken);
     Task TransitionAsync(Guid taskId, FactoryTaskStatus expected, FactoryTaskStatus next, string? failureReason, CancellationToken cancellationToken);
     Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken);

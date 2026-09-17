@@ -22,16 +22,6 @@ No task is currently claimed.
 
 ## Next up
 
-### Finish the bootstrap dashboard
-
-- [ ] **SF-103 — Add the Runs screen**
-  - Outcome: the existing Runs navigation item opens a functional operational view.
-  - Acceptance criteria:
-    - Runs can be filtered by status, worker, repository, and date.
-    - Each row links to its task and exposes start time, duration, current step, and result.
-    - A run detail view shows its ordered steps and associated agent invocation.
-    - Empty, loading, and API-error states are meaningful.
-
 - [ ] **SF-104 — Add repository operations visibility**
   - Outcome: the Repositories navigation item shows configured repositories and synchronization health.
   - Acceptance criteria:
@@ -53,16 +43,6 @@ No task is currently claimed.
     - Codex availability, active task, runs today, successful runs, and latest quota state are shown.
     - Availability is based on a backend-owned executable check with a bounded timeout.
     - No authentication details or secrets are exposed.
-
-### Harden orchestration
-
-- [ ] **SF-201 — Add lease heartbeats and recovery**
-  - Outcome: a healthy long-running task retains its claim, while abandoned work becomes recoverable.
-  - Acceptance criteria:
-    - Active workers renew leases before expiry.
-    - Recovery distinguishes an abandoned claim from a still-running execution.
-    - Lease renewal and recovery are covered by PostgreSQL integration tests.
-    - One worker failure cannot terminate the orchestrator service.
 
 - [ ] **SF-202 — Implement bounded implementation retries**
   - Outcome: configured retry limits drive repeat attempts without creating ad hoc task states.
@@ -146,6 +126,8 @@ No tasks are currently blocked.
 
 ## Completed
 
+- [x] **SF-201 — Add lease heartbeats and recovery** — Completed 2026-09-17. The owning worker renews configurable leases and cancels execution if ownership is lost; expired active tasks atomically close stale running steps/runs before being reclaimed, while unexpired tasks remain owned. Recovery safely reuses only the deterministic recorded Git worktree, and worker-iteration failures are contained. Verified by a warning-free .NET build, 28 backend tests, and 7 PostgreSQL integration tests executed against PostgreSQL 17, including renewal, ownership, and abandoned-execution recovery.
+- [x] **SF-103 — Add the Runs screen** — Completed 2026-09-17. Runs are server-filterable by status, worker, repository, and date; list rows expose task links, timing, current step, and result; run details show ordered steps and agent invocations with meaningful empty/loading/error states. Verified by a warning-free .NET build, 24 backend tests including live PostgreSQL integration, a live filtered API smoke test, frontend lint, type-check, and production build.
 - [x] **SF-102 — Complete task execution details** — Completed 2026-09-16. Issue comments and structured agent results are persisted and displayed; independent validation is distinct from agent-reported tests; valid retry/cancel actions report outcomes. Verified by .NET build, 21 backend tests including live PostgreSQL persistence, frontend lint, type-check, and production build.
 - [x] **SF-101 — Complete task-table controls** — Completed 2026-09-16. Repository, agent, search, sorting, and pagination are URL-backed and server-side; Started and Result columns are visible. Verified by .NET build, 19 backend tests, frontend lint, type-check, and production build.
 - [x] **SF-001 — Bootstrap solution and project structure** — Completed 2026-09-16. Verified by a clean .NET build.

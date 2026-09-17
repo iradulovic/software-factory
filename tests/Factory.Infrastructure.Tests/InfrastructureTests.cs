@@ -19,6 +19,28 @@ public sealed class InfrastructureTests
     }
 
     [Fact]
+    public async Task Existing_recorded_worktree_is_reused_during_recovery()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-worktree-");
+        try
+        {
+            var options = Options.Create(new FactoryOptions { RootDirectory = root.FullName });
+            var runner = new StubRunner();
+            var manager = new GitWorktreeManager(new StubCache(), runner, options);
+            var repository = new GitHubRepository(1, "acme", "billing", "url", "main", true);
+            var pending = NewTask("Add CSV Export!!!", 142);
+            var location = manager.GetLocation(repository, pending);
+            Directory.CreateDirectory(location.Path);
+            await File.WriteAllTextAsync(Path.Combine(location.Path, ".git"), "gitdir: cache/worktrees/issue-142");
+            var recovered = pending with { WorktreePath = location.Path, BranchName = location.BranchName, Status = FactoryTaskStatus.Claimed };
+
+            Assert.Equal(location, await manager.CreateAsync(repository, recovered, CancellationToken.None));
+            Assert.Equal(0, runner.CallCount);
+        }
+        finally { root.Delete(true); }
+    }
+
+    [Fact]
     public async Task Agent_result_reader_accepts_valid_contract()
     {
         var root = Directory.CreateTempSubdirectory("factory-result-");
@@ -60,5 +82,13 @@ public sealed class InfrastructureTests
         FactoryTaskStatus.Pending, null, "main", null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);
 
     private sealed class StubCache : IRepositoryCache { public Task<string> PrepareAsync(GitHubRepository repository, CancellationToken cancellationToken) => Task.FromResult("cache"); }
-    private sealed class StubRunner : IProcessRunner { public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken) => throw new NotSupportedException(); }
+    private sealed class StubRunner : IProcessRunner
+    {
+        public int CallCount { get; private set; }
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
+        {
+            CallCount++;
+            throw new NotSupportedException();
+        }
+    }
 }

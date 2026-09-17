@@ -9,6 +9,59 @@ namespace Factory.IntegrationTests;
 public sealed class PostgresStoreIntegrationTests
 {
     [Fact]
+    public async Task Active_worker_renews_its_lease_and_cannot_be_reclaimed()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+            var originalLease = claimed!.LeaseUntil;
+            Assert.NotNull(originalLease);
+
+            Assert.True(await fixture.Tasks.RenewLeaseAsync(fixture.TaskId, "worker-a", TimeSpan.FromMinutes(10), CancellationToken.None));
+            Assert.False(await fixture.Tasks.RenewLeaseAsync(fixture.TaskId, "worker-b", TimeSpan.FromMinutes(10), CancellationToken.None));
+            var renewedLease = await fixture.Connection.ExecuteScalarAsync<DateTime>("SELECT lease_until FROM factory.task WHERE id=@taskId", new { fixture.TaskId });
+
+            Assert.True(DateTime.SpecifyKind(renewedLease, DateTimeKind.Utc) > originalLease.Value.UtcDateTime);
+            Assert.Null(await fixture.Tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(2), CancellationToken.None));
+        }
+    }
+
+    [Fact]
+    public async Task Expired_active_execution_is_closed_and_reclaimed_by_another_worker()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+            var runId = Guid.NewGuid();
+            var stepId = Guid.NewGuid();
+            await fixture.Connection.ExecuteAsync("""
+                UPDATE factory.task SET status='Implementing',lease_until=now()-interval '1 minute' WHERE id=@taskId;
+                INSERT INTO factory.run(id,task_id,started_at,status,worker_id) VALUES(@runId,@taskId,now()-interval '2 minutes','Running','worker-a');
+                INSERT INTO factory.step(id,run_id,step_type,status,started_at,attempt) VALUES(@stepId,@runId,'AgentImplementation','Running',now()-interval '2 minutes',1);
+                """, new { fixture.TaskId, runId, stepId });
+
+            var recovered = await fixture.Tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(2), CancellationToken.None);
+            var execution = await fixture.Connection.QuerySingleAsync<(string RunStatus, string StepStatus, string? Error)>("""
+                SELECT r.status AS "RunStatus",s.status AS "StepStatus",s.error
+                FROM factory.run r JOIN factory.step s ON s.run_id=r.id WHERE r.id=@runId
+                """, new { runId });
+
+            Assert.Equal(fixture.TaskId, recovered?.Id);
+            Assert.Equal("worker-b", recovered?.ClaimedBy);
+            Assert.Equal("Failed", execution.RunStatus);
+            Assert.Equal("Failed", execution.StepStatus);
+            Assert.Contains("lease expired", execution.Error, StringComparison.OrdinalIgnoreCase);
+            Assert.False(await fixture.Tasks.RenewLeaseAsync(fixture.TaskId, "worker-a", TimeSpan.FromMinutes(2), CancellationToken.None));
+        }
+    }
+
+    [Fact]
     public async Task Eligible_issue_is_created_once_and_can_be_claimed()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
@@ -78,4 +131,53 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
+
+    private sealed class LeaseFixture : IAsyncDisposable
+    {
+        private LeaseFixture(NpgsqlConnection connection, PostgresTaskStore tasks, long repositoryId, Guid taskId)
+        {
+            Connection = connection;
+            Tasks = tasks;
+            RepositoryId = repositoryId;
+            TaskId = taskId;
+        }
+
+        public NpgsqlConnection Connection { get; }
+        public PostgresTaskStore Tasks { get; }
+        public long RepositoryId { get; }
+        public Guid TaskId { get; }
+
+        public static async Task<LeaseFixture?> CreateAsync()
+        {
+            var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+            if (string.IsNullOrWhiteSpace(connectionString)) return null;
+            var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+            await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+            var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            var suffix = Guid.NewGuid().ToString("N");
+            var repositoryId = await connection.ExecuteScalarAsync<long>("""
+                INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+                VALUES('lease-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+                """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+            var taskId = Guid.NewGuid();
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch,priority)
+                VALUES(@taskId,@repositoryId,'Lease integration task','Pending','main',2147483647)
+                """, new { taskId, repositoryId });
+            return new LeaseFixture(connection, new PostgresTaskStore(settings, new TestClock()), repositoryId, taskId);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Connection.ExecuteAsync("""
+                DELETE FROM factory.agent_run WHERE task_id=@TaskId;
+                DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id=@TaskId);
+                DELETE FROM factory.run WHERE task_id=@TaskId;
+                DELETE FROM factory.task WHERE id=@TaskId;
+                DELETE FROM github.repository WHERE id=@RepositoryId;
+                """, new { TaskId, RepositoryId });
+            await Connection.DisposeAsync();
+        }
+    }
 }

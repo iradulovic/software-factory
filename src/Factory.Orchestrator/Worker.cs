@@ -13,9 +13,65 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, IGitHubS
         await migrator.MigrateAsync(stoppingToken);
         while (!stoppingToken.IsCancellationRequested)
         {
-            var task = await tasks.ClaimNextAsync(options.Value.WorkerId, TimeSpan.FromHours(2), stoppingToken);
-            if (task is null) { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken); continue; }
-            await ExecuteTaskAsync(task, stoppingToken);
+            try
+            {
+                var task = await tasks.ClaimNextAsync(options.Value.WorkerId, LeaseDuration, stoppingToken);
+                if (task is null) { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken); continue; }
+                await ExecuteWithLeaseAsync(task, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Worker iteration failed; polling will continue");
+                try { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken); }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            }
+        }
+    }
+
+    private TimeSpan LeaseDuration => TimeSpan.FromSeconds(Math.Max(2, options.Value.TaskLeaseSeconds));
+
+    private TimeSpan HeartbeatInterval => TimeSpan.FromSeconds(Math.Min(
+        Math.Max(1, options.Value.LeaseHeartbeatSeconds),
+        LeaseDuration.TotalSeconds / 2));
+
+    private async Task ExecuteWithLeaseAsync(FactoryTask task, CancellationToken stoppingToken)
+    {
+        using var execution = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var heartbeat = MaintainLeaseAsync(task.Id, execution, stoppingToken);
+        try
+        {
+            await ExecuteTaskAsync(task, execution.Token);
+        }
+        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested && execution.IsCancellationRequested)
+        {
+            logger.LogWarning("Stopped task {TaskId} after its lease could not be renewed", task.Id);
+        }
+        finally
+        {
+            await execution.CancelAsync();
+            try { await heartbeat; }
+            catch (OperationCanceledException) when (execution.IsCancellationRequested) { }
+        }
+    }
+
+    private async Task MaintainLeaseAsync(Guid taskId, CancellationTokenSource execution, CancellationToken stoppingToken)
+    {
+        try
+        {
+            while (!execution.IsCancellationRequested)
+            {
+                await Task.Delay(HeartbeatInterval, execution.Token);
+                if (await tasks.RenewLeaseAsync(taskId, options.Value.WorkerId, LeaseDuration, execution.Token)) continue;
+                logger.LogWarning("Lease ownership was lost for task {TaskId}", taskId);
+                await execution.CancelAsync();
+            }
+        }
+        catch (OperationCanceledException) when (execution.IsCancellationRequested) { }
+        catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            logger.LogError(ex, "Lease renewal failed for task {TaskId}; cancelling its execution", taskId);
+            await execution.CancelAsync();
         }
     }
 

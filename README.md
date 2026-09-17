@@ -50,7 +50,7 @@ Edit `src/Factory.GitHubSync/appsettings.json` and replace the disabled sample e
 }
 ```
 
-The main settings cover the PostgreSQL connection, factory root, polling intervals, task concurrency, Codex executable/arguments, default branch, and configured repositories. Environment-variable examples are in `.env.example`; no real credentials belong in configuration.
+The main settings cover the PostgreSQL connection, factory root, polling intervals, task concurrency, task lease and heartbeat intervals, Codex executable/arguments, default branch, and configured repositories. Environment-variable examples are in `.env.example`; no real credentials belong in configuration.
 
 Target repositories can optionally contain `.factory/config.json`:
 
@@ -126,7 +126,8 @@ The bootstrap exposes dashboard, tasks (including retry/cancel), runs, agents, r
 ## Current limitations and safety
 
 - One task is executed at a time; the schema and claim query support later multi-worker operation.
-- Expired claimed leases are reclaimable. Active process heartbeats and automatic worktree cleanup are not implemented yet.
+- Active task leases are renewed by the owning worker. Expired executions are closed and reclaimed, reusing their validated deterministic worktree when present. Automatic worktree cleanup is not implemented yet.
+- Lease expiry is not a process fence: if an old worker is completely frozen rather than stopped, it could theoretically resume and touch the worktree after another worker recovers the task. Responsive workers cancel execution when renewal fails; stronger fencing would require process isolation.
 - `gh issue list --limit 100` is the initial polling boundary; pagination for larger repositories is future work.
 - Agent stdout/stderr are stored in PostgreSQL for bootstrap observability and should be externalized if logs become large.
 - Validation command tokenization does not support quoting or shell operators.

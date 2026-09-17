@@ -6,6 +6,8 @@ public sealed class FactoryOptions
     public string RootDirectory { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".software-factory");
     public int TaskConcurrency { get; set; } = 1;
     public int PollingIntervalSeconds { get; set; } = 10;
+    public int TaskLeaseSeconds { get; set; } = 120;
+    public int LeaseHeartbeatSeconds { get; set; } = 30;
     public string WorkerId { get; set; } = $"{Environment.MachineName}-{Environment.ProcessId}";
 }
 

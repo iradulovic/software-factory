@@ -104,8 +104,73 @@ app.MapPost("/api/tasks/{id:guid}/retry", async (Guid id, ITaskStore tasks, Canc
 app.MapPost("/api/tasks/{id:guid}/cancel", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
     await tasks.CancelAsync(id, ct) ? Results.NoContent() : Results.Conflict(new { error = "Task cannot be cancelled." }));
 
-app.MapGet("/api/runs", Query("SELECT r.id,r.task_id AS \"taskId\",t.title,r.started_at AS \"startedAt\",r.completed_at AS \"completedAt\",r.status,r.worker_id AS \"workerId\" FROM factory.run r JOIN factory.task t ON t.id=r.task_id ORDER BY r.started_at DESC LIMIT 100"));
-app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, CancellationToken ct) => { await using var c = await db.OpenConnectionAsync(ct); return Results.Ok(await c.QueryAsync(new CommandDefinition("SELECT id,run_id AS \"runId\",step_type AS \"stepType\",status,started_at AS \"startedAt\",completed_at AS \"completedAt\",duration_ms AS \"durationMs\",attempt,error,output FROM factory.step WHERE run_id=@id ORDER BY started_at", new { id }, cancellationToken: ct))); });
+app.MapGet("/api/runs", async (string? status, string? worker, string? repository, DateOnly? from, DateOnly? to, int? page, int? pageSize, NpgsqlDataSource db, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var filters = new List<string>();
+    if (!string.IsNullOrWhiteSpace(status)) filters.Add("r.status=@status");
+    if (!string.IsNullOrWhiteSpace(worker)) filters.Add("r.worker_id=@worker");
+    if (!string.IsNullOrWhiteSpace(repository)) filters.Add("(gr.owner || '/' || gr.name)=@repository");
+    var fromInstant = from?.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+    var toExclusive = to?.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+    if (fromInstant is not null) filters.Add("r.started_at >= @fromInstant");
+    if (toExclusive is not null) filters.Add("r.started_at < @toExclusive");
+    var where = filters.Count == 0 ? "" : " WHERE " + string.Join(" AND ", filters);
+    var query = RunListQuery.Normalize(page, pageSize);
+    var parameters = new { status, worker, repository, fromInstant, toExclusive, query.Size };
+    var total = await c.ExecuteScalarAsync<int>(new CommandDefinition("SELECT count(*) FROM factory.run r JOIN factory.task t ON t.id=r.task_id JOIN github.repository gr ON gr.id=t.repository_id" + where, parameters, cancellationToken: ct));
+    var normalizedPage = Math.Min(query.Page, Math.Max(1, (int)Math.Ceiling(total / (double)query.Size)));
+    var offset = (normalizedPage - 1) * query.Size;
+    var items = await c.QueryAsync(new CommandDefinition("""
+        SELECT r.id,r.task_id AS "taskId",t.title,gr.owner || '/' || gr.name AS repository,
+          r.started_at AS "startedAt",r.completed_at AS "completedAt",r.status,r.worker_id AS "workerId",
+          EXTRACT(EPOCH FROM (COALESCE(r.completed_at,now())-r.started_at)) AS "durationSeconds",
+          latest.step_type AS "currentStep",
+          CASE WHEN r.status='Succeeded' THEN 'Passed'
+               WHEN r.status='Failed' THEN COALESCE(latest.error,t.failure_reason,'Failed')
+               WHEN r.status='Running' THEN NULL ELSE r.status END AS result
+        FROM factory.run r
+        JOIN factory.task t ON t.id=r.task_id
+        JOIN github.repository gr ON gr.id=t.repository_id
+        LEFT JOIN LATERAL (
+          SELECT s.step_type,s.error FROM factory.step s WHERE s.run_id=r.id
+          ORDER BY (s.status='Running') DESC,s.started_at DESC LIMIT 1
+        ) latest ON TRUE
+        """ + where + " ORDER BY r.started_at DESC,r.id LIMIT @Size OFFSET @Offset", new { status, worker, repository, fromInstant, toExclusive, query.Size, Offset = offset }, cancellationToken: ct));
+    return Results.Ok(new { items, total, page = normalizedPage, pageSize = query.Size });
+});
+app.MapGet("/api/runs/workers", Query("SELECT DISTINCT worker_id AS worker FROM factory.run ORDER BY worker_id"));
+app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var run = await c.QuerySingleOrDefaultAsync(new CommandDefinition("""
+        SELECT r.id,r.task_id AS "taskId",t.title,gr.owner || '/' || gr.name AS repository,
+          r.started_at AS "startedAt",r.completed_at AS "completedAt",r.status,r.worker_id AS "workerId",
+          EXTRACT(EPOCH FROM (COALESCE(r.completed_at,now())-r.started_at)) AS "durationSeconds",
+          latest.step_type AS "currentStep",
+          CASE WHEN r.status='Succeeded' THEN 'Passed'
+               WHEN r.status='Failed' THEN COALESCE(latest.error,t.failure_reason,'Failed')
+               WHEN r.status='Running' THEN NULL ELSE r.status END AS result
+        FROM factory.run r
+        JOIN factory.task t ON t.id=r.task_id
+        JOIN github.repository gr ON gr.id=t.repository_id
+        LEFT JOIN LATERAL (
+          SELECT s.step_type,s.error FROM factory.step s WHERE s.run_id=r.id
+          ORDER BY (s.status='Running') DESC,s.started_at DESC LIMIT 1
+        ) latest ON TRUE
+        WHERE r.id=@id
+        """, new { id }, cancellationToken: ct));
+    if (run is null) return Results.NotFound();
+    var steps = await c.QueryAsync(new CommandDefinition("SELECT id,run_id AS \"runId\",step_type AS \"stepType\",status,started_at AS \"startedAt\",completed_at AS \"completedAt\",duration_ms AS \"durationMs\",attempt,error,output FROM factory.step WHERE run_id=@id ORDER BY started_at,id", new { id }, cancellationToken: ct));
+    var agentRunRows = await c.QueryAsync<AgentRunDetailsRow>(new CommandDefinition("""
+        SELECT id,run_id AS "RunId",agent,started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
+          exit_code AS "ExitCode",status,stdout,stderr,quota_detected AS "QuotaDetected",attempt_number AS "AttemptNumber",needs_human AS "NeedsHuman",
+          result_json::text AS "ResultJson",result_summary AS "ResultSummary",tests_run::text AS "TestsRunJson",tests_passed AS "TestsPassed",
+          files_changed::text AS "FilesChangedJson",risks::text AS "RisksJson",human_reason AS "HumanReason"
+        FROM factory.agent_run WHERE run_id=@id ORDER BY started_at,id
+        """, new { id }, cancellationToken: ct));
+    return Results.Ok(new { run, steps, agentRuns = agentRunRows.Select(AgentRunDetailsMapper.Map) });
+});
 app.MapGet("/api/repositories", Query("SELECT id,owner,name,clone_url AS \"cloneUrl\",default_branch AS \"defaultBranch\",is_enabled AS \"isEnabled\",last_synced_at AS \"lastSyncedAt\" FROM github.repository ORDER BY owner,name"));
 app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, CancellationToken ct) => { await using var c = await db.OpenConnectionAsync(ct); var item = await c.QuerySingleOrDefaultAsync(new CommandDefinition("SELECT id,owner,name,clone_url AS \"cloneUrl\",default_branch AS \"defaultBranch\",is_enabled AS \"isEnabled\",created_at AS \"createdAt\",updated_at AS \"updatedAt\",last_synced_at AS \"lastSyncedAt\" FROM github.repository WHERE id=@id", new { id }, cancellationToken: ct)); return item is null ? Results.NotFound() : Results.Ok(item); });
 app.MapGet("/api/agents", Query("SELECT COALESCE(preferred_agent,'Codex') AS agent,count(*) AS tasks,count(*) FILTER(WHERE status='Completed') AS successful FROM factory.task GROUP BY 1"));

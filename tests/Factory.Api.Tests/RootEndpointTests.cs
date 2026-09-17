@@ -36,6 +36,18 @@ public sealed class RootEndpointTests : IClassFixture<RootEndpointTests.FactoryA
         Assert.Equal(expectedDirection, query.Direction);
     }
 
+    [Theory]
+    [InlineData(null, null, 1, 25)]
+    [InlineData(0, 0, 1, 1)]
+    [InlineData(4, 1000, 4, 100)]
+    public void Run_query_bounds_pagination(int? page, int? pageSize, int expectedPage, int expectedSize)
+    {
+        var query = RunListQuery.Normalize(page, pageSize);
+
+        Assert.Equal(expectedPage, query.Page);
+        Assert.Equal(expectedSize, query.Size);
+    }
+
     [Fact]
     public void Agent_run_details_maps_persisted_result_fields()
     {

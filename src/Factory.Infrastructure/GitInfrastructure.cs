@@ -35,6 +35,17 @@ public sealed partial class GitWorktreeManager(IRepositoryCache cache, IProcessR
     {
         var cachePath = await cache.PrepareAsync(repository, cancellationToken);
         var location = GetLocation(repository, task);
+        if (task.WorktreePath is not null || task.BranchName is not null)
+        {
+            var recordedPath = task.WorktreePath is null ? null : Path.GetFullPath(task.WorktreePath);
+            var expectedPath = Path.GetFullPath(location.Path);
+            if (!string.Equals(recordedPath, expectedPath, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(task.BranchName, location.BranchName, StringComparison.Ordinal))
+                throw new InvalidOperationException("Recorded worktree does not match the task's deterministic location.");
+            if (!File.Exists(Path.Combine(expectedPath, ".git")))
+                throw new InvalidOperationException("Recorded worktree is missing or is not a Git worktree.");
+            return location;
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(location.Path)!);
         var result = await runner.RunAsync(new ProcessRequest("git", ["worktree", "add", location.Path, "-b", location.BranchName, $"origin/{task.BaseBranch}"], cachePath, Timeout: TimeSpan.FromMinutes(5)), cancellationToken);
         if (!result.Succeeded) throw new InvalidOperationException($"Worktree creation failed: {result.StandardError}");

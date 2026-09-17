@@ -74,10 +74,24 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         const string sql = """
             WITH candidate AS (
-              SELECT id FROM factory.task WHERE status='Pending' OR (status='Claimed' AND lease_until < now())
+              SELECT id,status <> 'Pending' AS recovered
+              FROM factory.task
+              WHERE status='Pending'
+                OR (status IN ('Claimed','Preparing','Planning','Implementing','Validating','Reviewing','ReadyForPublish') AND lease_until < now())
               ORDER BY priority DESC, created_at FOR UPDATE SKIP LOCKED LIMIT 1
+            ), failed_steps AS (
+              UPDATE factory.step s
+              SET status='Failed',completed_at=now(),
+                duration_ms=GREATEST(0,CAST(EXTRACT(EPOCH FROM (now()-s.started_at))*1000 AS BIGINT)),
+                error=COALESCE(s.error,'Worker lease expired; execution abandoned')
+              FROM factory.run r,candidate c
+              WHERE c.recovered AND r.task_id=c.id AND s.run_id=r.id AND s.status='Running'
+            ), failed_runs AS (
+              UPDATE factory.run r SET status='Failed',completed_at=now()
+              FROM candidate c WHERE c.recovered AND r.task_id=c.id AND r.status='Running'
             )
-            UPDATE factory.task t SET status='Claimed', claimed_by=@workerId, claimed_at=now(), lease_until=now()+@lease, started_at=COALESCE(started_at,now())
+            UPDATE factory.task t SET status='Claimed',claimed_by=@workerId,claimed_at=now(),lease_until=now()+@lease,
+              started_at=COALESCE(started_at,now()),failure_reason=NULL
             FROM candidate c WHERE t.id=c.id
             RETURNING t.id,
               t.repository_id AS "RepositoryId",
@@ -102,6 +116,16 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await using var connection = Connection();
         var row = await connection.QuerySingleOrDefaultAsync<TaskRow>(new CommandDefinition(sql, new { workerId, lease }, cancellationToken: cancellationToken));
         return row?.ToModel();
+    }
+
+    public async Task<bool> RenewLeaseAsync(Guid taskId, string workerId, TimeSpan lease, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE factory.task SET lease_until=now()+@lease
+            WHERE id=@taskId AND claimed_by=@workerId AND lease_until >= now()
+            """;
+        await using var connection = Connection();
+        return await connection.ExecuteAsync(new CommandDefinition(sql, new { taskId, workerId, lease }, cancellationToken: cancellationToken)) == 1;
     }
 
     public async Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken)
