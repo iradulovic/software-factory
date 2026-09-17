@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend build and tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: software_factory_tests
+          POSTGRES_USER: factory
+          POSTGRES_PASSWORD: factory
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U factory -d software_factory_tests"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      # Local-only service-container credentials; the PostgreSQL integration tests run instead of being skipped.
+      FACTORY_TEST_CONNECTION_STRING: Host=localhost;Port=5432;Database=software_factory_tests;Username=factory;Password=factory
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore SoftwareFactory.slnx --configfile NuGet.Config
+      - name: Build
+        run: dotnet build SoftwareFactory.slnx --no-restore --configuration Release
+      - name: Test
+        run: dotnet test SoftwareFactory.slnx --no-build --configuration Release --logger trx --results-directory TestResults
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: TestResults
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend lint, type-check, and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/Factory.Web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/Factory.Web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Type-check
+        run: npm run type-check
+      - name: Build
+        run: npm run build

@@ -69,6 +69,8 @@ Target repositories can optionally contain `.factory/config.json`:
 
 ## 3. Build, test, and migrate
 
+The same checks run in GitHub Actions on every push to `main` and every pull request (`.github/workflows/ci.yml`): backend build and tests against a PostgreSQL service container, and frontend lint, type-check, and build. The workflow uses no secrets.
+
 ```powershell
 dotnet restore SoftwareFactory.slnx --configfile NuGet.Config
 dotnet build SoftwareFactory.slnx --no-restore
