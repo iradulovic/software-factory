@@ -25,7 +25,7 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
     - Caches created by the previous `clone --bare` implementation are healed on the next preparation without manual intervention.
     - A test runs real Git against a temporary upstream repository: create a worktree, advance the upstream, prepare again, and assert a second worktree sees the new commit.
     - README "What works" is accurate for what has been executed.
-
+  - Status 2026-09-17: implemented in `RepositoryCache` (explicit remote configuration and fetch refspec, absolute cache and worktree paths) with real-Git tests in `GitRepositoryCacheTests`. The command sequence, including healing a `clone --bare` cache, was reproduced with the Git CLI. Remaining before completion: run `dotnet build` and `dotnet test` on a machine with the .NET 10 SDK (unavailable in the authoring environment).
 
 ## Next up
 
