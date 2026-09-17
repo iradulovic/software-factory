@@ -16,6 +16,8 @@ public sealed class CodexOptions
     public string Executable { get; set; } = "codex";
     public string[] Arguments { get; set; } = ["exec", "--full-auto", "-"];
     public int TimeoutMinutes { get; set; } = 90;
+    public string[] VersionArguments { get; set; } = ["--version"];
+    public int AvailabilityTimeoutSeconds { get; set; } = 5;
 }
 
 public sealed class GitHubSyncOptions

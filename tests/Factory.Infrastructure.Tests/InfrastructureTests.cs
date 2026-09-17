@@ -78,6 +78,44 @@ public sealed class InfrastructureTests
         Assert.False((result with { TimedOut = true }).Succeeded);
     }
 
+    [Fact]
+    public async Task Availability_checker_reports_available_from_successful_version_check()
+    {
+        var runner = new StubResultRunner(new ProcessResult("codex", ["--version"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, "codex 1.2.3\n", "", false, false));
+        var checker = new CodexAvailabilityChecker(runner, Options.Create(new CodexOptions()));
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.Equal("Codex", availability.Agent);
+        Assert.True(availability.Available);
+        Assert.Equal("codex 1.2.3", availability.Version);
+        Assert.Null(availability.Error);
+    }
+
+    [Fact]
+    public async Task Availability_checker_reports_unavailable_when_check_times_out()
+    {
+        var runner = new StubResultRunner(new ProcessResult("codex", ["--version"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, "", "", true, false));
+        var checker = new CodexAvailabilityChecker(runner, Options.Create(new CodexOptions()));
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.False(availability.Available);
+        Assert.Null(availability.Version);
+        Assert.Contains("timed out", availability.Error);
+    }
+
+    [Fact]
+    public async Task Availability_checker_reports_unavailable_when_executable_is_missing()
+    {
+        var checker = new CodexAvailabilityChecker(new ThrowingRunner(), Options.Create(new CodexOptions()));
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.False(availability.Available);
+        Assert.Equal("Executable not found", availability.Error);
+    }
+
     private static FactoryTask NewTask(string title, int issue) => new(Guid.NewGuid(), 1, 2, issue, title, "", "GitHubIssue", 0,
         FactoryTaskStatus.Pending, null, "main", null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);
 
@@ -90,5 +128,16 @@ public sealed class InfrastructureTests
             CallCount++;
             throw new NotSupportedException();
         }
+    }
+
+    private sealed class StubResultRunner(ProcessResult result) : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken) => Task.FromResult(result);
+    }
+
+    private sealed class ThrowingRunner : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken) =>
+            throw new System.ComponentModel.Win32Exception("No such file or directory");
     }
 }

@@ -16,6 +16,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IAgentResultReader, AgentResultReader>();
         services.AddSingleton<IAgentRunner, CodexAgentRunner>();
+        services.AddSingleton<IAgentAvailabilityChecker, CodexAvailabilityChecker>();
         services.AddSingleton<IRepositoryCache, RepositoryCache>();
         services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
         services.AddSingleton<IRepositoryConfigurationReader, RepositoryConfigurationReader>();
