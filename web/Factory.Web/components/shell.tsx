@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { Activity, Bot, Boxes, CircleGauge, GitPullRequest, ListTodo, ScrollText, Settings } from "lucide-react";
+import { Activity, Bot, Boxes, CircleGauge, GitPullRequest, ListTodo, MessageSquareText, ScrollText, Settings } from "lucide-react";
 
 const navigation = [
-  ["Overview", "/", CircleGauge], ["Tasks", "/tasks", ListTodo], ["Runs", "/runs", Activity],
+  ["Overview", "/", CircleGauge], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo], ["Runs", "/runs", Activity],
   ["Repositories", "/repositories", Boxes], ["Agents", "/agents", Bot], ["Pull requests", "#", GitPullRequest],
   ["Logs", "#", ScrollText], ["Settings", "#", Settings]
 ] as const;

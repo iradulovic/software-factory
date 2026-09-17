@@ -104,6 +104,51 @@ app.MapPost("/api/tasks/{id:guid}/retry", async (Guid id, ITaskStore tasks, Canc
 app.MapPost("/api/tasks/{id:guid}/cancel", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
     await tasks.CancelAsync(id, ct) ? Results.NoContent() : Results.Conflict(new { error = "Task cannot be cancelled." }));
 
+app.MapGet("/api/issues", async (string? repository, string? state, bool? eligible, NpgsqlDataSource db, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var filters = new List<string>();
+    if (!string.IsNullOrWhiteSpace(repository)) filters.Add("(r.owner || '/' || r.name)=@repository");
+    if (!string.IsNullOrWhiteSpace(state)) filters.Add("i.state=@state");
+    if (eligible is not null) filters.Add(eligible.Value
+        ? "EXISTS(SELECT 1 FROM github.issue_label eligibility WHERE eligibility.issue_id=i.id AND lower(eligibility.name)='factory:ready')"
+        : "NOT EXISTS(SELECT 1 FROM github.issue_label eligibility WHERE eligibility.issue_id=i.id AND lower(eligibility.name)='factory:ready')");
+    var where = filters.Count == 0 ? "" : " WHERE " + string.Join(" AND ", filters);
+    var items = await c.QueryAsync(new CommandDefinition("""
+        SELECT i.id,i.issue_number AS "issueNumber",i.title,i.state,i.author,i.created_at AS "createdAt",i.updated_at AS "updatedAt",
+          r.owner || '/' || r.name AS repository,
+          array_agg(label.name ORDER BY label.name) FILTER (WHERE label.name IS NOT NULL) AS labels,
+          EXISTS(SELECT 1 FROM github.issue_label eligibility WHERE eligibility.issue_id=i.id AND lower(eligibility.name)='factory:ready') AS eligible,
+          count(DISTINCT t.id) AS "taskCount"
+        FROM github.issue i
+        JOIN github.repository r ON r.id=i.repository_id
+        LEFT JOIN github.issue_label label ON label.issue_id=i.id
+        LEFT JOIN factory.task t ON t.github_issue_id=i.id
+        """ + where + " GROUP BY i.id,r.owner,r.name ORDER BY i.updated_at DESC,i.id DESC", new { repository, state, eligible }, cancellationToken: ct));
+    return Results.Ok(items);
+});
+app.MapGet("/api/issues/{id:long}", async (long id, NpgsqlDataSource db, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var issue = await c.QuerySingleOrDefaultAsync(new CommandDefinition("""
+        SELECT i.id,i.issue_number AS "issueNumber",i.title,i.body,i.state,i.author,i.created_at AS "createdAt",i.updated_at AS "updatedAt",i.closed_at AS "closedAt",
+          r.owner || '/' || r.name AS repository,
+          array_agg(label.name ORDER BY label.name) FILTER (WHERE label.name IS NOT NULL) AS labels,
+          EXISTS(SELECT 1 FROM github.issue_label eligibility WHERE eligibility.issue_id=i.id AND lower(eligibility.name)='factory:ready') AS eligible
+        FROM github.issue i JOIN github.repository r ON r.id=i.repository_id
+        LEFT JOIN github.issue_label label ON label.issue_id=i.id
+        WHERE i.id=@id GROUP BY i.id,r.owner,r.name
+        """, new { id }, cancellationToken: ct));
+    if (issue is null) return Results.NotFound();
+    var comments = await c.QueryAsync(new CommandDefinition("SELECT github_comment_id AS \"githubCommentId\",author,body,created_at AS \"createdAt\",updated_at AS \"updatedAt\" FROM github.issue_comment WHERE issue_id=@id ORDER BY created_at,id", new { id }, cancellationToken: ct));
+    var tasks = await c.QueryAsync(new CommandDefinition("""
+        SELECT t.id,t.title,t.status,COALESCE(t.preferred_agent,'Codex') AS agent,t.created_at AS "createdAt",t.started_at AS "startedAt",t.completed_at AS "completedAt",
+          t.failure_reason AS "failureReason",t.branch_name AS "branchName"
+        FROM factory.task t WHERE t.github_issue_id=@id ORDER BY t.created_at DESC,t.id
+        """, new { id }, cancellationToken: ct));
+    return Results.Ok(new { issue, comments, tasks });
+});
+
 app.MapGet("/api/runs", async (string? status, string? worker, string? repository, DateOnly? from, DateOnly? to, int? page, int? pageSize, NpgsqlDataSource db, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
