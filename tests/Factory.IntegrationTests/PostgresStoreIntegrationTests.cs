@@ -92,6 +92,10 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Contains("factory:ready", loadedIssue?.Labels ?? []);
             Assert.Equal("Context", Assert.Single(loadedIssue?.Comments ?? []).Body);
 
+            await github.RecordRepositorySyncFailureAsync(repositoryId, "GitHub CLI timed out", CancellationToken.None);
+            var syncFailure = await connection.QuerySingleAsync<string>("SELECT error FROM github.repository_sync_failure WHERE repository_id=@repositoryId", new { repositoryId });
+            Assert.Equal("GitHub CLI timed out", syncFailure);
+
             Assert.True(await tasks.CreateForIssueIfEligibleAsync(issue, "main", CancellationToken.None));
             Assert.False(await tasks.CreateForIssueIfEligibleAsync(issue, "main", CancellationToken.None));
             await connection.ExecuteAsync("UPDATE factory.task SET priority=2147483647 WHERE github_issue_id=@issueId", new { issueId });

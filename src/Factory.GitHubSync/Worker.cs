@@ -19,15 +19,23 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
             {
                 foreach (var repository in await store.GetEnabledRepositoriesAsync(stoppingToken))
                 {
-                    var imported = 0; var created = 0;
-                    foreach (var issue in await client.GetOpenIssuesAsync(repository, stoppingToken))
+                    try
                     {
-                        var saved = await store.UpsertIssueAsync(repository.Id, issue, stoppingToken);
-                        imported++;
-                        if (await tasks.CreateForIssueIfEligibleAsync(saved, repository.DefaultBranch, stoppingToken)) created++;
+                        var imported = 0; var created = 0;
+                        foreach (var issue in await client.GetOpenIssuesAsync(repository, stoppingToken))
+                        {
+                            var saved = await store.UpsertIssueAsync(repository.Id, issue, stoppingToken);
+                            imported++;
+                            if (await tasks.CreateForIssueIfEligibleAsync(saved, repository.DefaultBranch, stoppingToken)) created++;
+                        }
+                        await store.MarkRepositorySyncedAsync(repository.Id, stoppingToken);
+                        logger.LogInformation("Synchronized {Repository}; imported {IssueCount} issues and created {TaskCount} tasks", $"{repository.Owner}/{repository.Name}", imported, created);
                     }
-                    await store.MarkRepositorySyncedAsync(repository.Id, stoppingToken);
-                    logger.LogInformation("Synchronized {Repository}; imported {IssueCount} issues and created {TaskCount} tasks", $"{repository.Owner}/{repository.Name}", imported, created);
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        await store.RecordRepositorySyncFailureAsync(repository.Id, ex.Message, stoppingToken);
+                        logger.LogError(ex, "GitHub synchronization failed for {Repository}", $"{repository.Owner}/{repository.Name}");
+                    }
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { logger.LogError(ex, "GitHub synchronization cycle failed"); }

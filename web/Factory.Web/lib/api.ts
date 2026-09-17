@@ -11,6 +11,16 @@ export const runSchema = z.object({
   status:z.string(),workerId:z.string(),durationSeconds:z.number(),currentStep:z.string().nullable(),result:z.string().nullable()
 });
 export type FactoryRun = z.infer<typeof runSchema>;
+export const repositorySchema = z.object({
+  id:z.number(),owner:z.string(),name:z.string(),cloneUrl:z.string(),defaultBranch:z.string(),isEnabled:z.boolean(),lastSyncedAt:z.string().nullable(),
+  latestSyncFailure:z.string().nullable(),latestSyncFailureAt:z.string().nullable()
+});
+export type Repository = z.infer<typeof repositorySchema>;
+export const repositoryDetailSchema = repositorySchema.extend({
+  createdAt:z.string(),updatedAt:z.string(),issueCount:z.number(),taskCount:z.number(),
+  configuration:z.object({baseBranch:z.string(),buildCommands:z.array(z.string()),testCommands:z.array(z.string()),maxImplementationAttempts:z.number(),maxReviewAttempts:z.number(),requireHumanMerge:z.boolean()}).nullable()
+});
+export type RepositoryDetail = z.infer<typeof repositoryDetailSchema>;
 export const apiBase = process.env.NEXT_PUBLIC_FACTORY_API_URL ?? "http://localhost:5080";
 
 export async function getJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {

@@ -171,8 +171,39 @@ app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancellat
         """, new { id }, cancellationToken: ct));
     return Results.Ok(new { run, steps, agentRuns = agentRunRows.Select(AgentRunDetailsMapper.Map) });
 });
-app.MapGet("/api/repositories", Query("SELECT id,owner,name,clone_url AS \"cloneUrl\",default_branch AS \"defaultBranch\",is_enabled AS \"isEnabled\",last_synced_at AS \"lastSyncedAt\" FROM github.repository ORDER BY owner,name"));
-app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, CancellationToken ct) => { await using var c = await db.OpenConnectionAsync(ct); var item = await c.QuerySingleOrDefaultAsync(new CommandDefinition("SELECT id,owner,name,clone_url AS \"cloneUrl\",default_branch AS \"defaultBranch\",is_enabled AS \"isEnabled\",created_at AS \"createdAt\",updated_at AS \"updatedAt\",last_synced_at AS \"lastSyncedAt\" FROM github.repository WHERE id=@id", new { id }, cancellationToken: ct)); return item is null ? Results.NotFound() : Results.Ok(item); });
+app.MapGet("/api/repositories", Query("""
+    SELECT r.id,r.owner,r.name,r.clone_url AS "cloneUrl",r.default_branch AS "defaultBranch",r.is_enabled AS "isEnabled",r.last_synced_at AS "lastSyncedAt",
+      failure.error AS "latestSyncFailure",failure.occurred_at AS "latestSyncFailureAt"
+    FROM github.repository r
+    LEFT JOIN LATERAL (
+      SELECT error,occurred_at FROM github.repository_sync_failure WHERE repository_id=r.id ORDER BY occurred_at DESC,id DESC LIMIT 1
+    ) failure ON TRUE
+    ORDER BY r.owner,r.name
+    """));
+app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, IRepositoryConfigurationReader configurationReader, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var item = await c.QuerySingleOrDefaultAsync(new CommandDefinition("""
+        SELECT r.id,r.owner,r.name,r.clone_url AS "cloneUrl",r.default_branch AS "defaultBranch",r.is_enabled AS "isEnabled",
+          r.created_at AS "createdAt",r.updated_at AS "updatedAt",r.last_synced_at AS "lastSyncedAt",
+          failure.error AS "latestSyncFailure",failure.occurred_at AS "latestSyncFailureAt",
+          (SELECT count(*) FROM github.issue i WHERE i.repository_id=r.id) AS "issueCount",
+          (SELECT count(*) FROM factory.task t WHERE t.repository_id=r.id) AS "taskCount",
+          (SELECT worktree_path FROM factory.task t WHERE t.repository_id=r.id AND t.worktree_path IS NOT NULL ORDER BY t.created_at DESC LIMIT 1) AS "configurationWorktreePath"
+        FROM github.repository r
+        LEFT JOIN LATERAL (
+          SELECT error,occurred_at FROM github.repository_sync_failure WHERE repository_id=r.id ORDER BY occurred_at DESC,id DESC LIMIT 1
+        ) failure ON TRUE
+        WHERE r.id=@id
+        """, new { id }, cancellationToken: ct));
+    if (item is null) return Results.NotFound();
+
+    var worktreePath = (string?)item.configurationWorktreePath;
+    RepositoryConfiguration? configuration = null;
+    if (!string.IsNullOrWhiteSpace(worktreePath) && Directory.Exists(worktreePath))
+        configuration = await configurationReader.ReadAsync(worktreePath, ct);
+    return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration });
+});
 app.MapGet("/api/agents", Query("SELECT COALESCE(preferred_agent,'Codex') AS agent,count(*) AS tasks,count(*) FILTER(WHERE status='Completed') AS successful FROM factory.task GROUP BY 1"));
 app.MapGet("/api/agents/{agent}/runs", async (string agent, NpgsqlDataSource db, CancellationToken ct) => { await using var c = await db.OpenConnectionAsync(ct); return Results.Ok(await c.QueryAsync(new CommandDefinition("SELECT id,task_id AS \"taskId\",run_id AS \"runId\",agent,started_at AS \"startedAt\",completed_at AS \"completedAt\",duration_seconds AS \"durationSeconds\",exit_code AS \"exitCode\",status,quota_detected AS \"quotaDetected\",quota_reset_at AS \"quotaResetAt\",attempt_number AS \"attemptNumber\",needs_human AS \"needsHuman\" FROM factory.agent_run WHERE agent=@agent ORDER BY started_at DESC LIMIT 100", new { agent }, cancellationToken: ct))); });
 app.MapGet("/api/metrics/summary", Query("SELECT count(*) AS attempted,count(*) FILTER(WHERE status='Completed') AS completed,count(*) FILTER(WHERE status='NeedsHuman') AS \"humanInterventions\" FROM factory.task"));

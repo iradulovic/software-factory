@@ -104,6 +104,17 @@ public sealed class PostgresGitHubStore(IOptions<FactoryOptions> options) : IGit
         await c.ExecuteAsync(new CommandDefinition("UPDATE github.repository SET last_synced_at=now(),updated_at=now() WHERE id=@repositoryId", new { repositoryId }, cancellationToken: cancellationToken));
     }
 
+    public async Task RecordRepositorySyncFailureAsync(long repositoryId, string error, CancellationToken cancellationToken)
+    {
+        const int maxErrorLength = 8_000;
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("INSERT INTO github.repository_sync_failure(repository_id,error) VALUES(@repositoryId,@error)", new
+        {
+            repositoryId,
+            error = error.Length <= maxErrorLength ? error : error[..maxErrorLength]
+        }, cancellationToken: cancellationToken));
+    }
+
     public async Task<GitHubIssue> UpsertIssueAsync(long repositoryId, GitHubIssue issue, CancellationToken cancellationToken)
     {
         await using var c = Connection(); await c.OpenAsync(cancellationToken); await using var tx = await c.BeginTransactionAsync(cancellationToken);

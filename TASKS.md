@@ -22,14 +22,6 @@ No task is currently claimed.
 
 ## Next up
 
-- [ ] **SF-104 — Add repository operations visibility**
-  - Outcome: the Repositories navigation item shows configured repositories and synchronization health.
-  - Acceptance criteria:
-    - The page shows owner/name, enabled state, default branch, last sync, and latest sync failure.
-    - Repository detail shows issue/task counts and validation configuration when available.
-    - Sync failures are persisted instead of existing only in logs.
-    - Configuration remains backend-owned.
-
 - [ ] **SF-105 — Add GitHub Issues visibility**
   - Outcome: imported GitHub issues and factory-task eligibility are inspectable in the dashboard.
   - Acceptance criteria:
@@ -126,6 +118,7 @@ No tasks are currently blocked.
 
 ## Completed
 
+- [x] **SF-104 — Add repository operations visibility** — Completed 2026-09-17. Repository list/detail views now show configuration, synchronization health, counts, and recorded validation settings; sync failures are persisted as append-only repository operational state. Verified by a warning-free .NET build, 28 backend tests including 7 PostgreSQL integration tests, and frontend lint, type-check, and production build.
 - [x] **SF-201 — Add lease heartbeats and recovery** — Completed 2026-09-17. The owning worker renews configurable leases and cancels execution if ownership is lost; expired active tasks atomically close stale running steps/runs before being reclaimed, while unexpired tasks remain owned. Recovery safely reuses only the deterministic recorded Git worktree, and worker-iteration failures are contained. Verified by a warning-free .NET build, 28 backend tests, and 7 PostgreSQL integration tests executed against PostgreSQL 17, including renewal, ownership, and abandoned-execution recovery.
 - [x] **SF-103 — Add the Runs screen** — Completed 2026-09-17. Runs are server-filterable by status, worker, repository, and date; list rows expose task links, timing, current step, and result; run details show ordered steps and agent invocations with meaningful empty/loading/error states. Verified by a warning-free .NET build, 24 backend tests including live PostgreSQL integration, a live filtered API smoke test, frontend lint, type-check, and production build.
 - [x] **SF-102 — Complete task execution details** — Completed 2026-09-16. Issue comments and structured agent results are persisted and displayed; independent validation is distinct from agent-reported tests; valid retry/cancel actions report outcomes. Verified by .NET build, 21 backend tests including live PostgreSQL persistence, frontend lint, type-check, and production build.

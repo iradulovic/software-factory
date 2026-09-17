@@ -27,6 +27,7 @@ public interface IGitHubStore
     Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken);
     Task UpsertRepositoryAsync(GitHubRepository repository, CancellationToken cancellationToken);
     Task MarkRepositorySyncedAsync(long repositoryId, CancellationToken cancellationToken);
+    Task RecordRepositorySyncFailureAsync(long repositoryId, string error, CancellationToken cancellationToken);
     Task<GitHubIssue> UpsertIssueAsync(long repositoryId, GitHubIssue issue, CancellationToken cancellationToken);
 }
 
