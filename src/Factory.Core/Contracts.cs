@@ -3,6 +3,11 @@ namespace Factory.Core;
 public interface IClock { DateTimeOffset UtcNow { get; } }
 public interface IProcessRunner { Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken); }
 public interface IAgentRunner { Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken); }
+public interface IAgentAvailabilityChecker
+{
+    string Agent { get; }
+    Task<AgentAvailability> CheckAsync(CancellationToken cancellationToken);
+}
 
 public interface ITaskStore
 {

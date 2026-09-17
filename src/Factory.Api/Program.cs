@@ -17,6 +17,15 @@ const string TaskListSql = """
     FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id LEFT JOIN github.issue i ON i.id=t.github_issue_id
     """;
 
+const string AgentStatsSql = """
+    SELECT
+      (SELECT t.title FROM factory.task t WHERE COALESCE(t.preferred_agent,'Codex')=@agent AND t.status IN ('Claimed','Preparing','Implementing','Validating','Reviewing') ORDER BY t.started_at DESC LIMIT 1) AS "ActiveTask",
+      (SELECT count(*) FROM factory.agent_run WHERE agent=@agent AND started_at >= CURRENT_DATE) AS "RunsToday",
+      (SELECT count(*) FROM factory.agent_run WHERE agent=@agent AND status='Succeeded') AS "SuccessfulRuns",
+      (SELECT started_at FROM factory.agent_run WHERE agent=@agent AND quota_detected=true ORDER BY started_at DESC LIMIT 1) AS "QuotaDetectedAt",
+      (SELECT quota_reset_at FROM factory.agent_run WHERE agent=@agent AND quota_detected=true ORDER BY started_at DESC LIMIT 1) AS "QuotaResetAt"
+    """;
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog((_, configuration) => configuration
     .MinimumLevel.Override("Microsoft.AspNetCore.Mvc.Infrastructure.DefaultActionDescriptorCollectionProvider", Serilog.Events.LogEventLevel.Warning)
@@ -43,7 +52,7 @@ app.MapGet("/", () => Results.Ok(new
 }));
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
-app.MapGet("/api/dashboard", async (NpgsqlDataSource db, CancellationToken ct) =>
+app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
     var metrics = await c.QuerySingleAsync(new CommandDefinition("""
@@ -57,7 +66,15 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, CancellationToken ct) =
     var active = await c.QueryAsync(new CommandDefinition(TaskListSql + " WHERE t.status IN ('Claimed','Preparing','Implementing','Validating','Reviewing') ORDER BY t.started_at DESC LIMIT 8", cancellationToken: ct));
     var activity = await c.QueryAsync(new CommandDefinition("SELECT s.step_type AS type,s.status,s.completed_at AS \"occurredAt\",t.title FROM factory.step s JOIN factory.run r ON r.id=s.run_id JOIN factory.task t ON t.id=r.task_id WHERE s.completed_at IS NOT NULL ORDER BY s.completed_at DESC LIMIT 12", cancellationToken: ct));
     var throughput = await c.QueryAsync(new CommandDefinition("SELECT d::date AS day,count(t.id) AS completed FROM generate_series(CURRENT_DATE-6,CURRENT_DATE,'1 day') d LEFT JOIN factory.task t ON t.completed_at::date=d::date GROUP BY d ORDER BY d", cancellationToken: ct));
-    return Results.Ok(new { metrics, active, activity, throughput });
+    var agentStatus = new List<AgentStatus>();
+    foreach (var checker in availabilityCheckers)
+    {
+        var availability = await checker.CheckAsync(ct);
+        var stats = await c.QuerySingleAsync<AgentStatsRow>(new CommandDefinition(AgentStatsSql, new { agent = checker.Agent }, cancellationToken: ct));
+        agentStatus.Add(new AgentStatus(availability.Agent, availability.Available, availability.Version, availability.Error,
+            stats.ActiveTask, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, stats.QuotaResetAt));
+    }
+    return Results.Ok(new { metrics, active, activity, throughput, agentStatus });
 });
 
 app.MapGet("/api/tasks", async (string? status, string? repository, string? agent, string? q, string? sort, string? direction, int? page, int? pageSize, NpgsqlDataSource db, CancellationToken ct) =>

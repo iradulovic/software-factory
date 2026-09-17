@@ -22,13 +22,6 @@ No task is currently claimed.
 
 ## Next up
 
-- [ ] **SF-106 — Add agent status to Overview**
-  - Outcome: Overview shows useful Codex operational state rather than only task activity.
-  - Acceptance criteria:
-    - Codex availability, active task, runs today, successful runs, and latest quota state are shown.
-    - Availability is based on a backend-owned executable check with a bounded timeout.
-    - No authentication details or secrets are exposed.
-
 - [ ] **SF-202 — Implement bounded implementation retries**
   - Outcome: configured retry limits drive repeat attempts without creating ad hoc task states.
   - Acceptance criteria:
@@ -111,6 +104,7 @@ No tasks are currently blocked.
 
 ## Completed
 
+- [x] **SF-106 — Add agent status to Overview** — Completed 2026-09-17. The Overview dashboard shows Codex availability (via a backend-owned `codex --version` check bounded by a configurable timeout), active task, runs today, successful runs, and latest quota-detection/reset state, without exposing any credentials. Verified by a warning-free .NET build, 31 backend tests including 7 PostgreSQL integration tests and 3 new availability-checker unit tests, a manual end-to-end check of the `/api/dashboard` endpoint against a live PostgreSQL database in both the available and unavailable executable states, and frontend lint, type-check, and production build plus a browser screenshot of the rendered panel.
 - [x] **SF-105 — Add GitHub Issues visibility** — Completed 2026-09-17. Imported GitHub issues have independently filterable list/detail views with labels, comments, timestamps, eligibility, and linked factory-task records kept visibly distinct. Verified by a warning-free .NET build, 28 backend tests including 7 PostgreSQL integration tests, and frontend lint, type-check, and production build.
 - [x] **SF-104 — Add repository operations visibility** — Completed 2026-09-17. Repository list/detail views now show configuration, synchronization health, counts, and recorded validation settings; sync failures are persisted as append-only repository operational state. Verified by a warning-free .NET build, 28 backend tests including 7 PostgreSQL integration tests, and frontend lint, type-check, and production build.
 - [x] **SF-201 — Add lease heartbeats and recovery** — Completed 2026-09-17. The owning worker renews configurable leases and cancels execution if ownership is lost; expired active tasks atomically close stale running steps/runs before being reclaimed, while unexpired tasks remain owned. Recovery safely reuses only the deterministic recorded Git worktree, and worker-iteration failures are contained. Verified by a warning-free .NET build, 28 backend tests, and 7 PostgreSQL integration tests executed against PostgreSQL 17, including renewal, ownership, and abandoned-execution recovery.
