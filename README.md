@@ -8,6 +8,8 @@ Planned work and completed features are tracked in [`TASKS.md`](TASKS.md). Futur
 
 The bootstrap vertical slice synchronizes issues, labels, and comments through `gh`; creates one pending factory task for each open `factory:ready` issue; claims tasks atomically in PostgreSQL; creates a bare repository cache and Git worktree; writes `.factory/task.md`; invokes the local Codex CLI; validates `.factory/result.json`; runs configured build/test commands; and exposes the persisted history through the API and dashboard. It never pushes, opens a pull request, merges, or deploys.
 
+Verification status: the Git cache and worktree flow is covered by tests that run real Git against a temporary upstream repository, and the PostgreSQL claim, lease, and persistence behavior is integration-tested. A complete end-to-end run against a live GitHub repository with Codex has not yet been recorded in `TASKS.md`; treat the sections below as the intended flow until one is.
+
 ## Prerequisites
 
 - .NET SDK 10
@@ -125,6 +127,7 @@ The bootstrap exposes dashboard, tasks (including retry/cancel), runs, agents, r
 
 ## Current limitations and safety
 
+- The repository cache is a bare repository that tracks `origin` explicitly (`+refs/heads/*:refs/remotes/origin/*`). Caches created by earlier versions with `git clone --bare` are healed automatically on the next task.
 - One task is executed at a time; the schema and claim query support later multi-worker operation.
 - Active task leases are renewed by the owning worker. Expired executions are closed and reclaimed, reusing their validated deterministic worktree when present. Automatic worktree cleanup is not implemented yet.
 - Lease expiry is not a process fence: if an old worker is completely frozen rather than stopped, it could theoretically resume and touch the worktree after another worker recovers the task. Responsive workers cancel execution when renewal fails; stronger fencing would require process isolation.

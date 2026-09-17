@@ -2,7 +2,7 @@
 
 This file is the ordered handoff queue for feature work. `BOOTSTRAP_SPEC.md` describes the architecture; this file records what to build next.
 
-Last reviewed: 2026-09-16
+Last reviewed: 2026-09-17
 
 ## Agent workflow
 
@@ -18,24 +18,121 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
-No task is currently claimed.
+- [ ] **SF-000 — Fix repository cache and worktree creation**
+  - Outcome: a task can actually be prepared: the cache tracks the upstream repository and worktrees start from the fetched base branch.
+  - Acceptance criteria:
+    - The bare cache has a fetch refspec so `origin/<branch>` references exist and `git fetch --prune origin` advances them (a `git clone --bare` cache has neither, so `git worktree add ... origin/main` fails with `invalid reference`).
+    - Caches created by the previous `clone --bare` implementation are healed on the next preparation without manual intervention.
+    - A test runs real Git against a temporary upstream repository: create a worktree, advance the upstream, prepare again, and assert a second worktree sees the new commit.
+    - README "What works" is accurate for what has been executed.
+
 
 ## Next up
 
-- [ ] **SF-106 — Add agent status to Overview**
-  - Outcome: Overview shows useful Codex operational state rather than only task activity.
+Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
+
+### Restore and harden the vertical slice
+
+- [ ] **SF-012 — Add continuous integration**
+  - Outcome: every push and pull request runs the same checks contributors run locally.
+  - Acceptance criteria:
+    - GitHub Actions runs `dotnet build`, `dotnet test`, and the frontend lint, type-check, and build.
+    - PostgreSQL-backed integration tests run in CI against a service container rather than being skipped.
+    - The workflow uses no secrets.
+
+- [ ] **SF-206 — Harden the task executor**
+  - Outcome: the executor cannot be misled by agent output and never leaves execution state half-open (review items 3.2, 3.3, 3.4, 3.5, 3.8, 3.13, 3.14).
+  - Acceptance criteria:
+    - Validation commands are read from the base commit before the agent runs and persisted on the run; the worktree copy of `.factory/config.json` is never consulted.
+    - `.factory/result.json` is removed before each agent invocation, so a stale result from a previous attempt is never accepted.
+    - Agent statuses `completed`, `needs-human`, `blocked`, and `failed` map to explicit transitions; an empty diff never reaches validation.
+    - Cancelled or interrupted executions close their run and running steps with `Cancelled`.
+    - Lease renewal distinguishes lost ownership (cancel) from transient database errors (retry until the lease truly expires); default lease and heartbeat are proportional to the agent timeout.
+    - `.factory/` is excluded from Git in every worktree via the cache's `info/exclude`.
+    - A partial `.factory/config.json` merges with defaults instead of failing with a null reference.
+    - Executor tests cover each of the above.
+
+- [ ] **SF-207 — Extract the task execution pipeline**
+  - Outcome: `Worker` only claims, heartbeats, and delegates; execution is an ordered list of steps that is unit-testable with fakes.
+  - Acceptance criteria:
+    - Steps (PrepareRepository, CreateWorktree, WriteContext, RunAgent, CollectDiff, Validate) return explicit outcomes that a single executor maps onto `TaskStateMachine`.
+    - Every state transition is recorded in an append-only `factory.task_event` table with a reason and actor.
+    - Existing behavior is preserved and covered by executor tests using the existing boundary interfaces.
+
+### Prepare human-controlled publication
+
+- [ ] **SF-301 — Capture change metrics and publication readiness**
+  - Outcome: completed implementations expose their exact Git changes and whether they are safe to hand to a human.
+  - Acceptance criteria:
+    - Base and head commit SHAs, changed files, lines added, and lines removed are computed by the orchestrator.
+    - Dirty-worktree and unexpected-branch conditions fail clearly.
+    - `ReadyForPublish` is a resting state that requires valid agent output plus successful independent validation; `Completed` is no longer assigned automatically.
+    - The dashboard displays the change summary.
+
+- [ ] **SF-302 — Add human-approved push and pull-request preparation**
+  - Outcome: a human can explicitly publish a validated factory branch and prepare a draft pull request.
+  - Acceptance criteria:
+    - Push and PR creation are orchestrator-owned operations behind an explicit human action, with a per-repository `publish: manual | auto-draft` policy defaulting to manual.
+    - Protected branches cannot be targeted directly.
+    - Publication attempts and GitHub responses are persisted (`factory.publication` with PR number and state).
+    - Automatic merging remains absent.
+
+- [ ] **SF-303 — Write factory state back to GitHub**
+  - Outcome: people who work in GitHub see what the factory did without opening the dashboard.
+  - Acceptance criteria:
+    - Task start, completion, failure, and needs-human outcomes post a concise issue comment with the summary, validation result, and a dashboard link.
+    - Labels reflect state (`factory:in-progress`, `factory:needs-human`, `factory:ready-for-review`, `factory:failed`).
+    - Sync observes published pull requests and transitions `Published` to `Completed` (merged) or `Rejected` (closed).
+    - All GitHub writes go through one publisher abstraction and are persisted as operational state.
+
+### Improve autonomy
+
+- [ ] **SF-202 — Implement bounded retries as a repair loop**
+  - Outcome: configured retry limits drive repeat attempts that learn from the previous failure, without creating ad hoc task states.
+  - Acceptance criteria:
+    - `maxImplementationAttempts` is enforced.
+    - Attempt N+1 receives attempt N's validation output, changed files, and agent summary in `.factory/task.md`.
+    - Every attempt creates separate step and agent-run records.
+    - Retryable and terminal failures are explicit.
+    - Quota exhaustion remains `WaitingForQuota`, is not aggressively retried, and resumes automatically once a recorded reset time has passed.
+
+- [ ] **SF-401 — Add config-driven agent profiles and `ClaudeAgentRunner`**
+  - Outcome: Claude Code and further CLI agents execute through the same agent boundary and persistence model as Codex.
+  - Acceptance criteria:
+    - Agent profiles (executable, arguments, prompt delivery, timeout, quota signature) are configuration-driven; adding an agent does not require a new class.
+    - `preferred_agent` on the task selects the profile; a fallback policy hands a task to the next available profile when the preferred provider is at quota.
+    - Authentication is inherited from the user's local CLI session.
+    - Result validation, quota detection, and execution recording match Codex behavior.
+    - Orchestration logic contains no agent-specific branching beyond profile selection.
+
+### Extend observability and synchronization
+
+- [ ] **SF-501 — Externalize large execution logs and add live tail**
+  - Outcome: PostgreSQL remains responsive as agent and validation output grows, and operators can watch an agent work.
+  - Acceptance criteria:
+    - Full stdout/stderr are streamed to files beneath the configured factory logs directory while the process runs.
+    - PostgreSQL stores bounded previews and durable paths.
+    - API log retrieval handles missing and truncated files explicitly and offers a tail endpoint.
+    - Task details show a live tail for the running agent step.
+
+- [ ] **SF-205 — Make GitHub synchronization incremental and convergent**
+  - Outcome: repositories with more than 100 issues synchronize completely, and factory state converges with GitHub.
+  - Acceptance criteria:
+    - Pagination imports all configured issues and comments; `closed_at` is persisted.
+    - Sync checkpoints avoid repeatedly fetching unchanged history where the `gh` boundary permits it.
+    - Pending tasks are cancelled with an explicit reason when their issue is closed or the `factory:ready` label is removed.
+    - Deleted labels, edited comments, and reopen events converge correctly.
+    - Rate-limit and CLI failures are persisted as operational state.
+
+### Operational polish
+
+- [ ] **SF-106 — Add agent and worker status to Overview**
+  - Outcome: Overview shows real Codex and worker operational state rather than hard-coded text.
   - Acceptance criteria:
     - Codex availability, active task, runs today, successful runs, and latest quota state are shown.
     - Availability is based on a backend-owned executable check with a bounded timeout.
+    - Workers record heartbeats in a `factory.worker` table; the sidebar status and navigation links reflect real state, and links to unimplemented screens are removed.
     - No authentication details or secrets are exposed.
-
-- [ ] **SF-202 — Implement bounded implementation retries**
-  - Outcome: configured retry limits drive repeat attempts without creating ad hoc task states.
-  - Acceptance criteria:
-    - `maxImplementationAttempts` is enforced.
-    - Every attempt creates separate step and agent-run records.
-    - Retryable and terminal failures are explicit.
-    - Quota exhaustion remains `WaitingForQuota` and is not aggressively retried.
 
 - [ ] **SF-203 — Add safe worktree cleanup**
   - Outcome: terminal tasks do not leave unbounded worktrees while diagnostic evidence remains available.
@@ -52,50 +149,6 @@ No task is currently claimed.
     - Existing simple command configuration has a documented migration path.
     - Shell operators remain opt-in and unavailable by default.
     - Parsing and process invocation tests cover quoting and cancellation.
-
-- [ ] **SF-205 — Make GitHub synchronization incremental**
-  - Outcome: repositories with more than 100 issues synchronize completely and efficiently.
-  - Acceptance criteria:
-    - Pagination imports all configured issues and comments.
-    - Sync checkpoints avoid repeatedly fetching unchanged history where the `gh` boundary permits it.
-    - Deleted labels, edited comments, closed issues, and reopen events converge correctly.
-    - Rate-limit and CLI failures are persisted as operational state.
-
-### Prepare human-controlled publication
-
-- [ ] **SF-301 — Capture change metrics and publication readiness**
-  - Outcome: completed implementations expose their exact Git changes and whether they are safe to hand to a human.
-  - Acceptance criteria:
-    - Changed files, lines added, and lines removed are computed by the orchestrator.
-    - Dirty-worktree and unexpected-branch conditions fail clearly.
-    - `ReadyForPublish` requires valid agent output plus successful independent validation.
-    - The dashboard displays the change summary.
-
-- [ ] **SF-302 — Add human-approved push and pull-request preparation**
-  - Outcome: a human can explicitly publish a validated factory branch and prepare a pull request.
-  - Acceptance criteria:
-    - Push and PR creation are orchestrator-owned operations behind an explicit human action.
-    - Protected branches cannot be targeted directly.
-    - Publication attempts and GitHub responses are persisted.
-    - Automatic merging remains absent.
-
-### Extend agents and observability
-
-- [ ] **SF-401 — Implement `ClaudeAgentRunner`**
-  - Outcome: Claude Code can execute through the same agent boundary and persistence model as Codex.
-  - Acceptance criteria:
-    - Executable, arguments, and timeout are configuration-driven.
-    - Authentication is inherited from the user's local CLI session.
-    - Result validation, quota detection, and execution recording match Codex behavior.
-    - Orchestration logic contains no Claude-specific branching beyond agent selection.
-
-- [ ] **SF-501 — Externalize large execution logs**
-  - Outcome: PostgreSQL remains responsive as agent and validation output grows.
-  - Acceptance criteria:
-    - Full stdout/stderr are written beneath the configured factory logs directory.
-    - PostgreSQL stores bounded previews and durable paths.
-    - API log retrieval handles missing and truncated files explicitly.
-    - Existing task details remain useful after migration.
 
 - [ ] **SF-502 — Complete OpenTelemetry export configuration**
   - Outcome: API, sync, and orchestration activity can be exported to a configured collector.
