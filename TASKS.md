@@ -18,18 +18,7 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
-- [ ] **SF-206 — Harden the task executor**
-  - Outcome: the executor cannot be misled by agent output and never leaves execution state half-open (review items 3.2, 3.3, 3.4, 3.5, 3.8, 3.13, 3.14).
-  - Acceptance criteria:
-    - Validation commands are read from the base commit before the agent runs and persisted on the run; the worktree copy of `.factory/config.json` is never consulted.
-    - `.factory/result.json` is removed before each agent invocation, so a stale result from a previous attempt is never accepted.
-    - Agent statuses `completed`, `needs-human`, `blocked`, and `failed` map to explicit transitions; an empty diff never reaches validation.
-    - Cancelled or interrupted executions close their run and running steps with `Cancelled`.
-    - Lease renewal distinguishes lost ownership (cancel) from transient database errors (retry until the lease truly expires); default lease and heartbeat are proportional to the agent timeout.
-    - `.factory/` is excluded from Git in every worktree via the cache's `info/exclude`.
-    - A partial `.factory/config.json` merges with defaults instead of failing with a null reference.
-    - Executor tests cover each of the above.
-
+No task is currently claimed.
 
 ## Next up
 
@@ -149,6 +138,7 @@ No tasks are currently blocked.
 
 ## Completed
 
+- [x] **SF-206 — Harden the task executor** — Completed 2026-09-17. Validation configuration is read from the base branch commit before the agent runs, merged with defaults, and persisted on the run (migration 005); the worktree copy is never consulted. Agent statuses map to explicit transitions (`failed` → Failed, `blocked`/`needs-human` → NeedsHuman, `completed` validated only with real changes); stale `.factory/result.json` is removed before each attempt and `.factory/` is excluded via the cache `info/exclude`. Cancelled, lost-lease, and shutdown executions close their run and steps as `Cancelled` and a stopping worker releases its lease; lease renewal retries transient errors until expiry, with 10-minute lease and 2-minute heartbeat defaults. The orchestrator is split into `Worker`, `LeaseMonitor`, and `TaskExecutor`. Verified by pull request #4 CI run 35272978745 (https://github.com/iradulovic/software-factory/actions/runs/35272978745): warning-free build and 53 backend tests passed, 0 skipped (Core 8, Api 8, Infrastructure 19, Integration 8 including PostgreSQL, Orchestrator 10), frontend lint, type-check, and build green.
 - [x] **SF-012 — Add continuous integration** — Completed 2026-09-17. `.github/workflows/ci.yml` runs backend restore, Release build, and `dotnet test` against a PostgreSQL 17 service container (integration tests execute rather than skip), plus frontend lint, type-check, and build, with read-only token permissions and no secrets. Verified by the first run on pull request #3 (https://github.com/iradulovic/software-factory/actions/runs/35267814484): warning-free build and 33 backend tests passed, 0 skipped (Core 8, Api 8, Infrastructure 10, Integration 7), frontend job green.
 - [x] **SF-000 — Fix repository cache and worktree creation** — Completed 2026-09-17. The bare cache configures `remote.origin.url` and the fetch refspec `+refs/heads/*:refs/remotes/origin/*` on every preparation, so `origin/<base>` exists and advances, and caches created by the earlier `clone --bare` code are healed automatically; cache and worktree paths are absolute. Verified by the real-Git tests in `GitRepositoryCacheTests` (fresh cache, upstream advance, second worktree, healing) executing in CI run 35267814484 with a warning-free build; the same command sequence was also reproduced with the Git CLI.
 - [x] **SF-106 — Add agent status to Overview** — Completed 2026-09-17. The Overview dashboard shows Codex availability (via a backend-owned `codex --version` check bounded by a configurable timeout), active task, runs today, successful runs, and latest quota-detection/reset state, without exposing any credentials. Verified by a warning-free .NET build, 31 backend tests including 7 PostgreSQL integration tests and 3 new availability-checker unit tests, a manual end-to-end check of the `/api/dashboard` endpoint against a live PostgreSQL database in both the available and unavailable executable states, and frontend lint, type-check, and production build plus a browser screenshot of the rendered panel.
