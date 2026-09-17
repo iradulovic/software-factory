@@ -18,22 +18,7 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
-- [ ] **SF-000 — Fix repository cache and worktree creation**
-  - Outcome: a task can actually be prepared: the cache tracks the upstream repository and worktrees start from the fetched base branch.
-  - Acceptance criteria:
-    - The bare cache has a fetch refspec so `origin/<branch>` references exist and `git fetch --prune origin` advances them (a `git clone --bare` cache has neither, so `git worktree add ... origin/main` fails with `invalid reference`).
-    - Caches created by the previous `clone --bare` implementation are healed on the next preparation without manual intervention.
-    - A test runs real Git against a temporary upstream repository: create a worktree, advance the upstream, prepare again, and assert a second worktree sees the new commit.
-    - README "What works" is accurate for what has been executed.
-  - Status 2026-09-17: implemented in `RepositoryCache` (explicit remote configuration and fetch refspec, absolute cache and worktree paths) with real-Git tests in `GitRepositoryCacheTests`. The command sequence, including healing a `clone --bare` cache, was reproduced with the Git CLI. Remaining before completion: run `dotnet build` and `dotnet test` on a machine with the .NET 10 SDK (unavailable in the authoring environment).
-
-- [ ] **SF-012 — Add continuous integration**
-  - Outcome: every push and pull request runs the same checks contributors run locally.
-  - Acceptance criteria:
-    - GitHub Actions runs `dotnet build`, `dotnet test`, and the frontend lint, type-check, and build.
-    - PostgreSQL-backed integration tests run in CI against a service container rather than being skipped.
-    - The workflow uses no secrets.
-  - Status 2026-09-17: `.github/workflows/ci.yml` added (backend job with a PostgreSQL 17 service container and `FACTORY_TEST_CONNECTION_STRING`, frontend job with lint, type-check, and build). Completion evidence is the first green run on the pull request that introduces it.
+No task is currently claimed.
 
 ## Next up
 
@@ -165,6 +150,8 @@ No tasks are currently blocked.
 
 ## Completed
 
+- [x] **SF-012 — Add continuous integration** — Completed 2026-09-17. `.github/workflows/ci.yml` runs backend restore, Release build, and `dotnet test` against a PostgreSQL 17 service container (integration tests execute rather than skip), plus frontend lint, type-check, and build, with read-only token permissions and no secrets. Verified by the first run on pull request #3 (https://github.com/iradulovic/software-factory/actions/runs/35267814484): warning-free build and 33 backend tests passed, 0 skipped (Core 8, Api 8, Infrastructure 10, Integration 7), frontend job green.
+- [x] **SF-000 — Fix repository cache and worktree creation** — Completed 2026-09-17. The bare cache configures `remote.origin.url` and the fetch refspec `+refs/heads/*:refs/remotes/origin/*` on every preparation, so `origin/<base>` exists and advances, and caches created by the earlier `clone --bare` code are healed automatically; cache and worktree paths are absolute. Verified by the real-Git tests in `GitRepositoryCacheTests` (fresh cache, upstream advance, second worktree, healing) executing in CI run 35267814484 with a warning-free build; the same command sequence was also reproduced with the Git CLI.
 - [x] **SF-106 — Add agent status to Overview** — Completed 2026-09-17. The Overview dashboard shows Codex availability (via a backend-owned `codex --version` check bounded by a configurable timeout), active task, runs today, successful runs, and latest quota-detection/reset state, without exposing any credentials. Verified by a warning-free .NET build, 31 backend tests including 7 PostgreSQL integration tests and 3 new availability-checker unit tests, a manual end-to-end check of the `/api/dashboard` endpoint against a live PostgreSQL database in both the available and unavailable executable states, and frontend lint, type-check, and production build plus a browser screenshot of the rendered panel.
 - [x] **SF-105 — Add GitHub Issues visibility** — Completed 2026-09-17. Imported GitHub issues have independently filterable list/detail views with labels, comments, timestamps, eligibility, and linked factory-task records kept visibly distinct. Verified by a warning-free .NET build, 28 backend tests including 7 PostgreSQL integration tests, and frontend lint, type-check, and production build.
 - [x] **SF-104 — Add repository operations visibility** — Completed 2026-09-17. Repository list/detail views now show configuration, synchronization health, counts, and recorded validation settings; sync failures are persisted as append-only repository operational state. Verified by a warning-free .NET build, 28 backend tests including 7 PostgreSQL integration tests, and frontend lint, type-check, and production build.

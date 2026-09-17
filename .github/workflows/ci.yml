@@ -44,7 +44,7 @@ jobs:
       - name: Build
         run: dotnet build SoftwareFactory.slnx --no-restore --configuration Release
       - name: Test
-        run: dotnet test SoftwareFactory.slnx --no-build --configuration Release --logger "trx;LogFileName=results.trx" --results-directory TestResults
+        run: dotnet test SoftwareFactory.slnx --no-build --configuration Release --logger trx --results-directory TestResults
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
