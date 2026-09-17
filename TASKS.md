@@ -27,18 +27,19 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
     - README "What works" is accurate for what has been executed.
   - Status 2026-09-17: implemented in `RepositoryCache` (explicit remote configuration and fetch refspec, absolute cache and worktree paths) with real-Git tests in `GitRepositoryCacheTests`. The command sequence, including healing a `clone --bare` cache, was reproduced with the Git CLI. Remaining before completion: run `dotnet build` and `dotnet test` on a machine with the .NET 10 SDK (unavailable in the authoring environment).
 
-## Next up
-
-Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
-
-### Restore and harden the vertical slice
-
 - [ ] **SF-012 — Add continuous integration**
   - Outcome: every push and pull request runs the same checks contributors run locally.
   - Acceptance criteria:
     - GitHub Actions runs `dotnet build`, `dotnet test`, and the frontend lint, type-check, and build.
     - PostgreSQL-backed integration tests run in CI against a service container rather than being skipped.
     - The workflow uses no secrets.
+  - Status 2026-09-17: `.github/workflows/ci.yml` added (backend job with a PostgreSQL 17 service container and `FACTORY_TEST_CONNECTION_STRING`, frontend job with lint, type-check, and build). Completion evidence is the first green run on the pull request that introduces it.
+
+## Next up
+
+Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
+
+### Restore and harden the vertical slice
 
 - [ ] **SF-206 — Harden the task executor**
   - Outcome: the executor cannot be misled by agent output and never leaves execution state half-open (review items 3.2, 3.3, 3.4, 3.5, 3.8, 3.13, 3.14).
