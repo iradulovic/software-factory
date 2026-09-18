@@ -26,6 +26,7 @@ public interface ITaskStore
     Task CompleteRunAsync(Guid runId, ExecutionStatus status, CancellationToken cancellationToken);
     Task SetRunConfigurationAsync(Guid runId, RepositoryConfiguration configuration, CancellationToken cancellationToken);
     Task CloseExecutionAsync(Guid runId, ExecutionStatus status, string reason, CancellationToken cancellationToken);
+    Task SetChangeSummaryAsync(Guid runId, ChangeSummary summary, CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore
@@ -48,6 +49,24 @@ public interface IWorktreeManager
 }
 public sealed record WorktreeLocation(string BranchName, string Path);
 public interface IRepositoryConfigurationReader { Task<RepositoryConfiguration> ReadAsync(string worktreePath, string baseRef, CancellationToken cancellationToken); }
-public interface IWorktreeInspector { Task<bool> HasChangesAsync(string worktreePath, string baseRef, CancellationToken cancellationToken); }
+public interface IWorktreeInspector
+{
+    Task<bool> HasChangesAsync(string worktreePath, string baseRef, CancellationToken cancellationToken);
+    Task<ChangeSummary> SummarizeAsync(string worktreePath, string baseRef, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// The orchestrator's own, independently computed account of what a task changed, as it will be published.
+/// <see cref="BaseCommit"/> is the merge base between the worktree's branch and <c>baseRef</c>, not <c>baseRef</c>'s
+/// current tip, so a concurrent fetch that advances the base branch for another task never skews this task's diff.
+/// </summary>
+public sealed record ChangeSummary(
+    bool IsClean,
+    string CurrentBranch,
+    string BaseCommit,
+    string HeadCommit,
+    IReadOnlyList<string> FilesChanged,
+    int LinesAdded,
+    int LinesRemoved);
 public interface ITaskContextWriter { Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, CancellationToken cancellationToken); }
 public interface IAgentResultReader { Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken); }

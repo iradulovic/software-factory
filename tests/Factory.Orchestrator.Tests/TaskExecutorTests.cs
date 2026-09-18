@@ -12,18 +12,64 @@ public sealed class TaskExecutorTests
 
         var runId = await harness.ExecuteAsync();
 
-        Assert.Equal(new[] { "PrepareRepository", "CreateWorktree", "WriteContext", "AgentImplementation", "CollectDiff", "Build", "Test" }, harness.Store.StepOrder);
+        Assert.Equal(new[] { "PrepareRepository", "CreateWorktree", "WriteContext", "AgentImplementation", "CollectDiff", "Build", "Test", "PreparePublication" }, harness.Store.StepOrder);
         Assert.All(harness.Store.StepOrder, stepType => Assert.Equal(ExecutionStatus.Succeeded, harness.Store.Step(stepType).Status));
-        Assert.Equal(FactoryTaskStatus.Completed, harness.Store.Status);
+        Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
         Assert.Equal(ExecutionStatus.Succeeded, harness.Store.Runs[runId]);
         Assert.Equal(new (FactoryTaskStatus, FactoryTaskStatus, string?)[]
         {
             (FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null),
             (FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null),
             (FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null),
-            (FactoryTaskStatus.Validating, FactoryTaskStatus.ReadyForPublish, null),
-            (FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Completed, null)
+            (FactoryTaskStatus.Validating, FactoryTaskStatus.ReadyForPublish, null)
         }, harness.Store.Transitions);
+    }
+
+    [Fact]
+    public async Task Successful_run_persists_an_independently_computed_change_summary()
+    {
+        var harness = new Harness();
+
+        var runId = await harness.ExecuteAsync();
+
+        var summary = harness.Store.ChangeSummaries[runId];
+        Assert.True(summary.IsClean);
+        Assert.Equal("factory/42-add-invoice-export", summary.CurrentBranch);
+        Assert.Equal("base-sha", summary.BaseCommit);
+        Assert.Equal("head-sha", summary.HeadCommit);
+        Assert.Equal(["src/Export.cs"], summary.FilesChanged);
+        Assert.Equal(12, summary.LinesAdded);
+        Assert.Equal(3, summary.LinesRemoved);
+    }
+
+    [Fact]
+    public async Task Dirty_worktree_fails_instead_of_being_published()
+    {
+        var harness = new Harness { IsClean = false };
+
+        var runId = await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Validating, FactoryTaskStatus.Failed,
+            "Worktree has uncommitted changes; the agent must commit its work before it can be published.");
+        Assert.Equal(ExecutionStatus.Failed, harness.Store.Step("PreparePublication").Status);
+        Assert.False(harness.Store.ChangeSummaries.ContainsKey(runId));
+        Assert.Equal(ExecutionStatus.Failed, harness.Store.Runs[runId]);
+    }
+
+    [Fact]
+    public async Task Unexpected_branch_fails_instead_of_being_published()
+    {
+        var harness = new Harness { CurrentBranchOverride = "main" };
+
+        var runId = await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Validating, FactoryTaskStatus.Failed,
+            "Worktree is on unexpected branch 'main' (expected 'factory/42-add-invoice-export').");
+        Assert.Equal(ExecutionStatus.Failed, harness.Store.Step("PreparePublication").Status);
+        Assert.False(harness.Store.ChangeSummaries.ContainsKey(runId));
+        Assert.Equal(ExecutionStatus.Failed, harness.Store.Runs[runId]);
     }
 
     [Fact]
@@ -169,6 +215,8 @@ public sealed class TaskExecutorTests
         public AgentRunResult AgentResult { get; init; } = Agent("completed", "Implemented the export");
         public bool RepositoryFound { get; init; } = true;
         public bool HasChanges { get; init; } = true;
+        public bool IsClean { get; init; } = true;
+        public string? CurrentBranchOverride { get; init; }
         public Func<ProcessRequest, bool> CommandSucceeds { get; init; } = _ => true;
         public Exception? WorktreeFailure { get; init; }
         public string? ConfigurationBaseRef { get; private set; }
@@ -195,6 +243,7 @@ public sealed class TaskExecutorTests
                 new RunAgentStep(Store, new FakeAgent(this)),
                 new CollectDiffStep(Store, new FakeInspector(this)),
                 new ValidateStep(Store, new FakeProcessRunner(this)),
+                new PreparePublicationStep(Store, new FakeInspector(this)),
                 NullLogger<TaskExecutor>.Instance);
             await executor.ExecuteAsync(ClaimedTask, runId, CancellationToken.None);
             return runId;
@@ -225,6 +274,8 @@ public sealed class TaskExecutorTests
         private sealed class FakeInspector(Harness harness) : IWorktreeInspector
         {
             public Task<bool> HasChangesAsync(string worktreePath, string baseRef, CancellationToken cancellationToken) => Task.FromResult(harness.HasChanges);
+            public Task<ChangeSummary> SummarizeAsync(string worktreePath, string baseRef, CancellationToken cancellationToken) => Task.FromResult(new ChangeSummary(
+                harness.IsClean, harness.CurrentBranchOverride ?? "factory/42-add-invoice-export", "base-sha", "head-sha", ["src/Export.cs"], 12, 3));
         }
 
         private sealed class FakeContextWriter : ITaskContextWriter

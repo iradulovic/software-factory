@@ -296,4 +296,18 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await using var c = Connection();
         await c.ExecuteAsync(new CommandDefinition(sql, new { runId, status = status.ToString(), now = clock.UtcNow, reason }, cancellationToken: cancellationToken));
     }
+
+    public async Task SetChangeSummaryAsync(Guid runId, ChangeSummary summary, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE factory.run SET base_commit=@BaseCommit,head_commit=@HeadCommit,files_changed=@FilesChanged,
+              lines_added=@LinesAdded,lines_removed=@LinesRemoved
+            WHERE id=@runId
+            """;
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, new
+        {
+            runId, summary.BaseCommit, summary.HeadCommit, FilesChanged = summary.FilesChanged.ToArray(), summary.LinesAdded, summary.LinesRemoved
+        }, cancellationToken: cancellationToken));
+    }
 }

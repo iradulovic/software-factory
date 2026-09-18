@@ -150,6 +150,32 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Change_summary_is_persisted_on_the_run()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "worker-a", CancellationToken.None);
+            var summary = new ChangeSummary(true, "factory/142-add-export", "abc1234", "def5678", ["src/Export.cs", "tests/ExportTests.cs"], 42, 7);
+
+            await fixture.Tasks.SetChangeSummaryAsync(runId, summary, CancellationToken.None);
+
+            var persisted = await fixture.Connection.QuerySingleAsync<(string BaseCommit, string HeadCommit, string[] FilesChanged, int LinesAdded, int LinesRemoved)>("""
+                SELECT base_commit AS "BaseCommit", head_commit AS "HeadCommit", files_changed AS "FilesChanged", lines_added AS "LinesAdded", lines_removed AS "LinesRemoved"
+                FROM factory.run WHERE id=@runId
+                """, new { runId });
+            Assert.Equal("abc1234", persisted.BaseCommit);
+            Assert.Equal("def5678", persisted.HeadCommit);
+            Assert.Equal(new[] { "src/Export.cs", "tests/ExportTests.cs" }, persisted.FilesChanged);
+            Assert.Equal(42, persisted.LinesAdded);
+            Assert.Equal(7, persisted.LinesRemoved);
+        }
+    }
+
+    [Fact]
     public async Task Eligible_issue_is_created_once_and_can_be_claimed()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
