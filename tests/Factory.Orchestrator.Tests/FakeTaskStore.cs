@@ -13,6 +13,7 @@ internal sealed class FakeTaskStore : ITaskStore
     public List<string> StepOrder { get; } = [];
     public Dictionary<Guid, ExecutionStatus> Runs { get; } = [];
     public Dictionary<Guid, RepositoryConfiguration> RunConfigurations { get; } = [];
+    public Dictionary<Guid, ChangeSummary> ChangeSummaries { get; } = [];
     public List<AgentRunRecord> AgentRuns { get; } = [];
     public (Guid RunId, ExecutionStatus Status, string Reason)? Closed { get; private set; }
     public (string Branch, string Path)? Workspace { get; private set; }
@@ -64,6 +65,8 @@ internal sealed class FakeTaskStore : ITaskStore
         Closed = (runId, status, reason);
         return Task.CompletedTask;
     }
+
+    public Task SetChangeSummaryAsync(Guid runId, ChangeSummary summary, CancellationToken cancellationToken) { ChangeSummaries[runId] = summary; return Task.CompletedTask; }
 
     public StepRecord Step(string stepType) => Steps.Values.Single(s => s.StepType == stepType);
 }

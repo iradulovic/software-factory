@@ -13,6 +13,7 @@ builder.Services.AddSingleton<WriteContextStep>();
 builder.Services.AddSingleton<RunAgentStep>();
 builder.Services.AddSingleton<CollectDiffStep>();
 builder.Services.AddSingleton<ValidateStep>();
+builder.Services.AddSingleton<PreparePublicationStep>();
 builder.Services.AddSingleton<TaskExecutor>();
 builder.Services.AddSingleton<LeaseMonitor>();
 builder.Services.AddHostedService<Worker>();

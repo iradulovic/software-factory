@@ -18,7 +18,14 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
-No task is currently claimed.
+- [ ] **SF-301 — Capture change metrics and publication readiness**
+  - Outcome: completed implementations expose their exact Git changes and whether they are safe to hand to a human.
+  - Acceptance criteria:
+    - Base and head commit SHAs, changed files, lines added, and lines removed are computed by the orchestrator.
+    - Dirty-worktree and unexpected-branch conditions fail clearly.
+    - `ReadyForPublish` is a resting state that requires valid agent output plus successful independent validation; `Completed` is no longer assigned automatically.
+    - The dashboard displays the change summary.
+  - Status 2026-09-18: implemented as a new `PreparePublicationStep` that runs after validation succeeds. It computes base/head commit SHAs, changed files, and added/removed line counts via `git merge-base` and `git diff --numstat` (anchored to the merge base, not the base branch's current tip, so a concurrent fetch for another task sharing the cache cannot skew the diff), persists them on the run (migration 007), and fails clearly on an uncommitted (dirty) worktree or an unexpected current branch. `TaskExecutor` no longer auto-transitions `ReadyForPublish` to `Completed`; `ReadyForPublish` is now the resting terminal state until SF-302 adds an explicit publish action. The Task Details page shows the change summary. Verified: every new Git behavior (clean/dirty detection, current-branch detection, merge-base anchoring under a concurrently advancing base branch, numstat line counts) reproduced exactly against real Git, and the new `text[]` run columns verified against a real PostgreSQL 16 instance; the frontend lint, type-check, and production build were run for real in this environment (Node was available) and all passed. dotnet build/test could not be run (no .NET SDK); a CI run on the pull request is the outstanding verification.
 
 ## Next up
 
@@ -27,14 +34,6 @@ Ordered per `docs/concept-review.md` section 6: restore a working vertical slice
 ### Restore and harden the vertical slice
 
 ### Prepare human-controlled publication
-
-- [ ] **SF-301 — Capture change metrics and publication readiness**
-  - Outcome: completed implementations expose their exact Git changes and whether they are safe to hand to a human.
-  - Acceptance criteria:
-    - Base and head commit SHAs, changed files, lines added, and lines removed are computed by the orchestrator.
-    - Dirty-worktree and unexpected-branch conditions fail clearly.
-    - `ReadyForPublish` is a resting state that requires valid agent output plus successful independent validation; `Completed` is no longer assigned automatically.
-    - The dashboard displays the change summary.
 
 - [ ] **SF-302 — Add human-approved push and pull-request preparation**
   - Outcome: a human can explicitly publish a validated factory branch and prepare a draft pull request.

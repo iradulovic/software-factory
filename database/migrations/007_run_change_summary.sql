@@ -1,0 +1,6 @@
+ALTER TABLE factory.run
+  ADD COLUMN IF NOT EXISTS base_commit TEXT,
+  ADD COLUMN IF NOT EXISTS head_commit TEXT,
+  ADD COLUMN IF NOT EXISTS files_changed TEXT[],
+  ADD COLUMN IF NOT EXISTS lines_added INTEGER,
+  ADD COLUMN IF NOT EXISTS lines_removed INTEGER;

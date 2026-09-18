@@ -58,6 +58,33 @@ public sealed class GitWorktreeInspector(IProcessRunner runner) : IWorktreeInspe
         return int.TryParse(ahead.Trim(), out var commits) && commits > 0;
     }
 
+    public async Task<ChangeSummary> SummarizeAsync(string worktreePath, string baseRef, CancellationToken cancellationToken)
+    {
+        var status = await GitAsync(worktreePath, ["status", "--porcelain", "--untracked-files=all"], cancellationToken);
+        var isClean = status.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Length == 0;
+        var currentBranch = (await GitAsync(worktreePath, ["rev-parse", "--abbrev-ref", "HEAD"], cancellationToken)).Trim();
+
+        // merge-base, not baseRef's current tip: another task sharing the same cache can fetch and advance baseRef
+        // concurrently, and this task's diff must stay anchored to where its own branch actually diverged.
+        var baseCommit = (await GitAsync(worktreePath, ["merge-base", "HEAD", baseRef], cancellationToken)).Trim();
+        var headCommit = (await GitAsync(worktreePath, ["rev-parse", "HEAD"], cancellationToken)).Trim();
+
+        var numstat = await GitAsync(worktreePath, ["diff", "--numstat", $"{baseCommit}..{headCommit}"], cancellationToken);
+        var files = new List<string>();
+        var linesAdded = 0;
+        var linesRemoved = 0;
+        foreach (var line in numstat.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = line.Split('\t');
+            if (parts.Length != 3) continue;
+            files.Add(parts[2]);
+            // Binary files report "-" for both counts; they contribute to the file list but not the line totals.
+            if (int.TryParse(parts[0], out var added)) linesAdded += added;
+            if (int.TryParse(parts[1], out var removed)) linesRemoved += removed;
+        }
+        return new ChangeSummary(isClean, currentBranch, baseCommit, headCommit, files, linesAdded, linesRemoved);
+    }
+
     private async Task<string> GitAsync(string directory, string[] arguments, CancellationToken cancellationToken)
     {
         var result = await runner.RunAsync(new ProcessRequest("git", arguments, directory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);

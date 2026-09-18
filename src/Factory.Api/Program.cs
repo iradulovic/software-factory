@@ -102,7 +102,11 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancella
     if (task is null) return Results.NotFound();
     var issue = await c.QuerySingleOrDefaultAsync(new CommandDefinition("SELECT i.issue_number AS \"issueNumber\",i.title,i.body,i.state,i.author,i.created_at AS \"createdAt\",array_agg(l.name) FILTER (WHERE l.name IS NOT NULL) AS labels FROM github.issue i LEFT JOIN github.issue_label l ON l.issue_id=i.id JOIN factory.task t ON t.github_issue_id=i.id WHERE t.id=@id GROUP BY i.id", new { id }, cancellationToken: ct));
     var comments = await c.QueryAsync(new CommandDefinition("SELECT c.github_comment_id AS \"githubCommentId\",c.author,c.body,c.created_at AS \"createdAt\",c.updated_at AS \"updatedAt\" FROM github.issue_comment c JOIN factory.task t ON t.github_issue_id=c.issue_id WHERE t.id=@id ORDER BY c.created_at", new { id }, cancellationToken: ct));
-    var runs = await c.QueryAsync(new CommandDefinition("SELECT id,started_at AS \"startedAt\",completed_at AS \"completedAt\",status,worker_id AS \"workerId\" FROM factory.run WHERE task_id=@id ORDER BY started_at DESC", new { id }, cancellationToken: ct));
+    var runs = await c.QueryAsync(new CommandDefinition("""
+        SELECT id,started_at AS "startedAt",completed_at AS "completedAt",status,worker_id AS "workerId",
+          base_commit AS "baseCommit",head_commit AS "headCommit",files_changed AS "filesChanged",lines_added AS "linesAdded",lines_removed AS "linesRemoved"
+        FROM factory.run WHERE task_id=@id ORDER BY started_at DESC
+        """, new { id }, cancellationToken: ct));
     var steps = await c.QueryAsync(new CommandDefinition("SELECT s.id,s.run_id AS \"runId\",s.step_type AS \"stepType\",s.status,s.started_at AS \"startedAt\",s.completed_at AS \"completedAt\",s.duration_ms AS \"durationMs\",s.attempt,s.error,s.output FROM factory.step s JOIN factory.run r ON r.id=s.run_id WHERE r.task_id=@id ORDER BY s.started_at", new { id }, cancellationToken: ct));
     var agentRunRows = await c.QueryAsync<AgentRunDetailsRow>(new CommandDefinition("""
         SELECT id,run_id AS "RunId",agent,started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
@@ -212,7 +216,8 @@ app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancellat
           latest.step_type AS "currentStep",
           CASE WHEN r.status='Succeeded' THEN 'Passed'
                WHEN r.status='Failed' THEN COALESCE(latest.error,t.failure_reason,'Failed')
-               WHEN r.status='Running' THEN NULL ELSE r.status END AS result
+               WHEN r.status='Running' THEN NULL ELSE r.status END AS result,
+          r.base_commit AS "baseCommit",r.head_commit AS "headCommit",r.files_changed AS "filesChanged",r.lines_added AS "linesAdded",r.lines_removed AS "linesRemoved"
         FROM factory.run r
         JOIN factory.task t ON t.id=r.task_id
         JOIN github.repository gr ON gr.id=t.repository_id
