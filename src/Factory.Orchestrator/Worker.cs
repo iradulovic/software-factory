@@ -14,6 +14,9 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExec
         {
             try
             {
+                var resumed = await tasks.ResumeExpiredQuotaTasksAsync(stoppingToken);
+                if (resumed > 0) logger.LogInformation("Resumed {Count} task(s) whose quota cooldown has passed", resumed);
+
                 var task = await tasks.ClaimNextAsync(options.Value.WorkerId, leases.LeaseDuration, stoppingToken);
                 if (task is null) { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken); continue; }
                 await ExecuteWithLeaseAsync(task, stoppingToken);

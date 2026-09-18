@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 
 namespace Factory.Infrastructure;
 
-public sealed class CodexAgentRunner(IProcessRunner processRunner, IAgentResultReader resultReader, IOptions<CodexOptions> options) : IAgentRunner
+public sealed class CodexAgentRunner(IProcessRunner processRunner, IAgentResultReader resultReader, IOptions<CodexOptions> options, IClock clock) : IAgentRunner
 {
     private const string Prompt = """
         Implement the task described in .factory/task.md. Read and obey AGENTS.md. Inspect the existing architecture before making changes.
@@ -19,6 +19,7 @@ public sealed class CodexAgentRunner(IProcessRunner processRunner, IAgentResultR
         var (result, error) = await resultReader.ReadAsync(request.WorkingDirectory, cancellationToken);
         var combined = process.StandardOutput + "\n" + process.StandardError;
         var quota = combined.Contains("quota", StringComparison.OrdinalIgnoreCase) || combined.Contains("usage limit", StringComparison.OrdinalIgnoreCase);
-        return new AgentRunResult(process, result, error, quota);
+        var quotaResetAt = quota ? clock.UtcNow + TimeSpan.FromHours(settings.QuotaCooldownHours) : (DateTimeOffset?)null;
+        return new AgentRunResult(process, result, error, quota, quotaResetAt);
     }
 }

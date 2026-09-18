@@ -73,10 +73,37 @@ public sealed class RepositoryConfigurationReaderTests
             var task = new FactoryTask(Guid.NewGuid(), 1, 2, 7, "Title", "Body", "GitHubIssue", 0, FactoryTaskStatus.Preparing, null, "main",
                 null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);
 
-            await new TaskContextWriter().WriteAsync(root.FullName, new GitHubRepository(1, "acme", "billing", "url", "main", true), null, task, CancellationToken.None);
+            await new TaskContextWriter().WriteAsync(root.FullName, new GitHubRepository(1, "acme", "billing", "url", "main", true), null, task,
+                new AttemptContext(1, 2, null), CancellationToken.None);
 
             Assert.False(File.Exists(Path.Combine(directory.FullName, "result.json")));
-            Assert.Contains("GitHub issue: #7", await File.ReadAllTextAsync(Path.Combine(directory.FullName, "task.md")));
+            var content = await File.ReadAllTextAsync(Path.Combine(directory.FullName, "task.md"));
+            Assert.Contains("GitHub issue: #7", content);
+            Assert.Contains("This is attempt 1 of 2.", content);
+            Assert.DoesNotContain("Previous attempt", content);
+        }
+        finally { root.Delete(true); }
+    }
+
+    [Fact]
+    public async Task Task_context_writer_includes_the_previous_attempts_summary_when_repeating()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-context-");
+        try
+        {
+            var task = new FactoryTask(Guid.NewGuid(), 1, 2, 7, "Title", "Body", "GitHubIssue", 0, FactoryTaskStatus.Preparing, null, "main",
+                null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);
+            var previous = new PreviousAttemptSummary("Implemented the wrong endpoint", "Test failed: assertion mismatch", ["src/A.cs", "src/B.cs"], 4, 2);
+
+            await new TaskContextWriter().WriteAsync(root.FullName, new GitHubRepository(1, "acme", "billing", "url", "main", true), null, task,
+                new AttemptContext(2, 3, previous), CancellationToken.None);
+
+            var content = await File.ReadAllTextAsync(Path.Combine(root.FullName, ".factory", "task.md"));
+            Assert.Contains("This is attempt 2 of 3.", content);
+            Assert.Contains("## Previous attempt", content);
+            Assert.Contains("Implemented the wrong endpoint", content);
+            Assert.Contains("Test failed: assertion mismatch", content);
+            Assert.Contains("src/A.cs, src/B.cs", content);
         }
         finally { root.Delete(true); }
     }

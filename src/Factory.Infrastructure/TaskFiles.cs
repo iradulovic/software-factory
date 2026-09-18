@@ -61,7 +61,7 @@ internal sealed class RepositoryConfigurationFile
 
 public sealed class TaskContextWriter : ITaskContextWriter
 {
-    public async Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, CancellationToken cancellationToken)
+    public async Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, AttemptContext attempt, CancellationToken cancellationToken)
     {
         var directory = Path.Combine(worktreePath, ".factory");
         Directory.CreateDirectory(directory);
@@ -97,10 +97,35 @@ public sealed class TaskContextWriter : ITaskContextWriter
             - Run relevant tests
             - Do not push or create a pull request
 
+            ## Attempt
+
+            This is attempt {attempt.Number} of {attempt.MaxAttempts}.
+
+            {DescribePreviousAttempt(attempt.Previous)}
             ## Completion
 
             Write `.factory/result.json` with: status, summary, testsRun, testsPassed, filesChanged, risks, needsHuman, and humanReason.
             """;
         await File.WriteAllTextAsync(Path.Combine(directory, "task.md"), content, cancellationToken);
+    }
+
+    private static string DescribePreviousAttempt(PreviousAttemptSummary? previous)
+    {
+        if (previous is null) return "";
+        var files = previous.ChangedFiles.Count > 0 ? string.Join(", ", previous.ChangedFiles) : "none recorded";
+        return $"""
+            ## Previous attempt
+
+            The previous attempt did not succeed. Fix the underlying problem instead of repeating the same approach.
+
+            **Agent summary:** {previous.AgentSummary ?? "none recorded"}
+
+            **Validation output:**
+
+            {previous.ValidationOutput ?? "Validation did not run for the previous attempt."}
+
+            **Files changed:** {files} (+{previous.LinesAdded} -{previous.LinesRemoved})
+
+            """;
     }
 }

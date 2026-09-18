@@ -9,12 +9,12 @@ public sealed class RunAgentStep(ITaskStore tasks, IAgentRunner agent) : IPipeli
 
     public async Task<PipelineStepResult> ExecuteAsync(PipelineContext context, CancellationToken cancellationToken)
     {
-        var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", 1, cancellationToken);
-        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, 1), cancellationToken);
+        var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", context.AttemptNumber, cancellationToken);
+        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber), cancellationToken);
         await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), context.Task.Id, context.RunId, stepId, AgentName, result.Process.StartedAt,
             result.Process.CompletedAt, result.Process.Duration.TotalSeconds, result.Process.ExitCode,
             result.Process.Succeeded ? "Succeeded" : "Failed", result.Process.StandardOutput, result.Process.StandardError,
-            result.QuotaDetected, null, 1, result.Result?.NeedsHuman ?? false, result.Result), cancellationToken);
+            result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result), cancellationToken);
 
         if (result.QuotaDetected)
         {

@@ -41,6 +41,17 @@ public interface ITaskStore
     /// <summary>Tasks resting in <see cref="FactoryTaskStatus.Published"/> with a known pull request, for the
     /// GitHub sync worker to observe and resolve to <see cref="FactoryTaskStatus.Completed"/> or <see cref="FactoryTaskStatus.Rejected"/>.</summary>
     Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken);
+
+    /// <summary>How many times the agent has already been invoked to implement this task, across every run.</summary>
+    Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken);
+
+    /// <summary>The most recent implementation attempt's outcome for this task, or <see langword="null"/> if
+    /// there has not been one yet.</summary>
+    Task<PreviousAttemptSummary?> GetPreviousAttemptAsync(Guid taskId, CancellationToken cancellationToken);
+
+    /// <summary>Moves every task whose recorded quota reset time has passed from <see cref="FactoryTaskStatus.WaitingForQuota"/>
+    /// back to <see cref="FactoryTaskStatus.Pending"/>, and returns how many were resumed.</summary>
+    Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore
@@ -88,7 +99,7 @@ public sealed record ChangeSummary(
     IReadOnlyList<string> FilesChanged,
     int LinesAdded,
     int LinesRemoved);
-public interface ITaskContextWriter { Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, CancellationToken cancellationToken); }
+public interface ITaskContextWriter { Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, AttemptContext attempt, CancellationToken cancellationToken); }
 public interface IAgentResultReader { Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken); }
 
 /// <summary>

@@ -70,6 +70,8 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
 
 `publish` is `"manual"` (default: a human must click Publish on a `ReadyForPublish` task) or `"auto-draft"` (the orchestrator requests publication itself as soon as a task reaches `ReadyForPublish`). Publishing pushes the task's own branch and opens a draft pull request; it never merges.
 
+`maxImplementationAttempts` is enforced: once the agent has been invoked that many times for a task, the next attempt fails immediately, before invoking the agent again, with a reason explicit that this is terminal rather than one more transient failure to retry. Every attempt after the first receives the previous attempt's agent summary, validation output, and changed files in `.factory/task.md`, so a repeat run can fix the actual problem instead of repeating the same failing approach.
+
 ## 3. Build, test, and migrate
 
 The same checks run in GitHub Actions on every push to `main` and every pull request (`.github/workflows/ci.yml`): backend build and tests against a PostgreSQL service container, and frontend lint, type-check, and build. The workflow uses no secrets.
