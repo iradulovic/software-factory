@@ -20,6 +20,8 @@ internal sealed class FakeTaskStore : ITaskStore
     public List<(Guid Id, string Status, int? PullRequestNumber, string? PullRequestUrl, string? Error)> CompletedPublications { get; } = [];
     public List<(Guid TaskId, string Kind, string Detail, bool Succeeded, string? Error)> GitHubWrites { get; } = [];
     public List<PublishedTaskRef> PublishedTasks { get; } = [];
+    public PreviousAttemptSummary? PreviousAttempt { get; set; }
+    public int ExpiredQuotaTasksToResume { get; set; }
     public (Guid RunId, ExecutionStatus Status, string Reason)? Closed { get; private set; }
     public (string Branch, string Path)? Workspace { get; private set; }
     public bool LeaseReleased { get; private set; }
@@ -95,6 +97,10 @@ internal sealed class FakeTaskStore : ITaskStore
 
     public Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<PublishedTaskRef>>(PublishedTasks);
+
+    public Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(AgentRuns.Count(r => r.TaskId == taskId));
+    public Task<PreviousAttemptSummary?> GetPreviousAttemptAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(PreviousAttempt);
+    public Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken) => Task.FromResult(ExpiredQuotaTasksToResume);
 
     public StepRecord Step(string stepType) => Steps.Values.Single(s => s.StepType == stepType);
 }

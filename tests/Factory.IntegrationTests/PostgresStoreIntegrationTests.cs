@@ -329,6 +329,75 @@ public sealed class PostgresStoreIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Attempt_count_previous_summary_and_expired_quota_resume_are_persisted()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('attempt-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        var quotaTaskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch)
+                VALUES(@taskId,@repositoryId,'Attempt tracking task','Implementing','main')
+                """, new { taskId, repositoryId });
+
+            Assert.Equal(0, await tasks.CountAgentRunsAsync(taskId, CancellationToken.None));
+            Assert.Null(await tasks.GetPreviousAttemptAsync(taskId, CancellationToken.None));
+
+            var runId = await tasks.StartRunAsync(taskId, "integration-worker", CancellationToken.None);
+            var stepId = await tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, runId, stepId, "Codex", DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow, 1, 0, "Succeeded", "out", "", false, null, 1, false,
+                new AgentResult("completed", "Implemented the wrong endpoint", ["dotnet test"], true, ["src/Export.cs"], [], false, null)), CancellationToken.None);
+            var buildStepId = await tasks.StartStepAsync(runId, "Build", 1, CancellationToken.None);
+            await tasks.CompleteStepAsync(buildStepId, ExecutionStatus.Failed, "compile error", "error CS0103", CancellationToken.None);
+
+            Assert.Equal(1, await tasks.CountAgentRunsAsync(taskId, CancellationToken.None));
+            var previous = await tasks.GetPreviousAttemptAsync(taskId, CancellationToken.None);
+            Assert.NotNull(previous);
+            Assert.Equal("Implemented the wrong endpoint", previous!.AgentSummary);
+            Assert.Contains("compile error", previous.ValidationOutput);
+            Assert.Contains("src/Export.cs", previous.ChangedFiles);
+
+            // A quota-detected attempt whose reset time has already passed is auto-resumed to Pending.
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@quotaTaskId,@repositoryId,'Quota task','WaitingForQuota','main')
+                """, new { quotaTaskId, repositoryId });
+            var quotaRunId = await tasks.StartRunAsync(quotaTaskId, "integration-worker", CancellationToken.None);
+            var quotaStepId = await tasks.StartStepAsync(quotaRunId, "AgentImplementation", 1, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), quotaTaskId, quotaRunId, quotaStepId, "Codex", DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow, 1, 1, "Failed", "", "quota", true, DateTimeOffset.UtcNow.AddHours(-1), 1, false, null), CancellationToken.None);
+
+            Assert.Equal(1, await tasks.ResumeExpiredQuotaTasksAsync(CancellationToken.None));
+            Assert.Equal("Pending", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@quotaTaskId", new { quotaTaskId }));
+            Assert.Equal(0, await tasks.ResumeExpiredQuotaTasksAsync(CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.agent_run WHERE task_id IN (@taskId,@quotaTaskId);
+                DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id IN (@taskId,@quotaTaskId));
+                DELETE FROM factory.run WHERE task_id IN (@taskId,@quotaTaskId);
+                DELETE FROM factory.task WHERE id IN (@taskId,@quotaTaskId);
+                """, new { taskId, quotaTaskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
 
     private sealed class LeaseFixture : IAsyncDisposable

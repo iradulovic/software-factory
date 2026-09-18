@@ -35,6 +35,10 @@ public sealed class PipelineContext(FactoryTask task, Guid runId)
     public AgentResult? AgentResult { get; set; }
     public ChangeSummary? ChangeSummary { get; set; }
 
+    /// <summary>Which implementation attempt this run represents, set by <see cref="WriteContextStep"/> once the
+    /// prior attempt count is known.</summary>
+    public int AttemptNumber { get; set; } = 1;
+
     /// <summary>The task's base branch as a fetched remote-tracking reference, e.g. <c>origin/main</c>.</summary>
     public string BaseRef => $"origin/{Task.BaseBranch}";
 }

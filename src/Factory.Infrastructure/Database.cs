@@ -383,6 +383,77 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await using var c = Connection();
         return (await c.QueryAsync<PublishedTaskRef>(new CommandDefinition(sql, cancellationToken: cancellationToken))).AsList();
     }
+
+    public async Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition("SELECT count(*)::int FROM factory.agent_run WHERE task_id=@taskId", new { taskId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<PreviousAttemptSummary?> GetPreviousAttemptAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT ar.result_summary AS "AgentSummary", ar.files_changed::text AS "FilesChangedJson",
+              r.files_changed AS "RunFilesChanged", COALESCE(r.lines_added,0) AS "LinesAdded", COALESCE(r.lines_removed,0) AS "LinesRemoved", ar.run_id AS "RunId"
+            FROM factory.agent_run ar
+            JOIN factory.run r ON r.id = ar.run_id
+            WHERE ar.task_id=@taskId
+            ORDER BY ar.started_at DESC
+            LIMIT 1
+            """;
+        await using var c = Connection();
+        var row = await c.QuerySingleOrDefaultAsync<PreviousAttemptRow>(new CommandDefinition(sql, new { taskId }, cancellationToken: cancellationToken));
+        if (row is null) return null;
+
+        var failedSteps = (await c.QueryAsync<FailedValidationStepRow>(new CommandDefinition(
+            "SELECT step_type AS \"StepType\", COALESCE(error,'') AS \"Error\", output AS \"Output\" FROM factory.step WHERE run_id=@runId AND step_type IN ('Build','Test') AND status='Failed' ORDER BY started_at",
+            new { runId = row.RunId }, cancellationToken: cancellationToken))).AsList();
+        var validationOutput = failedSteps.Count == 0 ? null : string.Join("\n\n", failedSteps.Select(s => $"{s.StepType} failed: {s.Error}\n{s.Output}".Trim()));
+
+        var changedFiles = row.RunFilesChanged ?? (row.FilesChangedJson is null ? [] : JsonSerializer.Deserialize<string[]>(row.FilesChangedJson) ?? []);
+        return new PreviousAttemptSummary(row.AgentSummary, validationOutput, changedFiles, row.LinesAdded, row.LinesRemoved);
+    }
+
+    public async Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            WITH candidates AS (
+              SELECT t.id FROM factory.task t
+              JOIN LATERAL (
+                SELECT quota_reset_at FROM factory.agent_run WHERE task_id=t.id ORDER BY started_at DESC LIMIT 1
+              ) ar ON true
+              WHERE t.status='WaitingForQuota' AND ar.quota_reset_at IS NOT NULL AND ar.quota_reset_at <= now()
+              FOR UPDATE OF t SKIP LOCKED
+            ), updated AS (
+              UPDATE factory.task SET status='Pending', claimed_by=NULL, claimed_at=NULL, lease_until=NULL
+              WHERE id IN (SELECT id FROM candidates)
+              RETURNING id
+            ), logged AS (
+              INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+              SELECT id,'WaitingForQuota','Pending','Quota reset time passed; resumed automatically.','orchestrator' FROM updated
+            )
+            SELECT count(*)::int FROM updated
+            """;
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+    }
+}
+
+internal sealed class PreviousAttemptRow
+{
+    public string? AgentSummary { get; init; }
+    public string? FilesChangedJson { get; init; }
+    public string[]? RunFilesChanged { get; init; }
+    public int LinesAdded { get; init; }
+    public int LinesRemoved { get; init; }
+    public Guid RunId { get; init; }
+}
+
+internal sealed class FailedValidationStepRow
+{
+    public string StepType { get; init; } = "";
+    public string Error { get; init; } = "";
+    public string? Output { get; init; }
 }
 
 internal sealed class PublicationClaimRow

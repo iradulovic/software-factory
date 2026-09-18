@@ -18,6 +18,16 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
+- [ ] **SF-202 — Implement bounded retries as a repair loop**
+  - Outcome: configured retry limits drive repeat attempts that learn from the previous failure, without creating ad hoc task states.
+  - Acceptance criteria:
+    - `maxImplementationAttempts` is enforced.
+    - Attempt N+1 receives attempt N's validation output, changed files, and agent summary in `.factory/task.md`.
+    - Every attempt creates separate step and agent-run records.
+    - Retryable and terminal failures are explicit.
+    - Quota exhaustion remains `WaitingForQuota`, is not aggressively retried, and resumes automatically once a recorded reset time has passed.
+  - Status 2026-09-18: implemented. `WriteContextStep` counts prior `factory.agent_run` rows for the task (`ITaskStore.CountAgentRunsAsync`) to compute the attempt number; once it exceeds the repository's `maxImplementationAttempts`, the step fails immediately with an explicit, non-retryable reason, before the agent is ever invoked again — `PipelineContext.AttemptNumber` carries the number through to `RunAgentStep` so every attempt's step and agent-run rows record their real attempt number (previously always hardcoded to `1`). Below the limit, `ITaskStore.GetPreviousAttemptAsync` fetches the most recent attempt's agent summary, any failed Build/Test step output, and changed files, and `TaskContextWriter` writes them into a new "Previous attempt" section of `.factory/task.md`. Quota exhaustion: `CodexAgentRunner` now records a reset time (`now + Codex:QuotaCooldownHours`, default 5h, since Codex's own output carries no exact reset time) on `AgentRunResult`/`factory.agent_run.quota_reset_at` (previously always persisted as `null`, silently breaking the dashboard's already-built "Until …" quota countdown); `ITaskStore.ResumeExpiredQuotaTasksAsync` atomically moves every `WaitingForQuota` task whose recorded reset time has passed back to `Pending`, logging an `orchestrator`-actor `task_event`, and `Worker` calls it once per poll cycle before claiming. No schema migration was needed — every column already existed from earlier work (`agent_run.quota_reset_at`, `run.files_changed`/`lines_added`/`lines_removed`, `step.error`/`output`); this was pure enforcement wiring. No frontend changes were needed either: attempt number and quota reset time were already rendered by the dashboard, unpopulated until now. Verified: every new SQL statement (`CountAgentRunsAsync`, `GetPreviousAttemptAsync` including its jsonb-fallback path when the orchestrator's own diff never ran, and `ResumeExpiredQuotaTasksAsync` including its idempotency and not-yet-due cases) was executed verbatim against a real PostgreSQL 16 instance before being committed. `dotnet build`/`dotnet test` could not be run locally (no .NET SDK); CI on the pull request is the outstanding verification.
+
 ## Next up
 
 Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
@@ -27,15 +37,6 @@ Ordered per `docs/concept-review.md` section 6: restore a working vertical slice
 ### Prepare human-controlled publication
 
 ### Improve autonomy
-
-- [ ] **SF-202 — Implement bounded retries as a repair loop**
-  - Outcome: configured retry limits drive repeat attempts that learn from the previous failure, without creating ad hoc task states.
-  - Acceptance criteria:
-    - `maxImplementationAttempts` is enforced.
-    - Attempt N+1 receives attempt N's validation output, changed files, and agent summary in `.factory/task.md`.
-    - Every attempt creates separate step and agent-run records.
-    - Retryable and terminal failures are explicit.
-    - Quota exhaustion remains `WaitingForQuota`, is not aggressively retried, and resumes automatically once a recorded reset time has passed.
 
 - [ ] **SF-401 — Add config-driven agent profiles and `ClaudeAgentRunner`**
   - Outcome: Claude Code and further CLI agents execute through the same agent boundary and persistence model as Codex.

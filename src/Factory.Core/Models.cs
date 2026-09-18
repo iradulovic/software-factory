@@ -66,7 +66,7 @@ public sealed record ProcessResult(
 }
 
 public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber);
-public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, string? ValidationError, bool QuotaDetected);
+public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, string? ValidationError, bool QuotaDetected, DateTimeOffset? QuotaResetAt = null);
 
 public sealed record AgentAvailability(string Agent, bool Available, string? Version, string? Error);
 
@@ -95,3 +95,16 @@ public sealed record PullRequestState(bool Merged, bool Closed);
 /// <summary>A task resting in <see cref="FactoryTaskStatus.Published"/>, identified well enough for
 /// <see cref="IGitHubClient"/> to look up its pull request's current state.</summary>
 public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, string RepositoryName, int PullRequestNumber);
+
+/// <summary>Where a task sits in its bounded implementation-attempt budget, for both enforcement and for
+/// telling the agent which attempt this is.</summary>
+public sealed record AttemptContext(int Number, int MaxAttempts, PreviousAttemptSummary? Previous);
+
+/// <summary>The prior implementation attempt's outcome, fed back into <c>.factory/task.md</c> so a repeat
+/// attempt learns from what went wrong instead of reproducing it.</summary>
+public sealed record PreviousAttemptSummary(
+    string? AgentSummary,
+    string? ValidationOutput,
+    IReadOnlyList<string> ChangedFiles,
+    int LinesAdded,
+    int LinesRemoved);

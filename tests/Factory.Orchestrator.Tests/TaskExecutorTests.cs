@@ -106,6 +106,48 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task First_attempt_is_written_with_no_previous_attempt()
+    {
+        var harness = new Harness();
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(1, harness.WrittenAttempt!.Number);
+        Assert.Equal(2, harness.WrittenAttempt.MaxAttempts);
+        Assert.Null(harness.WrittenAttempt.Previous);
+    }
+
+    [Fact]
+    public async Task Second_attempt_receives_the_previous_attempts_summary()
+    {
+        var harness = new Harness { Configuration = new("main", ["custom-build"], ["custom-test"], 3, 1, true) };
+        harness.Store.AgentRuns.Add(Harness.PriorAgentRun(harness.ClaimedTask.Id));
+        harness.Store.PreviousAttempt = new PreviousAttemptSummary("Tried the wrong endpoint", "Test failed: boom", ["src/Export.cs"], 5, 1);
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(2, harness.WrittenAttempt!.Number);
+        Assert.Equal(3, harness.WrittenAttempt.MaxAttempts);
+        Assert.Same(harness.Store.PreviousAttempt, harness.WrittenAttempt.Previous);
+    }
+
+    [Fact]
+    public async Task Exceeding_the_attempt_limit_fails_before_invoking_the_agent_again()
+    {
+        var harness = new Harness { Configuration = new("main", ["custom-build"], ["custom-test"], 1, 1, true) };
+        harness.Store.AgentRuns.Add(Harness.PriorAgentRun(harness.ClaimedTask.Id));
+
+        var runId = await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Preparing, FactoryTaskStatus.Failed,
+            "Implementation attempt limit (1) reached; this task will not be retried automatically. A human must change the task, the repository, or the limit before retrying.");
+        Assert.Equal(0, harness.AgentInvocations);
+        Assert.DoesNotContain("AgentImplementation", harness.Store.StepOrder);
+        Assert.Equal(ExecutionStatus.Failed, harness.Store.Runs[runId]);
+    }
+
+    [Fact]
     public async Task Dirty_worktree_fails_instead_of_being_published()
     {
         var harness = new Harness { IsClean = false };
@@ -288,6 +330,8 @@ public sealed class TaskExecutorTests
             FactoryTaskStatus.Claimed, null, "main", null, null, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null);
         public List<(string Owner, string Name, int IssueNumber, string Body)> Comments { get; } = [];
         public List<string> Labels { get; } = [];
+        public AttemptContext? WrittenAttempt { get; set; }
+        public int AgentInvocations { get; private set; }
 
         public static ProcessResult Process(int? exitCode = 0, bool timedOut = false)
         {
@@ -298,13 +342,18 @@ public sealed class TaskExecutorTests
         public static AgentRunResult Agent(string status, string summary, string? humanReason = null, bool needsHuman = false) =>
             new(Process(), new AgentResult(status, summary, ["dotnet test"], true, ["src/Export.cs"], [], needsHuman, humanReason), null, false);
 
+        public void RecordAgentInvocation() => AgentInvocations++;
+
+        public static AgentRunRecord PriorAgentRun(Guid taskId) => new(Guid.NewGuid(), taskId, Guid.NewGuid(), Guid.NewGuid(), "Codex",
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1.0, 1, "Failed", null, "boom", false, null, 1, false, null);
+
         public async Task<Guid> ExecuteAsync()
         {
             var runId = await Store.StartRunAsync(ClaimedTask.Id, "worker", CancellationToken.None);
             var executor = new TaskExecutor(Store,
                 new PrepareRepositoryStep(Store, new FakeGitHubStore(this)),
                 new CreateWorktreeStep(Store, new FakeWorktrees(this)),
-                new WriteContextStep(Store, new FakeContextWriter(), new FakeConfigurationReader(this)),
+                new WriteContextStep(Store, new FakeContextWriter(this), new FakeConfigurationReader(this)),
                 new RunAgentStep(Store, new FakeAgent(this)),
                 new CollectDiffStep(Store, new FakeInspector(this)),
                 new ValidateStep(Store, new FakeProcessRunner(this)),
@@ -345,14 +394,22 @@ public sealed class TaskExecutorTests
                 harness.IsClean, harness.CurrentBranchOverride ?? "factory/42-add-invoice-export", "base-sha", "head-sha", ["src/Export.cs"], 12, 3));
         }
 
-        private sealed class FakeContextWriter : ITaskContextWriter
+        private sealed class FakeContextWriter(Harness harness) : ITaskContextWriter
         {
-            public Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, CancellationToken cancellationToken) => Task.CompletedTask;
+            public Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, AttemptContext attempt, CancellationToken cancellationToken)
+            {
+                harness.WrittenAttempt = attempt;
+                return Task.CompletedTask;
+            }
         }
 
         private sealed class FakeAgent(Harness harness) : IAgentRunner
         {
-            public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken) => Task.FromResult(harness.AgentResult);
+            public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
+            {
+                harness.RecordAgentInvocation();
+                return Task.FromResult(harness.AgentResult);
+            }
         }
 
         private sealed class FakeConfigurationReader(Harness harness) : IRepositoryConfigurationReader

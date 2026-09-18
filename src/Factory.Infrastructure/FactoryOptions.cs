@@ -21,6 +21,10 @@ public sealed class CodexOptions
     public int TimeoutMinutes { get; set; } = 90;
     public string[] VersionArguments { get; set; } = ["--version"];
     public int AvailabilityTimeoutSeconds { get; set; } = 5;
+
+    /// <summary>How long a quota-exhausted task waits before the orchestrator automatically resumes it, since
+    /// Codex's own output does not currently report an exact reset time.</summary>
+    public int QuotaCooldownHours { get; set; } = 5;
 }
 
 public sealed class GitHubSyncOptions
