@@ -3,133 +3,89 @@ using Factory.Core;
 namespace Factory.Orchestrator;
 
 /// <summary>
-/// Runs one claimed task through preparation, agent implementation, and independent validation.
-/// Every outcome is an explicit state transition; the run and its steps are always closed.
+/// Runs one claimed task through an ordered pipeline: preparation, worktree and context setup, agent
+/// implementation, diff collection, and independent validation. This class owns only status transitions and
+/// run/step-of-record bookkeeping; each stage's own logic lives in its <see cref="IPipelineStep"/>, which makes
+/// every stage independently unit-testable with fakes for the boundary interfaces it depends on.
 /// </summary>
-public sealed class TaskExecutor(ITaskStore tasks, IGitHubStore github, IWorktreeManager worktrees, IWorktreeInspector inspector,
-    ITaskContextWriter contextWriter, IAgentRunner agent, IRepositoryConfigurationReader configurationReader,
-    IProcessRunner processes, ILogger<TaskExecutor> logger)
+public sealed class TaskExecutor(
+    ITaskStore tasks,
+    PrepareRepositoryStep prepareRepository,
+    CreateWorktreeStep createWorktree,
+    WriteContextStep writeContext,
+    RunAgentStep runAgent,
+    CollectDiffStep collectDiff,
+    ValidateStep validate,
+    ILogger<TaskExecutor> logger)
 {
-    private const string AgentName = "Codex";
-
     public async Task ExecuteAsync(FactoryTask task, Guid runId, CancellationToken cancellationToken)
     {
+        var context = new PipelineContext(task, runId);
         try
         {
-            await RunAsync(task, runId, cancellationToken);
+            await TransitionAsync(context, FactoryTaskStatus.Preparing, null, cancellationToken);
+            if (!await RunStepAsync(prepareRepository, context, cancellationToken)) return;
+            if (!await RunStepAsync(createWorktree, context, cancellationToken)) return;
+            if (!await RunStepAsync(writeContext, context, cancellationToken)) return;
+
+            await TransitionAsync(context, FactoryTaskStatus.Implementing, null, cancellationToken);
+            if (!await RunStepAsync(runAgent, context, cancellationToken)) return;
+            if (!await RunStepAsync(collectDiff, context, cancellationToken)) return;
+
+            await TransitionAsync(context, FactoryTaskStatus.Validating, null, cancellationToken);
+            if (!await RunStepAsync(validate, context, cancellationToken)) return;
+
+            await TransitionAsync(context, FactoryTaskStatus.ReadyForPublish, null, cancellationToken);
+            await TransitionAsync(context, FactoryTaskStatus.Completed, null, cancellationToken);
+            await tasks.CompleteRunAsync(runId, ExecutionStatus.Succeeded, cancellationToken);
+            logger.LogInformation("Completed task {TaskId} in run {RunId}", task.Id, runId);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex, "Task {TaskId} failed in run {RunId}", task.Id, runId);
-            await MarkFailedAsync(task.Id, ex.Message, cancellationToken);
+            await MarkFailedAsync(context, ex.Message, cancellationToken);
             await tasks.CloseExecutionAsync(runId, ExecutionStatus.Failed, ex.Message, cancellationToken);
         }
     }
 
-    private async Task RunAsync(FactoryTask task, Guid runId, CancellationToken cancellationToken)
+    /// <summary>Runs one step and, on any non-success outcome, applies the matching state transition and closes the run.</summary>
+    /// <returns><see langword="true"/> if the pipeline should continue to the next step.</returns>
+    private async Task<bool> RunStepAsync(IPipelineStep step, PipelineContext context, CancellationToken cancellationToken)
     {
-        await tasks.TransitionAsync(task.Id, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null, cancellationToken);
-        var repository = await github.GetRepositoryAsync(task.RepositoryId, cancellationToken) ?? throw new InvalidOperationException("Repository not found.");
-        var issue = task.GitHubIssueId is { } issueId ? await github.GetIssueAsync(issueId, cancellationToken) : null;
-
-        var prepareStep = await tasks.StartStepAsync(runId, "CreateWorktree", 1, cancellationToken);
-        var location = await worktrees.CreateAsync(repository, task, cancellationToken);
-        await tasks.SetWorkspaceAsync(task.Id, location.BranchName, location.Path, cancellationToken);
-        await contextWriter.WriteAsync(location.Path, repository, issue, task, cancellationToken);
-        await tasks.CompleteStepAsync(prepareStep, ExecutionStatus.Succeeded, null, location.Path, cancellationToken);
-
-        // Validation settings are resolved from the base branch before the agent runs and persisted with the run,
-        // so nothing the agent writes into the worktree can change how its work is validated.
-        var baseRef = $"origin/{task.BaseBranch}";
-        var configuration = await configurationReader.ReadAsync(location.Path, baseRef, cancellationToken);
-        await tasks.SetRunConfigurationAsync(runId, configuration, cancellationToken);
-
-        await tasks.TransitionAsync(task.Id, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null, cancellationToken);
-        var agentStep = await tasks.StartStepAsync(runId, "AgentImplementation", 1, cancellationToken);
-        var result = await agent.RunAsync(new AgentRunRequest(task.Id, runId, agentStep, location.Path, 1), cancellationToken);
-        await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), task.Id, runId, agentStep, AgentName, result.Process.StartedAt,
-            result.Process.CompletedAt, result.Process.Duration.TotalSeconds, result.Process.ExitCode,
-            result.Process.Succeeded ? "Succeeded" : "Failed", result.Process.StandardOutput, result.Process.StandardError,
-            result.QuotaDetected, null, 1, result.Result?.NeedsHuman ?? false, result.Result), cancellationToken);
-
-        if (result.QuotaDetected)
+        var result = await step.ExecuteAsync(context, cancellationToken);
+        switch (result.Outcome)
         {
-            await tasks.CompleteStepAsync(agentStep, ExecutionStatus.Failed, "Quota reached", result.Process.StandardError, cancellationToken);
-            await tasks.TransitionAsync(task.Id, FactoryTaskStatus.Implementing, FactoryTaskStatus.WaitingForQuota, $"{AgentName} quota reached", cancellationToken);
-            await tasks.CompleteRunAsync(runId, ExecutionStatus.Failed, cancellationToken);
-            return;
+            case PipelineOutcome.Succeeded:
+                return true;
+            case PipelineOutcome.WaitingForQuota:
+                await TransitionAsync(context, FactoryTaskStatus.WaitingForQuota, result.Reason, cancellationToken);
+                await tasks.CompleteRunAsync(context.RunId, ExecutionStatus.Failed, cancellationToken);
+                return false;
+            case PipelineOutcome.NeedsHuman:
+                await TransitionAsync(context, FactoryTaskStatus.NeedsHuman, result.Reason, cancellationToken);
+                await tasks.CompleteRunAsync(context.RunId, ExecutionStatus.Succeeded, cancellationToken);
+                return false;
+            case PipelineOutcome.Failed:
+            default:
+                await TransitionAsync(context, FactoryTaskStatus.Failed, result.Reason, cancellationToken);
+                await tasks.CompleteRunAsync(context.RunId, ExecutionStatus.Failed, cancellationToken);
+                return false;
         }
-        if (!result.Process.Succeeded)
-            throw new InvalidOperationException(result.Process.TimedOut ? $"{AgentName} timed out." : $"{AgentName} exited with code {result.Process.ExitCode}.");
-        if (result.Result is null)
-            throw new InvalidOperationException(result.ValidationError ?? $"{AgentName} produced no result.");
-
-        var agentResult = result.Result;
-        if (agentResult.Status == "failed")
-        {
-            await tasks.CompleteStepAsync(agentStep, ExecutionStatus.Failed, agentResult.Summary, null, cancellationToken);
-            await FailAsync(task.Id, runId, FactoryTaskStatus.Implementing, $"Agent reported failure: {agentResult.Summary}", cancellationToken);
-            return;
-        }
-        if (agentResult.Status is "blocked" or "needs-human" || agentResult.NeedsHuman)
-        {
-            await tasks.CompleteStepAsync(agentStep, ExecutionStatus.Succeeded, null, agentResult.Summary, cancellationToken);
-            var reason = agentResult.HumanReason ?? agentResult.Summary;
-            await tasks.TransitionAsync(task.Id, FactoryTaskStatus.Implementing, FactoryTaskStatus.NeedsHuman,
-                agentResult.Status == "blocked" ? $"Agent blocked: {reason}" : reason, cancellationToken);
-            await tasks.CompleteRunAsync(runId, ExecutionStatus.Succeeded, cancellationToken);
-            return;
-        }
-        if (agentResult.Status != "completed")
-            throw new InvalidOperationException($"Unsupported agent status '{agentResult.Status}'.");
-
-        if (!await inspector.HasChangesAsync(location.Path, baseRef, cancellationToken))
-        {
-            const string reason = "Agent reported completion but the worktree contains no changes.";
-            await tasks.CompleteStepAsync(agentStep, ExecutionStatus.Failed, reason, agentResult.Summary, cancellationToken);
-            await FailAsync(task.Id, runId, FactoryTaskStatus.Implementing, reason, cancellationToken);
-            return;
-        }
-        await tasks.CompleteStepAsync(agentStep, ExecutionStatus.Succeeded, null, agentResult.Summary, cancellationToken);
-
-        await tasks.TransitionAsync(task.Id, FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null, cancellationToken);
-        foreach (var command in configuration.BuildCommands.Concat(configuration.TestCommands))
-        {
-            var stepType = configuration.BuildCommands.Contains(command) ? "Build" : "Test";
-            var stepId = await tasks.StartStepAsync(runId, stepType, 1, cancellationToken);
-            var process = await RunCommandAsync(command, location.Path, cancellationToken);
-            await tasks.CompleteStepAsync(stepId, process.Succeeded ? ExecutionStatus.Succeeded : ExecutionStatus.Failed,
-                process.Succeeded ? null : process.StandardError, process.StandardOutput, cancellationToken);
-            if (!process.Succeeded)
-            {
-                await FailAsync(task.Id, runId, FactoryTaskStatus.Validating, $"{stepType} failed: {process.StandardError}", cancellationToken);
-                return;
-            }
-        }
-        await tasks.TransitionAsync(task.Id, FactoryTaskStatus.Validating, FactoryTaskStatus.ReadyForPublish, null, cancellationToken);
-        await tasks.TransitionAsync(task.Id, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Completed, null, cancellationToken);
-        await tasks.CompleteRunAsync(runId, ExecutionStatus.Succeeded, cancellationToken);
-        logger.LogInformation("Completed task {TaskId} in run {RunId}", task.Id, runId);
     }
 
-    private async Task FailAsync(Guid taskId, Guid runId, FactoryTaskStatus from, string reason, CancellationToken cancellationToken)
+    private async Task TransitionAsync(PipelineContext context, FactoryTaskStatus next, string? reason, CancellationToken cancellationToken)
     {
-        await tasks.TransitionAsync(taskId, from, FactoryTaskStatus.Failed, reason, cancellationToken);
-        await tasks.CompleteRunAsync(runId, ExecutionStatus.Failed, cancellationToken);
+        await tasks.TransitionAsync(context.Task.Id, context.CurrentStatus, next, reason, cancellationToken);
+        context.CurrentStatus = next;
     }
 
-    private Task<ProcessResult> RunCommandAsync(string command, string directory, CancellationToken cancellationToken)
+    private async Task MarkFailedAsync(PipelineContext context, string error, CancellationToken cancellationToken)
     {
-        var parts = command.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return processes.RunAsync(new ProcessRequest(parts[0], parts[1..], directory, Timeout: TimeSpan.FromMinutes(30)), cancellationToken);
-    }
-
-    private async Task MarkFailedAsync(Guid taskId, string error, CancellationToken cancellationToken)
-    {
-        foreach (var state in new[] { FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating })
+        try { await TransitionAsync(context, FactoryTaskStatus.Failed, error, cancellationToken); }
+        catch (InvalidOperationException)
         {
-            try { await tasks.TransitionAsync(taskId, state, FactoryTaskStatus.Failed, error, cancellationToken); return; }
-            catch (InvalidOperationException) { }
+            // The task already left the status this executor last recorded (for example another worker
+            // recovered it after a lost lease); there is nothing further this run can do.
         }
     }
 }

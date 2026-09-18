@@ -76,7 +76,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         const string sql = """
             WITH candidate AS (
-              SELECT id,status <> 'Pending' AS recovered
+              SELECT id,status AS old_status,status <> 'Pending' AS recovered
               FROM factory.task
               WHERE status='Pending'
                 OR (status IN ('Claimed','Preparing','Planning','Implementing','Validating','Reviewing','ReadyForPublish') AND lease_until < now())
@@ -91,29 +91,55 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             ), failed_runs AS (
               UPDATE factory.run r SET status='Failed',completed_at=now()
               FROM candidate c WHERE c.recovered AND r.task_id=c.id AND r.status='Running'
+            ), claimed AS (
+              UPDATE factory.task t SET status='Claimed',claimed_by=@workerId,claimed_at=now(),lease_until=now()+@lease,
+                started_at=COALESCE(started_at,now()),failure_reason=NULL
+              FROM candidate c WHERE t.id=c.id
+              RETURNING t.id,
+                t.repository_id AS "RepositoryId",
+                t.github_issue_id AS "GitHubIssueId",
+                t.title,t.description,
+                t.task_type AS "TaskType",
+                t.priority,t.status,
+                t.preferred_agent AS "PreferredAgent",
+                t.base_branch AS "BaseBranch",
+                t.branch_name AS "BranchName",
+                t.worktree_path AS "WorktreePath",
+                t.claimed_by AS "ClaimedBy",
+                t.claimed_at AS "ClaimedAt",
+                t.lease_until AS "LeaseUntil",
+                t.created_at AS "CreatedAt",
+                t.started_at AS "StartedAt",
+                t.completed_at AS "CompletedAt",
+                t.failed_at AS "FailedAt",
+                t.failure_reason AS "FailureReason"
+            ), logged AS (
+              INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+              SELECT c.id,c.old_status,'Claimed',
+                CASE WHEN c.recovered THEN 'Recovered from expired lease and claimed by ' || @workerId ELSE 'Claimed by ' || @workerId END,
+                'orchestrator'
+              FROM candidate c JOIN claimed cl ON cl.id=c.id
             )
-            UPDATE factory.task t SET status='Claimed',claimed_by=@workerId,claimed_at=now(),lease_until=now()+@lease,
-              started_at=COALESCE(started_at,now()),failure_reason=NULL
-            FROM candidate c WHERE t.id=c.id
-            RETURNING t.id,
-              t.repository_id AS "RepositoryId",
-              t.github_issue_id AS "GitHubIssueId",
-              (SELECT issue_number FROM github.issue WHERE id=t.github_issue_id) AS "IssueNumber",
-              t.title,t.description,
-              t.task_type AS "TaskType",
-              t.priority,t.status,
-              t.preferred_agent AS "PreferredAgent",
-              t.base_branch AS "BaseBranch",
-              t.branch_name AS "BranchName",
-              t.worktree_path AS "WorktreePath",
-              t.claimed_by AS "ClaimedBy",
-              t.claimed_at AS "ClaimedAt",
-              t.lease_until AS "LeaseUntil",
-              t.created_at AS "CreatedAt",
-              t.started_at AS "StartedAt",
-              t.completed_at AS "CompletedAt",
-              t.failed_at AS "FailedAt",
-              t.failure_reason AS "FailureReason";
+            SELECT claimed.id,
+              claimed."RepositoryId",
+              claimed."GitHubIssueId",
+              (SELECT issue_number FROM github.issue WHERE id=claimed."GitHubIssueId") AS "IssueNumber",
+              claimed.title,claimed.description,
+              claimed."TaskType",
+              claimed.priority,claimed.status,
+              claimed."PreferredAgent",
+              claimed."BaseBranch",
+              claimed."BranchName",
+              claimed."WorktreePath",
+              claimed."ClaimedBy",
+              claimed."ClaimedAt",
+              claimed."LeaseUntil",
+              claimed."CreatedAt",
+              claimed."StartedAt",
+              claimed."CompletedAt",
+              claimed."FailedAt",
+              claimed."FailureReason"
+            FROM claimed;
             """;
         await using var connection = Connection();
         var row = await connection.QuerySingleOrDefaultAsync<TaskRow>(new CommandDefinition(sql, new { workerId, lease }, cancellationToken: cancellationToken));
@@ -152,21 +178,31 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         TaskStateMachine.EnsureCanTransition(expected, next);
         var completion = next == FactoryTaskStatus.Completed ? ", completed_at=now()" : next == FactoryTaskStatus.Failed ? ", failed_at=now()" : "";
+        var sql = $"""
+            WITH updated AS (
+              UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion} WHERE id=@taskId AND status=@expected
+              RETURNING id
+            ), logged AS (
+              INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+              SELECT id,@expected,@next,@failureReason,'orchestrator' FROM updated
+            )
+            SELECT count(*)::int FROM updated
+            """;
         await using var connection = Connection();
-        var count = await connection.ExecuteAsync(new CommandDefinition($"UPDATE factory.task SET status=@next, failure_reason=@failureReason {completion} WHERE id=@taskId AND status=@expected", new { taskId, expected = expected.ToString(), next = next.ToString(), failureReason }, cancellationToken: cancellationToken));
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { taskId, expected = expected.ToString(), next = next.ToString(), failureReason }, cancellationToken: cancellationToken));
         if (count != 1) throw new InvalidOperationException($"Task {taskId} was not in expected state {expected}.");
     }
 
     public Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken) =>
-        TransitionFromCurrentAsync(taskId, [FactoryTaskStatus.Failed, FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman], FactoryTaskStatus.Pending, true, cancellationToken);
+        TransitionFromCurrentAsync(taskId, [FactoryTaskStatus.Failed, FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman], FactoryTaskStatus.Pending, true, "Retried by operator", cancellationToken);
 
     public Task<bool> CancelAsync(Guid taskId, CancellationToken cancellationToken) =>
         TransitionFromCurrentAsync(taskId, [FactoryTaskStatus.Pending, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing,
             FactoryTaskStatus.Planning, FactoryTaskStatus.Validating, FactoryTaskStatus.Reviewing, FactoryTaskStatus.ReadyForPublish,
             FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed],
-            FactoryTaskStatus.Cancelled, false, cancellationToken);
+            FactoryTaskStatus.Cancelled, false, "Cancelled by operator", cancellationToken);
 
-    private async Task<bool> TransitionFromCurrentAsync(Guid taskId, IReadOnlyCollection<FactoryTaskStatus> allowedSources, FactoryTaskStatus next, bool resetExecution, CancellationToken cancellationToken)
+    private async Task<bool> TransitionFromCurrentAsync(Guid taskId, IReadOnlyCollection<FactoryTaskStatus> allowedSources, FactoryTaskStatus next, bool resetExecution, string reason, CancellationToken cancellationToken)
     {
         await using var connection = Connection();
         await connection.OpenAsync(cancellationToken);
@@ -180,6 +216,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             ? "UPDATE factory.task SET status=@next,claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId"
             : "UPDATE factory.task SET status=@next,claimed_by=NULL,claimed_at=NULL,lease_until=NULL WHERE id=@taskId";
         await connection.ExecuteAsync(new CommandDefinition(sql, new { taskId, next = next.ToString() }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,@current,@next,@reason,'human')",
+            new { taskId, current = current.ToString(), next = next.ToString(), reason }, transaction, cancellationToken: cancellationToken));
         await transaction.CommitAsync(cancellationToken);
         return true;
     }

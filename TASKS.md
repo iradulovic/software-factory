@@ -18,20 +18,19 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
-No task is currently claimed.
-
-## Next up
-
-Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
-
-### Restore and harden the vertical slice
-
 - [ ] **SF-207 — Extract the task execution pipeline**
   - Outcome: `Worker` only claims, heartbeats, and delegates; execution is an ordered list of steps that is unit-testable with fakes.
   - Acceptance criteria:
     - Steps (PrepareRepository, CreateWorktree, WriteContext, RunAgent, CollectDiff, Validate) return explicit outcomes that a single executor maps onto `TaskStateMachine`.
     - Every state transition is recorded in an append-only `factory.task_event` table with a reason and actor.
     - Existing behavior is preserved and covered by executor tests using the existing boundary interfaces.
+  - Status 2026-09-18: implemented as six named `IPipelineStep` classes (`PrepareRepositoryStep`, `CreateWorktreeStep`, `WriteContextStep`, `RunAgentStep`, `CollectDiffStep`, `ValidateStep`) orchestrated by a slimmed-down `TaskExecutor` that maps each step's explicit outcome onto `TaskStateMachine`. Every claim, transition, retry, and cancel now writes an append-only `factory.task_event` row (migration 006) with a reason and an actor (`orchestrator` or `human`). The new claim and transition SQL was executed verbatim against a real PostgreSQL 16 instance (fresh claim, expired-lease recovery, duplicate-transition rejection, retry) before being committed; a full local run of the .NET test suite was not possible (no .NET SDK in the authoring environment). Remaining before completion: a CI run.
+
+## Next up
+
+Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
+
+### Restore and harden the vertical slice
 
 ### Prepare human-controlled publication
 
