@@ -1,5 +1,5 @@
 export function Badge({ value }: { value: string }) {
-  const tone = /Completed|Succeeded|Ready/.test(value) ? "green" : /Failed|Cancelled/.test(value) ? "red" : /Pending|Waiting/.test(value) ? "amber" : "blue";
+  const tone = /Completed|Succeeded|Ready/.test(value) ? "green" : /Failed|Cancelled|Rejected/.test(value) ? "red" : /Pending|Waiting/.test(value) ? "amber" : "blue";
   return <span className={`badge ${tone}`}>{value.replace(/([a-z])([A-Z])/g, "$1 $2")}</span>;
 }
 export function Duration({ seconds }: { seconds?: number | null }) {

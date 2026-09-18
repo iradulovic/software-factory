@@ -26,8 +26,8 @@ const details=z.object({
   issue:z.object({issueNumber:z.number(),title:z.string(),body:z.string(),state:z.string(),author:z.string(),createdAt:z.string(),labels:z.array(z.string()).nullable()}).nullable(),
   comments:z.array(comment),runs:z.array(run),steps:z.array(step),agentRuns:z.array(agentRun),publications:z.array(publication)
 });
-const retryable=new Set(["Failed","WaitingForQuota","NeedsHuman"]);
-const cancellable=new Set(["Pending","Claimed","Preparing","Planning","Implementing","Validating","Reviewing","ReadyForPublish","WaitingForQuota","NeedsHuman","Failed"]);
+const retryable=new Set(["Failed","WaitingForQuota","NeedsHuman","Rejected"]);
+const cancellable=new Set(["Pending","Claimed","Preparing","Planning","Implementing","Validating","Reviewing","ReadyForPublish","Published","WaitingForQuota","NeedsHuman","Failed"]);
 
 async function runAction(id:string,action:"retry"|"cancel"|"publish") {
   const response=await fetch(`${apiBase}/api/tasks/${id}/${action}`,{method:"POST"});

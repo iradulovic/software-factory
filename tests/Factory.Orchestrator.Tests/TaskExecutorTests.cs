@@ -1,5 +1,7 @@
 using Factory.Core;
+using Factory.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace Factory.Orchestrator.Tests;
 
@@ -23,6 +25,44 @@ public sealed class TaskExecutorTests
             (FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null),
             (FactoryTaskStatus.Validating, FactoryTaskStatus.ReadyForPublish, null)
         }, harness.Store.Transitions);
+    }
+
+    [Fact]
+    public async Task Successful_run_posts_a_started_and_a_ready_for_publish_notification()
+    {
+        var harness = new Harness();
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(2, harness.Comments.Count);
+        Assert.All(harness.Comments, c => Assert.Equal(("acme", "billing", 42), (c.Owner, c.Name, c.IssueNumber)));
+        Assert.Contains("started working", harness.Comments[0].Body, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ready for review", harness.Comments[1].Body, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new[] { "factory:in-progress", "factory:ready-for-review" }, harness.Labels);
+    }
+
+    [Fact]
+    public async Task Failed_run_posts_a_failure_notification_with_the_reason()
+    {
+        var harness = new Harness { AgentResult = Harness.Agent("failed", "Could not find the endpoint") };
+
+        await harness.ExecuteAsync();
+
+        var failure = Assert.Single(harness.Comments, c => c.Body.Contains("failed", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("Agent reported failure: Could not find the endpoint", failure.Body);
+        Assert.Contains("factory:failed", harness.Labels);
+    }
+
+    [Fact]
+    public async Task Blocked_agent_posts_a_needs_human_notification_with_the_reason()
+    {
+        var harness = new Harness { AgentResult = Harness.Agent("blocked", "Waiting on schema", humanReason: "Need the new invoice schema") };
+
+        await harness.ExecuteAsync();
+
+        var needsHuman = Assert.Single(harness.Comments, c => c.Body.Contains("needs human input", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("Agent blocked: Need the new invoice schema", needsHuman.Body);
+        Assert.Contains("factory:needs-human", harness.Labels);
     }
 
     [Fact]
@@ -246,6 +286,8 @@ public sealed class TaskExecutorTests
         public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
         public FactoryTask ClaimedTask { get; } = new(Guid.NewGuid(), 1, 2, 42, "Add invoice export", "", "GitHubIssue", 0,
             FactoryTaskStatus.Claimed, null, "main", null, null, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null);
+        public List<(string Owner, string Name, int IssueNumber, string Body)> Comments { get; } = [];
+        public List<string> Labels { get; } = [];
 
         public static ProcessResult Process(int? exitCode = 0, bool timedOut = false)
         {
@@ -267,6 +309,7 @@ public sealed class TaskExecutorTests
                 new CollectDiffStep(Store, new FakeInspector(this)),
                 new ValidateStep(Store, new FakeProcessRunner(this)),
                 new PreparePublicationStep(Store, new FakeInspector(this)),
+                new TaskGitHubNotifier(Store, new FakeGitHubPublisher(this), Options.Create(new FactoryOptions()), NullLogger<TaskGitHubNotifier>.Instance),
                 NullLogger<TaskExecutor>.Instance);
             await executor.ExecuteAsync(ClaimedTask, runId, CancellationToken.None);
             return runId;
@@ -277,7 +320,8 @@ public sealed class TaskExecutorTests
             public Task<IReadOnlyList<GitHubRepository>> GetEnabledRepositoriesAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<GitHubRepository?> GetRepositoryAsync(long id, CancellationToken cancellationToken) =>
                 Task.FromResult(harness.RepositoryFound ? new GitHubRepository(id, "acme", "billing", "url", "main", true) : null);
-            public Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken) => Task.FromResult<GitHubIssue?>(null);
+            public Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken) => Task.FromResult<GitHubIssue?>(
+                new GitHubIssue(id, 1, 999, 42, "Add invoice export", "", "open", "me", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [], []));
             public Task UpsertRepositoryAsync(GitHubRepository repository, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task MarkRepositorySyncedAsync(long repositoryId, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task RecordRepositorySyncFailureAsync(long repositoryId, string error, CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -328,6 +372,24 @@ public sealed class TaskExecutorTests
                 var succeeds = harness.CommandSucceeds(request);
                 var start = DateTimeOffset.UtcNow;
                 return Task.FromResult(new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, start.AddSeconds(1), succeeds ? 0 : 1, "output", succeeds ? "" : "boom", false, false));
+            }
+        }
+
+        private sealed class FakeGitHubPublisher(Harness harness) : IGitHubPublisher
+        {
+            public Task<PushResult> PushAsync(string worktreePath, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+            public Task<GitHubWriteResult> CommentOnIssueAsync(string owner, string name, int issueNumber, string body, CancellationToken cancellationToken)
+            {
+                harness.Comments.Add((owner, name, issueNumber, body));
+                return Task.FromResult(new GitHubWriteResult(true, null));
+            }
+
+            public Task<GitHubWriteResult> SetStateLabelAsync(string owner, string name, int issueNumber, string label, CancellationToken cancellationToken)
+            {
+                harness.Labels.Add(label);
+                return Task.FromResult(new GitHubWriteResult(true, null));
             }
         }
     }

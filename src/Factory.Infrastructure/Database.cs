@@ -194,11 +194,11 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     }
 
     public Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken) =>
-        TransitionFromCurrentAsync(taskId, [FactoryTaskStatus.Failed, FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman], FactoryTaskStatus.Pending, true, "Retried by operator", cancellationToken);
+        TransitionFromCurrentAsync(taskId, [FactoryTaskStatus.Failed, FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Rejected], FactoryTaskStatus.Pending, true, "Retried by operator", cancellationToken);
 
     public Task<bool> CancelAsync(Guid taskId, CancellationToken cancellationToken) =>
         TransitionFromCurrentAsync(taskId, [FactoryTaskStatus.Pending, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing,
-            FactoryTaskStatus.Planning, FactoryTaskStatus.Validating, FactoryTaskStatus.Reviewing, FactoryTaskStatus.ReadyForPublish,
+            FactoryTaskStatus.Planning, FactoryTaskStatus.Validating, FactoryTaskStatus.Reviewing, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published,
             FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed],
             FactoryTaskStatus.Cancelled, false, "Cancelled by operator", cancellationToken);
 
@@ -358,6 +358,30 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             """;
         await using var c = Connection();
         await c.ExecuteAsync(new CommandDefinition(sql, new { publicationId, status, pullRequestNumber, pullRequestUrl, error }, cancellationToken: cancellationToken));
+    }
+
+    public async Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken)
+    {
+        const string sql = "INSERT INTO factory.github_write(id,task_id,kind,detail,succeeded,error) VALUES(@id,@taskId,@kind,@detail,@succeeded,@error)";
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, new { id = Guid.NewGuid(), taskId, kind, detail, succeeded, error }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT t.id AS "TaskId", r.owner AS "RepositoryOwner", r.name AS "RepositoryName", p.pull_request_number AS "PullRequestNumber"
+            FROM factory.task t
+            JOIN github.repository r ON r.id = t.repository_id
+            JOIN LATERAL (
+              SELECT pull_request_number FROM factory.publication
+              WHERE task_id = t.id AND status = 'PullRequestCreated' AND pull_request_number IS NOT NULL
+              ORDER BY completed_at DESC LIMIT 1
+            ) p ON true
+            WHERE t.status = 'Published'
+            """;
+        await using var c = Connection();
+        return (await c.QueryAsync<PublishedTaskRef>(new CommandDefinition(sql, cancellationToken: cancellationToken))).AsList();
     }
 }
 

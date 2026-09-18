@@ -9,6 +9,9 @@ public sealed class FactoryOptions
     public int TaskLeaseSeconds { get; set; } = 600;
     public int LeaseHeartbeatSeconds { get; set; } = 120;
     public string WorkerId { get; set; } = $"{Environment.MachineName}-{Environment.ProcessId}";
+
+    /// <summary>Base URL of the dashboard, used to link back to a task from the GitHub comments the orchestrator posts.</summary>
+    public string DashboardBaseUrl { get; set; } = "http://localhost:3000";
 }
 
 public sealed class CodexOptions

@@ -216,7 +216,7 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Null(await tasks.ClaimNextPublicationAsync("another-worker", CancellationToken.None));
 
             await tasks.CompletePublicationAsync(claimed.Id, "PullRequestCreated", 42, "https://github.com/publication-tests/repo/pull/42", null, CancellationToken.None);
-            await tasks.TransitionAsync(taskId, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Completed, null, CancellationToken.None);
+            await tasks.TransitionAsync(taskId, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published, null, CancellationToken.None);
 
             var persisted = await connection.QuerySingleAsync<(string Status, int? PullRequestNumber, string? PullRequestUrl)>("""
                 SELECT status,pull_request_number AS "PullRequestNumber",pull_request_url AS "PullRequestUrl" FROM factory.publication WHERE id=@id
@@ -224,14 +224,34 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Equal("PullRequestCreated", persisted.Status);
             Assert.Equal(42, persisted.PullRequestNumber);
             Assert.Equal("https://github.com/publication-tests/repo/pull/42", persisted.PullRequestUrl);
+            Assert.Equal("Published", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId }));
+
+            // Sync finds the published task by its recorded pull request and resolves it once merged.
+            var published = Assert.Single(await tasks.GetPublishedTasksAsync(CancellationToken.None), p => p.TaskId == taskId);
+            Assert.Equal("publication-tests", published.RepositoryOwner);
+            Assert.Equal(suffix, published.RepositoryName);
+            Assert.Equal(42, published.PullRequestNumber);
+
+            await tasks.RecordGitHubWriteAsync(taskId, "comment", "Task started.", true, null, CancellationToken.None);
+            await tasks.RecordGitHubWriteAsync(taskId, "label", "factory:in-progress", false, "gh: not found", CancellationToken.None);
+            var writes = (await connection.QueryAsync<(string Kind, string Detail, bool Succeeded, string? Error)>(
+                "SELECT kind AS \"Kind\",detail AS \"Detail\",succeeded AS \"Succeeded\",error AS \"Error\" FROM factory.github_write WHERE task_id=@taskId ORDER BY created_at", new { taskId })).ToList();
+            Assert.Equal(2, writes.Count);
+            Assert.Equal(("comment", "Task started.", true, (string?)null), writes[0]);
+            Assert.Equal(("label", "factory:in-progress", false, "gh: not found"), writes[1]);
+
+            await tasks.TransitionAsync(taskId, FactoryTaskStatus.Published, FactoryTaskStatus.Completed, null, CancellationToken.None);
             Assert.Equal("Completed", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId }));
+            Assert.DoesNotContain(await tasks.GetPublishedTasksAsync(CancellationToken.None), p => p.TaskId == taskId);
 
             // A completed attempt does not block a fresh request.
             Assert.NotNull(await tasks.RequestPublicationAsync(taskId, null, "operator", CancellationToken.None));
         }
         finally
         {
-            await connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@taskId; DELETE FROM factory.task WHERE id=@taskId;", new { taskId });
+            await connection.ExecuteAsync(
+                "DELETE FROM factory.github_write WHERE task_id=@taskId; DELETE FROM factory.publication WHERE task_id=@taskId; DELETE FROM factory.task WHERE id=@taskId;",
+                new { taskId });
             await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
         }
     }

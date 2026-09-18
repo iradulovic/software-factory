@@ -18,6 +18,8 @@ internal sealed class FakeTaskStore : ITaskStore
     public List<(Guid TaskId, Guid? RunId, string RequestedBy)> PublicationRequests { get; } = [];
     public bool NextPublicationRequestAllowed { get; set; } = true;
     public List<(Guid Id, string Status, int? PullRequestNumber, string? PullRequestUrl, string? Error)> CompletedPublications { get; } = [];
+    public List<(Guid TaskId, string Kind, string Detail, bool Succeeded, string? Error)> GitHubWrites { get; } = [];
+    public List<PublishedTaskRef> PublishedTasks { get; } = [];
     public (Guid RunId, ExecutionStatus Status, string Reason)? Closed { get; private set; }
     public (string Branch, string Path)? Workspace { get; private set; }
     public bool LeaseReleased { get; private set; }
@@ -84,6 +86,15 @@ internal sealed class FakeTaskStore : ITaskStore
         CompletedPublications.Add((publicationId, status, pullRequestNumber, pullRequestUrl, error));
         return Task.CompletedTask;
     }
+
+    public Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken)
+    {
+        GitHubWrites.Add((taskId, kind, detail, succeeded, error));
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<PublishedTaskRef>>(PublishedTasks);
 
     public StepRecord Step(string stepType) => Steps.Values.Single(s => s.StepType == stepType);
 }

@@ -6,7 +6,7 @@ Planned work and completed features are tracked in [`TASKS.md`](TASKS.md). Futur
 
 ## What works
 
-The bootstrap vertical slice synchronizes issues, labels, and comments through `gh`; creates one pending factory task for each open `factory:ready` issue; claims tasks atomically in PostgreSQL; creates a bare repository cache and Git worktree; writes `.factory/task.md`; invokes the local Codex CLI; validates `.factory/result.json`; runs configured build/test commands; and exposes the persisted history through the API and dashboard. It never pushes, opens a pull request, merges, or deploys.
+The bootstrap vertical slice synchronizes issues, labels, and comments through `gh`; creates one pending factory task for each open `factory:ready` issue; claims tasks atomically in PostgreSQL; creates a bare repository cache and Git worktree; writes `.factory/task.md`; invokes the local Codex CLI; validates `.factory/result.json`; runs configured build/test commands; and exposes the persisted history through the API and dashboard. A validated task can be published, with a human's explicit approval by default (or automatically for an `auto-draft` repository): its branch is pushed and a draft pull request is opened. The factory writes its own state back to GitHub as it goes — a concise issue comment and a `factory:*` state label at each of start, ready-for-review, failure, and needs-human — and syncs a published pull request's outcome (merged or closed) back onto the task. It never merges or deploys; merging remains an exclusively human action performed on GitHub itself.
 
 Verification status: the Git cache and worktree flow is covered by tests that run real Git against a temporary upstream repository, and the PostgreSQL claim, lease, and persistence behavior is integration-tested. A complete end-to-end run against a live GitHub repository with Codex has not yet been recorded in `TASKS.md`; treat the sections below as the intended flow until one is.
 
@@ -117,14 +117,18 @@ Open `http://localhost:3000`. Alternatively, `docker compose up --build postgres
 
 ## 5. Exercise the vertical slice
 
-Create the label once and open a test issue:
+Create the labels once and open a test issue. `factory:ready` marks an issue eligible; the other four are state labels the factory itself sets as a task progresses, so they need to exist on the repository but never need to be applied by hand:
 
 ```powershell
 gh label create "factory:ready" --repo acme/billing --color 1D76DB --description "Ready for local Software Factory"
+gh label create "factory:in-progress" --repo acme/billing --color FBCA04 --description "Software Factory is working on this"
+gh label create "factory:needs-human" --repo acme/billing --color D93F0B --description "Software Factory needs human input"
+gh label create "factory:ready-for-review" --repo acme/billing --color 0E8A16 --description "Software Factory validated this and it is ready for review"
+gh label create "factory:failed" --repo acme/billing --color B60205 --description "Software Factory failed this task"
 gh issue create --repo acme/billing --title "Add a health endpoint" --body "Implement and test a health endpoint." --label "factory:ready"
 ```
 
-Within the configured polling interval, Sync imports it and creates a task. The Orchestrator claims it, writes the worktree context, invokes Codex, runs deterministic validation, and records the outcome. Follow progress on Overview, Tasks, and Task Details.
+Within the configured polling interval, Sync imports it and creates a task. The Orchestrator claims it, writes the worktree context, invokes Codex, runs deterministic validation, and records the outcome, posting a comment and updating the issue's state label as it goes. Follow progress on Overview, Tasks, and Task Details, or on the issue itself.
 
 ## API
 

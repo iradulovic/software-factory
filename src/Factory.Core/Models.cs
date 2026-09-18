@@ -3,7 +3,7 @@ namespace Factory.Core;
 public enum FactoryTaskStatus
 {
     Pending, Claimed, Preparing, Planning, Implementing, Validating, Reviewing,
-    ReadyForPublish, WaitingForQuota, NeedsHuman, Completed, Failed, Cancelled
+    ReadyForPublish, Published, WaitingForQuota, NeedsHuman, Completed, Rejected, Failed, Cancelled
 }
 
 public enum ExecutionStatus { Pending, Running, Succeeded, Failed, Cancelled }
@@ -89,3 +89,9 @@ public sealed record PublicationRequest(Guid Id, Guid TaskId, string BranchName,
 
 public sealed record PushResult(bool Succeeded, string? Error);
 public sealed record PullRequestResult(bool Succeeded, int? Number, string? Url, string? Error);
+public sealed record GitHubWriteResult(bool Succeeded, string? Error);
+public sealed record PullRequestState(bool Merged, bool Closed);
+
+/// <summary>A task resting in <see cref="FactoryTaskStatus.Published"/>, identified well enough for
+/// <see cref="IGitHubClient"/> to look up its pull request's current state.</summary>
+public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, string RepositoryName, int PullRequestNumber);

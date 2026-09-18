@@ -36,7 +36,7 @@ public sealed class PublicationExecutor(ITaskStore tasks, IGitHubPublisher publi
             }
 
             await tasks.CompletePublicationAsync(request.Id, "PullRequestCreated", pullRequest.Number, pullRequest.Url, null, cancellationToken);
-            await tasks.TransitionAsync(request.TaskId, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Completed, null, cancellationToken);
+            await tasks.TransitionAsync(request.TaskId, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published, null, cancellationToken);
             logger.LogInformation("Published task {TaskId} as pull request {PullRequestUrl}", request.TaskId, pullRequest.Url);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
