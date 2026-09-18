@@ -74,8 +74,18 @@ public sealed record AgentResult(string Status, string Summary, IReadOnlyList<st
     IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason);
 
 public sealed record ValidationCommand(string Name, string Executable, IReadOnlyList<string> Arguments);
+
+/// <summary><see cref="Publish"/> is "manual" (a human explicitly requests publication) or "auto-draft"
+/// (the orchestrator requests it itself as soon as a run reaches <c>ReadyForPublish</c>).</summary>
 public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<string> BuildCommands, IReadOnlyList<string> TestCommands,
-    int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge)
+    int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual")
 {
-    public static RepositoryConfiguration Default { get; } = new("main", ["dotnet build"], ["dotnet test"], 2, 1, true);
+    public static RepositoryConfiguration Default { get; } = new("main", ["dotnet build"], ["dotnet test"], 2, 1, true, "manual");
 }
+
+/// <summary>Everything <see cref="IGitHubPublisher"/> needs to push a task's committed branch and open a draft pull request for it.</summary>
+public sealed record PublicationRequest(Guid Id, Guid TaskId, string BranchName, string WorktreePath, string BaseBranch,
+    long RepositoryId, string RepositoryOwner, string RepositoryName, string TaskTitle, int? IssueNumber);
+
+public sealed record PushResult(bool Succeeded, string? Error);
+public sealed record PullRequestResult(bool Succeeded, int? Number, string? Url, string? Error);

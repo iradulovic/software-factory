@@ -23,6 +23,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IRepositoryConfigurationReader, RepositoryConfigurationReader>();
         services.AddSingleton<ITaskContextWriter, TaskContextWriter>();
         services.AddSingleton<IGitHubClient, GhCliClient>();
+        services.AddSingleton<IGitHubPublisher, GhCliPublisher>();
         services.AddSingleton<IGitHubStore, PostgresGitHubStore>();
         services.AddSingleton<ITaskStore, PostgresTaskStore>();
         services.AddSingleton<DatabaseMigrator>();

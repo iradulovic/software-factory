@@ -15,6 +15,9 @@ internal sealed class FakeTaskStore : ITaskStore
     public Dictionary<Guid, RepositoryConfiguration> RunConfigurations { get; } = [];
     public Dictionary<Guid, ChangeSummary> ChangeSummaries { get; } = [];
     public List<AgentRunRecord> AgentRuns { get; } = [];
+    public List<(Guid TaskId, Guid? RunId, string RequestedBy)> PublicationRequests { get; } = [];
+    public bool NextPublicationRequestAllowed { get; set; } = true;
+    public List<(Guid Id, string Status, int? PullRequestNumber, string? PullRequestUrl, string? Error)> CompletedPublications { get; } = [];
     public (Guid RunId, ExecutionStatus Status, string Reason)? Closed { get; private set; }
     public (string Branch, string Path)? Workspace { get; private set; }
     public bool LeaseReleased { get; private set; }
@@ -67,6 +70,20 @@ internal sealed class FakeTaskStore : ITaskStore
     }
 
     public Task SetChangeSummaryAsync(Guid runId, ChangeSummary summary, CancellationToken cancellationToken) { ChangeSummaries[runId] = summary; return Task.CompletedTask; }
+
+    public Task<Guid?> RequestPublicationAsync(Guid taskId, Guid? runId, string requestedBy, CancellationToken cancellationToken)
+    {
+        PublicationRequests.Add((taskId, runId, requestedBy));
+        return Task.FromResult(NextPublicationRequestAllowed ? Guid.NewGuid() : (Guid?)null);
+    }
+
+    public Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, CancellationToken cancellationToken) => Task.FromResult<PublicationRequest?>(null);
+
+    public Task CompletePublicationAsync(Guid publicationId, string status, int? pullRequestNumber, string? pullRequestUrl, string? error, CancellationToken cancellationToken)
+    {
+        CompletedPublications.Add((publicationId, status, pullRequestNumber, pullRequestUrl, error));
+        return Task.CompletedTask;
+    }
 
     public StepRecord Step(string stepType) => Steps.Values.Single(s => s.StepType == stepType);
 }

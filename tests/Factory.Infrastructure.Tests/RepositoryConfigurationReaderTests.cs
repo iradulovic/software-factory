@@ -15,11 +15,21 @@ public sealed class RepositoryConfigurationReaderTests
         Assert.Equal(RepositoryConfiguration.Default.MaxReviewAttempts, configuration.MaxReviewAttempts);
         Assert.Equal("main", configuration.BaseBranch);
         Assert.True(configuration.RequireHumanMerge);
+        Assert.Equal("manual", configuration.Publish);
+    }
+
+    [Fact]
+    public void Publish_policy_is_read_and_trimmed()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("""{"publish":" auto-draft "}""", "origin/main");
+
+        Assert.Equal("auto-draft", configuration.Publish);
     }
 
     [Theory]
     [InlineData("""{"maxImplementationAttempts":0}""")]
     [InlineData("""{"testCommands":["dotnet test",""]}""")]
+    [InlineData("""{"publish":"auto-merge"}""")]
     [InlineData("not json")]
     public void Invalid_configuration_fails_clearly(string json) =>
         Assert.Contains(".factory/config.json", Assert.Throws<InvalidOperationException>(() => RepositoryConfigurationReader.Parse(json, "origin/main")).Message);

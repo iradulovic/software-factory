@@ -176,6 +176,67 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Publication_request_is_claimed_and_completed_and_completes_the_task()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('publication-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        await connection.ExecuteAsync("""
+            INSERT INTO factory.task(id,repository_id,title,status,base_branch,branch_name,worktree_path,priority)
+            VALUES(@taskId,@repositoryId,'Publication integration task','ReadyForPublish','main','factory/1-x','/tmp/wt/1',0)
+            """, new { taskId, repositoryId });
+        try
+        {
+            var requested = await tasks.RequestPublicationAsync(taskId, null, "operator", CancellationToken.None);
+            Assert.NotNull(requested);
+            Assert.Null(await tasks.RequestPublicationAsync(taskId, null, "operator", CancellationToken.None));
+
+            var claimed = await tasks.ClaimNextPublicationAsync("publication-worker", CancellationToken.None);
+            Assert.NotNull(claimed);
+            Assert.Equal(requested, claimed!.Id);
+            Assert.Equal(taskId, claimed.TaskId);
+            Assert.Equal("factory/1-x", claimed.BranchName);
+            Assert.Equal("/tmp/wt/1", claimed.WorktreePath);
+            Assert.Equal("main", claimed.BaseBranch);
+            Assert.Equal(repositoryId, claimed.RepositoryId);
+            Assert.Equal("publication-tests", claimed.RepositoryOwner);
+            Assert.Equal(suffix, claimed.RepositoryName);
+            Assert.Null(await tasks.ClaimNextPublicationAsync("another-worker", CancellationToken.None));
+
+            await tasks.CompletePublicationAsync(claimed.Id, "PullRequestCreated", 42, "https://github.com/publication-tests/repo/pull/42", null, CancellationToken.None);
+            await tasks.TransitionAsync(taskId, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Completed, null, CancellationToken.None);
+
+            var persisted = await connection.QuerySingleAsync<(string Status, int? PullRequestNumber, string? PullRequestUrl)>("""
+                SELECT status,pull_request_number AS "PullRequestNumber",pull_request_url AS "PullRequestUrl" FROM factory.publication WHERE id=@id
+                """, new { id = claimed.Id });
+            Assert.Equal("PullRequestCreated", persisted.Status);
+            Assert.Equal(42, persisted.PullRequestNumber);
+            Assert.Equal("https://github.com/publication-tests/repo/pull/42", persisted.PullRequestUrl);
+            Assert.Equal("Completed", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId }));
+
+            // A completed attempt does not block a fresh request.
+            Assert.NotNull(await tasks.RequestPublicationAsync(taskId, null, "operator", CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@taskId; DELETE FROM factory.task WHERE id=@taskId;", new { taskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Eligible_issue_is_created_once_and_can_be_claimed()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

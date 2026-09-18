@@ -27,6 +27,12 @@ public interface ITaskStore
     Task SetRunConfigurationAsync(Guid runId, RepositoryConfiguration configuration, CancellationToken cancellationToken);
     Task CloseExecutionAsync(Guid runId, ExecutionStatus status, string reason, CancellationToken cancellationToken);
     Task SetChangeSummaryAsync(Guid runId, ChangeSummary summary, CancellationToken cancellationToken);
+
+    /// <summary>Requests publication of a validated task. Returns the new publication's id, or <see langword="null"/>
+    /// if one is already in flight for this task (an explicit human retry after a failed attempt is still allowed).</summary>
+    Task<Guid?> RequestPublicationAsync(Guid taskId, Guid? runId, string requestedBy, CancellationToken cancellationToken);
+    Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, CancellationToken cancellationToken);
+    Task CompletePublicationAsync(Guid publicationId, string status, int? pullRequestNumber, string? pullRequestUrl, string? error, CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore
@@ -70,3 +76,13 @@ public sealed record ChangeSummary(
     int LinesRemoved);
 public interface ITaskContextWriter { Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, CancellationToken cancellationToken); }
 public interface IAgentResultReader { Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken); }
+
+/// <summary>
+/// The orchestrator's only path to writing to GitHub. Never pushes to anything but the task's own factory branch,
+/// and never merges — merging remains an exclusively human action, performed on GitHub itself.
+/// </summary>
+public interface IGitHubPublisher
+{
+    Task<PushResult> PushAsync(string worktreePath, string branchName, CancellationToken cancellationToken);
+    Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken);
+}

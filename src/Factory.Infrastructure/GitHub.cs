@@ -62,6 +62,34 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
     private static long StableLong(string value) => BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(value)), 0) & long.MaxValue;
 }
 
+/// <summary>
+/// Publishes through the authenticated <c>git</c> and <c>gh</c> CLIs, exactly as read access already does through
+/// <see cref="GhCliClient"/>. Never passes <c>--force</c> to <c>git push</c> and never runs a merge command.
+/// </summary>
+public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
+{
+    public async Task<PushResult> PushAsync(string worktreePath, string branchName, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("git", ["push", "-u", "origin", branchName], worktreePath, Timeout: TimeSpan.FromMinutes(5)), cancellationToken);
+        return result.Succeeded ? new PushResult(true, null) : new PushResult(false, result.StandardError.Trim());
+    }
+
+    public async Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "create", "--repo", $"{owner}/{name}", "--base", baseBranch, "--head", branchName, "--draft", "--title", title, "--body", body],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
+        if (!result.Succeeded) return new PullRequestResult(false, null, null, result.StandardError.Trim());
+
+        // `gh pr create` prints the new PR's URL as the last line of stdout on success.
+        var url = result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault();
+        if (string.IsNullOrWhiteSpace(url)) return new PullRequestResult(false, null, null, "gh pr create succeeded but printed no pull request URL.");
+        var numberText = url.Split('/').LastOrDefault();
+        int.TryParse(numberText, out var number);
+        return new PullRequestResult(true, number == 0 ? null : number, url, null);
+    }
+}
+
 public sealed class PostgresGitHubStore(IOptions<FactoryOptions> options) : IGitHubStore
 {
     private NpgsqlConnection Connection() => new(options.Value.ConnectionString);

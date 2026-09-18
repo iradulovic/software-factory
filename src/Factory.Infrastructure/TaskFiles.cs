@@ -35,12 +35,15 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
             file?.TestCommands ?? defaults.TestCommands,
             file?.MaxImplementationAttempts ?? defaults.MaxImplementationAttempts,
             file?.MaxReviewAttempts ?? defaults.MaxReviewAttempts,
-            file?.RequireHumanMerge ?? defaults.RequireHumanMerge);
+            file?.RequireHumanMerge ?? defaults.RequireHumanMerge,
+            string.IsNullOrWhiteSpace(file?.Publish) ? defaults.Publish : file.Publish.Trim());
 
         if (configuration.MaxImplementationAttempts < 1 || configuration.MaxReviewAttempts < 0)
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxImplementationAttempts must be at least 1 and maxReviewAttempts must not be negative.");
         if (configuration.BuildCommands.Any(string.IsNullOrWhiteSpace) || configuration.TestCommands.Any(string.IsNullOrWhiteSpace))
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: build and test commands must not be empty.");
+        if (configuration.Publish is not ("manual" or "auto-draft"))
+            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: publish must be 'manual' or 'auto-draft'.");
         return configuration;
     }
 }
@@ -53,6 +56,7 @@ internal sealed class RepositoryConfigurationFile
     public int? MaxImplementationAttempts { get; init; }
     public int? MaxReviewAttempts { get; init; }
     public bool? RequireHumanMerge { get; init; }
+    public string? Publish { get; init; }
 }
 
 public sealed class TaskContextWriter : ITaskContextWriter

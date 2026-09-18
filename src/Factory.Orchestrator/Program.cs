@@ -16,5 +16,7 @@ builder.Services.AddSingleton<ValidateStep>();
 builder.Services.AddSingleton<PreparePublicationStep>();
 builder.Services.AddSingleton<TaskExecutor>();
 builder.Services.AddSingleton<LeaseMonitor>();
+builder.Services.AddSingleton<PublicationExecutor>();
 builder.Services.AddHostedService<Worker>();
+builder.Services.AddHostedService<PublicationWorker>();
 await builder.Build().RunAsync();
