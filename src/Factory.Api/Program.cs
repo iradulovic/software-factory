@@ -116,7 +116,12 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancella
         FROM factory.agent_run WHERE task_id=@id ORDER BY started_at
         """, new { id }, cancellationToken: ct));
     var agentRuns = agentRunRows.Select(AgentRunDetailsMapper.Map);
-    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns });
+    var publications = await c.QueryAsync(new CommandDefinition("""
+        SELECT id,status,requested_at AS "requestedAt",requested_by AS "requestedBy",completed_at AS "completedAt",
+          pull_request_number AS "pullRequestNumber",pull_request_url AS "pullRequestUrl",error
+        FROM factory.publication WHERE task_id=@id ORDER BY requested_at DESC
+        """, new { id }, cancellationToken: ct));
+    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications });
 });
 
 app.MapPost("/api/tasks/{id:guid}/retry", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
@@ -124,6 +129,18 @@ app.MapPost("/api/tasks/{id:guid}/retry", async (Guid id, ITaskStore tasks, Canc
 
 app.MapPost("/api/tasks/{id:guid}/cancel", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
     await tasks.CancelAsync(id, ct) ? Results.NoContent() : Results.Conflict(new { error = "Task cannot be cancelled." }));
+
+app.MapPost("/api/tasks/{id:guid}/publish", async (Guid id, ITaskStore tasks, NpgsqlDataSource db, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var status = await c.ExecuteScalarAsync<string?>(new CommandDefinition("SELECT status FROM factory.task WHERE id=@id", new { id }, cancellationToken: ct));
+    if (status is null) return Results.NotFound();
+    if (status != "ReadyForPublish") return Results.Conflict(new { error = "Task is not ready for publish." });
+    var publicationId = await tasks.RequestPublicationAsync(id, null, "operator", ct);
+    return publicationId is null
+        ? Results.Conflict(new { error = "A publication attempt is already in progress for this task." })
+        : Results.Accepted($"/api/tasks/{id}");
+});
 
 app.MapGet("/api/issues", async (string? repository, string? state, bool? eligible, NpgsqlDataSource db, CancellationToken ct) =>
 {

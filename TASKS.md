@@ -18,7 +18,14 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
-No task is currently claimed.
+- [ ] **SF-302 — Add human-approved push and pull-request preparation**
+  - Outcome: a human can explicitly publish a validated factory branch and prepare a draft pull request.
+  - Acceptance criteria:
+    - Push and PR creation are orchestrator-owned operations behind an explicit human action, with a per-repository `publish: manual | auto-draft` policy defaulting to manual.
+    - Protected branches cannot be targeted directly.
+    - Publication attempts and GitHub responses are persisted (`factory.publication` with PR number and state).
+    - Automatic merging remains absent.
+  - Status 2026-09-18: implemented as a new `factory.publication` table (migration 008), an `IGitHubPublisher` (`git push` plus `gh pr create --draft`, never `--force`, never a merge command), a `PublicationExecutor` that refuses to publish anything but the task's own `factory/…` branch, and a separate `PublicationWorker` hosted service that polls independently of the main task pipeline. `POST /api/tasks/{id}/publish` lets a human request publication of a `ReadyForPublish` task; a per-repository `publish: manual | auto-draft` policy (default `manual`) lets the orchestrator request it itself instead. Only a successful pull-request creation transitions the task to `Completed`. Publication attempts, their status, and the resulting PR number/URL are persisted and shown on the Task Details page with a Publish button. Verified: every new SQL statement (request with a partial-unique-index conflict guard, claim, detail read, complete, and the retry-after-failure path) was executed verbatim against a real PostgreSQL 16 instance end to end before being committed; the frontend lint, type-check, and production build were run for real and passed. `gh pr create`'s output-parsing behavior could not be verified against a live GitHub repository (no `gh` CLI or GitHub auth in this environment) and relies on its documented behavior. dotnet build/test could not be run (no .NET SDK); a CI run on the pull request is the outstanding verification.
 
 ## Next up
 
@@ -27,14 +34,6 @@ Ordered per `docs/concept-review.md` section 6: restore a working vertical slice
 ### Restore and harden the vertical slice
 
 ### Prepare human-controlled publication
-
-- [ ] **SF-302 — Add human-approved push and pull-request preparation**
-  - Outcome: a human can explicitly publish a validated factory branch and prepare a draft pull request.
-  - Acceptance criteria:
-    - Push and PR creation are orchestrator-owned operations behind an explicit human action, with a per-repository `publish: manual | auto-draft` policy defaulting to manual.
-    - Protected branches cannot be targeted directly.
-    - Publication attempts and GitHub responses are persisted (`factory.publication` with PR number and state).
-    - Automatic merging remains absent.
 
 - [ ] **SF-303 — Write factory state back to GitHub**
   - Outcome: people who work in GitHub see what the factory did without opening the dashboard.

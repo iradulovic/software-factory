@@ -310,4 +310,71 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             runId, summary.BaseCommit, summary.HeadCommit, FilesChanged = summary.FilesChanged.ToArray(), summary.LinesAdded, summary.LinesRemoved
         }, cancellationToken: cancellationToken));
     }
+
+    public async Task<Guid?> RequestPublicationAsync(Guid taskId, Guid? runId, string requestedBy, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO factory.publication(id,task_id,run_id,status,requested_by)
+            VALUES(@id,@taskId,@runId,'Requested',@requestedBy)
+            ON CONFLICT (task_id) WHERE status IN ('Requested','Publishing') DO NOTHING
+            RETURNING id
+            """;
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<Guid?>(new CommandDefinition(sql, new { id = Guid.NewGuid(), taskId, runId, requestedBy }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, CancellationToken cancellationToken)
+    {
+        const string claimSql = """
+            UPDATE factory.publication SET status='Publishing',claimed_by=@workerId,claimed_at=now()
+            WHERE id = (SELECT id FROM factory.publication WHERE status='Requested' ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1)
+            RETURNING id,task_id AS "TaskId"
+            """;
+        await using var c = Connection();
+        var claimed = await c.QuerySingleOrDefaultAsync<PublicationClaimRow>(new CommandDefinition(claimSql, new { workerId }, cancellationToken: cancellationToken));
+        if (claimed is null) return null;
+
+        const string detailSql = """
+            SELECT t.branch_name AS "BranchName",t.worktree_path AS "WorktreePath",t.base_branch AS "BaseBranch",
+              r.id AS "RepositoryId",r.owner AS "RepositoryOwner",r.name AS "RepositoryName",
+              t.title AS "TaskTitle",i.issue_number AS "IssueNumber"
+            FROM factory.task t
+            JOIN github.repository r ON r.id=t.repository_id
+            LEFT JOIN github.issue i ON i.id=t.github_issue_id
+            WHERE t.id=@taskId
+            """;
+        var details = await c.QuerySingleAsync<PublicationDetailsRow>(new CommandDefinition(detailSql, new { taskId = claimed.TaskId }, cancellationToken: cancellationToken));
+        if (details.BranchName is null || details.WorktreePath is null)
+            throw new InvalidOperationException($"Task {claimed.TaskId} has no recorded worktree; it cannot be published.");
+        return new PublicationRequest(claimed.Id, claimed.TaskId, details.BranchName, details.WorktreePath, details.BaseBranch,
+            details.RepositoryId, details.RepositoryOwner, details.RepositoryName, details.TaskTitle, details.IssueNumber);
+    }
+
+    public async Task CompletePublicationAsync(Guid publicationId, string status, int? pullRequestNumber, string? pullRequestUrl, string? error, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE factory.publication SET status=@status,pull_request_number=@pullRequestNumber,pull_request_url=@pullRequestUrl,error=@error,completed_at=now()
+            WHERE id=@publicationId
+            """;
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, new { publicationId, status, pullRequestNumber, pullRequestUrl, error }, cancellationToken: cancellationToken));
+    }
+}
+
+internal sealed class PublicationClaimRow
+{
+    public Guid Id { get; init; }
+    public Guid TaskId { get; init; }
+}
+
+internal sealed class PublicationDetailsRow
+{
+    public string? BranchName { get; init; }
+    public string? WorktreePath { get; init; }
+    public string BaseBranch { get; init; } = "";
+    public long RepositoryId { get; init; }
+    public string RepositoryOwner { get; init; } = "";
+    public string RepositoryName { get; init; } = "";
+    public string TaskTitle { get; init; } = "";
+    public int? IssueNumber { get; init; }
 }

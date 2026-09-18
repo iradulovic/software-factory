@@ -63,9 +63,12 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
   "testCommands": ["dotnet test"],
   "maxImplementationAttempts": 2,
   "maxReviewAttempts": 1,
-  "requireHumanMerge": true
+  "requireHumanMerge": true,
+  "publish": "manual"
 }
 ```
+
+`publish` is `"manual"` (default: a human must click Publish on a `ReadyForPublish` task) or `"auto-draft"` (the orchestrator requests publication itself as soon as a task reaches `ReadyForPublish`). Publishing pushes the task's own branch and opens a draft pull request; it never merges.
 
 ## 3. Build, test, and migrate
 
@@ -139,5 +142,5 @@ The bootstrap exposes dashboard, tasks (including retry/cancel), runs, agents, r
 - `gh issue list --limit 100` is the initial polling boundary; pagination for larger repositories is future work.
 - Agent stdout/stderr are stored in PostgreSQL for bootstrap observability and should be externalized if logs become large.
 - Validation command tokenization does not support quoting or shell operators.
-- There is no automatic push, pull-request creation, merge, deployment, webhook handling, or Claude integration.
+- A human-triggered `POST /api/tasks/{id}/publish` (or an `auto-draft` repository) pushes a `ReadyForPublish` task's own branch and opens a draft pull request through `gh`; a separate `PublicationWorker` performs this, independently of the main task pipeline. There is still no automatic merge, deployment, webhook handling, or Claude integration.
 - Only run trusted repositories: coding agents can execute repository code.

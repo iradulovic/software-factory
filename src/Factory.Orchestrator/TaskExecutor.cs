@@ -37,11 +37,15 @@ public sealed class TaskExecutor(
             if (!await RunStepAsync(validate, context, cancellationToken)) return;
             if (!await RunStepAsync(preparePublication, context, cancellationToken)) return;
 
-            // ReadyForPublish is a resting state: a validated implementation waits here for a human (or a later
-            // automated push) to actually publish it. The orchestrator never assigns Completed on its own.
+            // ReadyForPublish is a resting state: a validated implementation waits here for a human (or, for an
+            // auto-draft repository, the orchestrator's own request below) to actually publish it. The orchestrator
+            // never assigns Completed on its own; only a successful publication does that.
             await TransitionAsync(context, FactoryTaskStatus.ReadyForPublish, null, cancellationToken);
             await tasks.CompleteRunAsync(runId, ExecutionStatus.Succeeded, cancellationToken);
             logger.LogInformation("Task {TaskId} is ready for publish in run {RunId}", task.Id, runId);
+
+            if (context.Configuration?.Publish == "auto-draft")
+                await tasks.RequestPublicationAsync(task.Id, runId, "auto-draft", cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

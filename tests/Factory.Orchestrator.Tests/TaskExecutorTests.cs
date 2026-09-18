@@ -43,6 +43,29 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task Manual_publish_policy_never_requests_publication()
+    {
+        var harness = new Harness();
+
+        await harness.ExecuteAsync();
+
+        Assert.Empty(harness.Store.PublicationRequests);
+    }
+
+    [Fact]
+    public async Task Auto_draft_policy_requests_publication_once_ready_for_publish()
+    {
+        var harness = new Harness { Configuration = new("main", ["custom-build"], ["custom-test"], 2, 1, true, "auto-draft") };
+
+        var runId = await harness.ExecuteAsync();
+
+        var request = Assert.Single(harness.Store.PublicationRequests);
+        Assert.Equal(harness.ClaimedTask.Id, request.TaskId);
+        Assert.Equal(runId, request.RunId);
+        Assert.Equal("auto-draft", request.RequestedBy);
+    }
+
+    [Fact]
     public async Task Dirty_worktree_fails_instead_of_being_published()
     {
         var harness = new Harness { IsClean = false };
