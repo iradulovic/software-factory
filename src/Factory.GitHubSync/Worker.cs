@@ -37,9 +37,34 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                         logger.LogError(ex, "GitHub synchronization failed for {Repository}", $"{repository.Owner}/{repository.Name}");
                     }
                 }
+
+                await ResolvePublishedTasksAsync(stoppingToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { logger.LogError(ex, "GitHub synchronization cycle failed"); }
             await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken);
+        }
+    }
+
+    /// <summary>Resolves each task resting in <see cref="FactoryTaskStatus.Published"/> to <see cref="FactoryTaskStatus.Completed"/>
+    /// once its pull request is merged, or <see cref="FactoryTaskStatus.Rejected"/> once it is closed without merge.
+    /// A pull request that is still open is left untouched.</summary>
+    private async Task ResolvePublishedTasksAsync(CancellationToken cancellationToken)
+    {
+        foreach (var published in await tasks.GetPublishedTasksAsync(cancellationToken))
+        {
+            try
+            {
+                var state = await client.GetPullRequestStateAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
+                if (state is null) continue;
+                if (state.Merged)
+                    await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.Completed, null, cancellationToken);
+                else if (state.Closed)
+                    await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.Rejected, "Pull request closed without merge.", cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "Failed to resolve pull request outcome for task {TaskId}", published.TaskId);
+            }
         }
     }
 }

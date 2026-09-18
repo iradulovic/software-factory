@@ -11,7 +11,8 @@ const string TaskListSql = """
       COALESCE(t.preferred_agent,'Codex') AS agent,t.created_at AS "createdAt",t.started_at AS "startedAt",
       t.completed_at AS "completedAt",t.branch_name AS "branchName",t.worktree_path AS "worktreePath",t.failure_reason AS "failureReason",
       CASE WHEN t.failure_reason IS NOT NULL THEN t.failure_reason
-           WHEN t.status IN ('Completed','ReadyForPublish') THEN 'Passed'
+           WHEN t.status IN ('Completed','ReadyForPublish','Published') THEN 'Passed'
+           WHEN t.status='Rejected' THEN 'Pull request closed without merge'
            WHEN t.status='Cancelled' THEN 'Cancelled' END AS result,
       EXTRACT(EPOCH FROM (COALESCE(t.completed_at,now())-COALESCE(t.started_at,t.created_at))) AS "durationSeconds"
     FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id LEFT JOIN github.issue i ON i.id=t.github_issue_id
@@ -60,7 +61,7 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvail
           count(*) FILTER (WHERE status IN ('Claimed','Preparing','Implementing','Validating','Reviewing')) AS "activeTasks",
           count(*) FILTER (WHERE status='Pending') AS "pendingTasks",
           count(*) FILTER (WHERE status='Completed' AND completed_at >= CURRENT_DATE) AS "completedToday",
-          COALESCE(round(100.0 * count(*) FILTER (WHERE status='Completed') / NULLIF(count(*) FILTER (WHERE status IN ('Completed','Failed')),0),1),0) AS "successRate"
+          COALESCE(round(100.0 * count(*) FILTER (WHERE status='Completed') / NULLIF(count(*) FILTER (WHERE status IN ('Completed','Failed','Rejected')),0),1),0) AS "successRate"
         FROM factory.task
         """, cancellationToken: ct));
     var active = await c.QueryAsync(new CommandDefinition(TaskListSql + " WHERE t.status IN ('Claimed','Preparing','Implementing','Validating','Reviewing') ORDER BY t.started_at DESC LIMIT 8", cancellationToken: ct));

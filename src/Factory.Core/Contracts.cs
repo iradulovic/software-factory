@@ -33,6 +33,14 @@ public interface ITaskStore
     Task<Guid?> RequestPublicationAsync(Guid taskId, Guid? runId, string requestedBy, CancellationToken cancellationToken);
     Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, CancellationToken cancellationToken);
     Task CompletePublicationAsync(Guid publicationId, string status, int? pullRequestNumber, string? pullRequestUrl, string? error, CancellationToken cancellationToken);
+
+    /// <summary>Records one attempt to write to GitHub (a comment or a state-label change) as append-only operational
+    /// state, regardless of whether it succeeded.</summary>
+    Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken);
+
+    /// <summary>Tasks resting in <see cref="FactoryTaskStatus.Published"/> with a known pull request, for the
+    /// GitHub sync worker to observe and resolve to <see cref="FactoryTaskStatus.Completed"/> or <see cref="FactoryTaskStatus.Rejected"/>.</summary>
+    Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore
@@ -46,7 +54,13 @@ public interface IGitHubStore
     Task<GitHubIssue> UpsertIssueAsync(long repositoryId, GitHubIssue issue, CancellationToken cancellationToken);
 }
 
-public interface IGitHubClient { Task<IReadOnlyList<GitHubIssue>> GetOpenIssuesAsync(GitHubRepository repository, CancellationToken cancellationToken); }
+public interface IGitHubClient
+{
+    Task<IReadOnlyList<GitHubIssue>> GetOpenIssuesAsync(GitHubRepository repository, CancellationToken cancellationToken);
+
+    /// <summary>The current state of a pull request the factory opened, or <see langword="null"/> if it could not be read.</summary>
+    Task<PullRequestState?> GetPullRequestStateAsync(string owner, string name, int number, CancellationToken cancellationToken);
+}
 public interface IRepositoryCache { Task<string> PrepareAsync(GitHubRepository repository, CancellationToken cancellationToken); }
 public interface IWorktreeManager
 {
@@ -85,4 +99,12 @@ public interface IGitHubPublisher
 {
     Task<PushResult> PushAsync(string worktreePath, string branchName, CancellationToken cancellationToken);
     Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken);
+
+    /// <summary>Posts a comment on the issue backing a task, so people who work in GitHub see what the factory did
+    /// without opening the dashboard.</summary>
+    Task<GitHubWriteResult> CommentOnIssueAsync(string owner, string name, int issueNumber, string body, CancellationToken cancellationToken);
+
+    /// <summary>Sets the one <c>factory:*</c> state label that reflects a task's current outcome, removing whichever
+    /// other state label the issue previously carried.</summary>
+    Task<GitHubWriteResult> SetStateLabelAsync(string owner, string name, int issueNumber, string label, CancellationToken cancellationToken);
 }

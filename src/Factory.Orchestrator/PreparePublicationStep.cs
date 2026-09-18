@@ -29,6 +29,7 @@ public sealed class PreparePublicationStep(ITaskStore tasks, IWorktreeInspector 
         }
 
         await tasks.SetChangeSummaryAsync(context.RunId, summary, cancellationToken);
+        context.ChangeSummary = summary;
         var output = $"{summary.FilesChanged.Count} file(s) changed, +{summary.LinesAdded} -{summary.LinesRemoved}";
         await tasks.CompleteStepAsync(stepId, ExecutionStatus.Succeeded, null, output, cancellationToken);
         return PipelineStepResult.Ok;

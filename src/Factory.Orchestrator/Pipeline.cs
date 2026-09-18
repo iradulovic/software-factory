@@ -33,6 +33,7 @@ public sealed class PipelineContext(FactoryTask task, Guid runId)
     public WorktreeLocation? Worktree { get; set; }
     public RepositoryConfiguration? Configuration { get; set; }
     public AgentResult? AgentResult { get; set; }
+    public ChangeSummary? ChangeSummary { get; set; }
 
     /// <summary>The task's base branch as a fetched remote-tracking reference, e.g. <c>origin/main</c>.</summary>
     public string BaseRef => $"origin/{Task.BaseBranch}";

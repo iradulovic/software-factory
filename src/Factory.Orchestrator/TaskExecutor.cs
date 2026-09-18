@@ -17,6 +17,7 @@ public sealed class TaskExecutor(
     CollectDiffStep collectDiff,
     ValidateStep validate,
     PreparePublicationStep preparePublication,
+    TaskGitHubNotifier notifier,
     ILogger<TaskExecutor> logger)
 {
     public async Task ExecuteAsync(FactoryTask task, Guid runId, CancellationToken cancellationToken)
@@ -26,6 +27,7 @@ public sealed class TaskExecutor(
         {
             await TransitionAsync(context, FactoryTaskStatus.Preparing, null, cancellationToken);
             if (!await RunStepAsync(prepareRepository, context, cancellationToken)) return;
+            await notifier.NotifyStartedAsync(context, cancellationToken);
             if (!await RunStepAsync(createWorktree, context, cancellationToken)) return;
             if (!await RunStepAsync(writeContext, context, cancellationToken)) return;
 
@@ -39,10 +41,11 @@ public sealed class TaskExecutor(
 
             // ReadyForPublish is a resting state: a validated implementation waits here for a human (or, for an
             // auto-draft repository, the orchestrator's own request below) to actually publish it. The orchestrator
-            // never assigns Completed on its own; only a successful publication does that.
+            // never assigns Completed on its own; only GitHub sync observing a merged pull request does that.
             await TransitionAsync(context, FactoryTaskStatus.ReadyForPublish, null, cancellationToken);
             await tasks.CompleteRunAsync(runId, ExecutionStatus.Succeeded, cancellationToken);
             logger.LogInformation("Task {TaskId} is ready for publish in run {RunId}", task.Id, runId);
+            await notifier.NotifyReadyForPublishAsync(context, cancellationToken);
 
             if (context.Configuration?.Publish == "auto-draft")
                 await tasks.RequestPublicationAsync(task.Id, runId, "auto-draft", cancellationToken);
@@ -52,6 +55,7 @@ public sealed class TaskExecutor(
             logger.LogError(ex, "Task {TaskId} failed in run {RunId}", task.Id, runId);
             await MarkFailedAsync(context, ex.Message, cancellationToken);
             await tasks.CloseExecutionAsync(runId, ExecutionStatus.Failed, ex.Message, cancellationToken);
+            await notifier.NotifyFailedAsync(context, ex.Message, cancellationToken);
         }
     }
 
@@ -71,11 +75,13 @@ public sealed class TaskExecutor(
             case PipelineOutcome.NeedsHuman:
                 await TransitionAsync(context, FactoryTaskStatus.NeedsHuman, result.Reason, cancellationToken);
                 await tasks.CompleteRunAsync(context.RunId, ExecutionStatus.Succeeded, cancellationToken);
+                await notifier.NotifyNeedsHumanAsync(context, result.Reason ?? "No reason given.", cancellationToken);
                 return false;
             case PipelineOutcome.Failed:
             default:
                 await TransitionAsync(context, FactoryTaskStatus.Failed, result.Reason, cancellationToken);
                 await tasks.CompleteRunAsync(context.RunId, ExecutionStatus.Failed, cancellationToken);
+                await notifier.NotifyFailedAsync(context, result.Reason ?? "No reason given.", cancellationToken);
                 return false;
         }
     }

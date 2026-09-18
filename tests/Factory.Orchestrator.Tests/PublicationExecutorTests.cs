@@ -23,7 +23,7 @@ public sealed class PublicationExecutorTests
         Assert.Equal("https://github.com/acme/billing/pull/17", completed.PullRequestUrl);
         Assert.Null(completed.Error);
         var transition = Assert.Single(harness.Store.Transitions);
-        Assert.Equal((FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Completed, (string?)null), transition);
+        Assert.Equal((FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published, (string?)null), transition);
     }
 
     [Fact]
@@ -139,6 +139,9 @@ public sealed class PublicationExecutorTests
                     ? new PullRequestResult(true, 17, "https://github.com/acme/billing/pull/17", null)
                     : new PullRequestResult(false, null, null, harness.PullRequestError));
             }
+
+            public Task<GitHubWriteResult> CommentOnIssueAsync(string owner, string name, int issueNumber, string body, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<GitHubWriteResult> SetStateLabelAsync(string owner, string name, int issueNumber, string label, CancellationToken cancellationToken) => throw new NotSupportedException();
         }
     }
 }

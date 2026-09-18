@@ -60,6 +60,18 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
     }
 
     private static long StableLong(string value) => BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(value)), 0) & long.MaxValue;
+
+    public async Task<PullRequestState?> GetPullRequestStateAsync(string owner, string name, int number, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "state,merged"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!result.Succeeded) return null;
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var state = document.RootElement.GetProperty("state").GetString() ?? "";
+        var merged = document.RootElement.GetProperty("merged").GetBoolean();
+        return new PullRequestState(merged, string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase));
+    }
 }
 
 /// <summary>
@@ -87,6 +99,31 @@ public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
         var numberText = url.Split('/').LastOrDefault();
         int.TryParse(numberText, out var number);
         return new PullRequestResult(true, number == 0 ? null : number, url, null);
+    }
+
+    /// <summary>The mutually exclusive state labels a task's issue carries; <see cref="SetStateLabelAsync"/>
+    /// applies one and removes whichever of the others the issue previously had.</summary>
+    public static readonly IReadOnlyList<string> StateLabels =
+        ["factory:in-progress", "factory:needs-human", "factory:ready-for-review", "factory:failed"];
+
+    public async Task<GitHubWriteResult> CommentOnIssueAsync(string owner, string name, int issueNumber, string body, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["issue", "comment", issueNumber.ToString(), "--repo", $"{owner}/{name}", "--body", body],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        return result.Succeeded ? new GitHubWriteResult(true, null) : new GitHubWriteResult(false, result.StandardError.Trim());
+    }
+
+    public async Task<GitHubWriteResult> SetStateLabelAsync(string owner, string name, int issueNumber, string label, CancellationToken cancellationToken)
+    {
+        var arguments = new List<string> { "issue", "edit", issueNumber.ToString(), "--repo", $"{owner}/{name}", "--add-label", label };
+        foreach (var other in StateLabels.Where(candidate => candidate != label))
+        {
+            arguments.Add("--remove-label");
+            arguments.Add(other);
+        }
+        var result = await runner.RunAsync(new ProcessRequest("gh", arguments, Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        return result.Succeeded ? new GitHubWriteResult(true, null) : new GitHubWriteResult(false, result.StandardError.Trim());
     }
 }
 

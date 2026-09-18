@@ -18,14 +18,6 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
-## Next up
-
-Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
-
-### Restore and harden the vertical slice
-
-### Prepare human-controlled publication
-
 - [ ] **SF-303 — Write factory state back to GitHub**
   - Outcome: people who work in GitHub see what the factory did without opening the dashboard.
   - Acceptance criteria:
@@ -33,6 +25,15 @@ Ordered per `docs/concept-review.md` section 6: restore a working vertical slice
     - Labels reflect state (`factory:in-progress`, `factory:needs-human`, `factory:ready-for-review`, `factory:failed`).
     - Sync observes published pull requests and transitions `Published` to `Completed` (merged) or `Rejected` (closed).
     - All GitHub writes go through one publisher abstraction and are persisted as operational state.
+  - Status 2026-09-18: implemented. `FactoryTaskStatus` gains `Published` (a successful `gh pr create` now moves a task `ReadyForPublish → Published` rather than straight to `Completed`) and `Rejected` (a published pull request closed without merge; terminal, like `Failed`, and retryable back to `Pending`). `Factory.GitHubSync`'s `Worker` polls every `Published` task each cycle and resolves it via `gh pr view --json state,merged`. `TaskGitHubNotifier` (new, in `Factory.Orchestrator`) posts a comment and sets one mutually exclusive `factory:*` state label at task start, ready-for-review, failure, and needs-human, through two new `IGitHubPublisher` members (`CommentOnIssueAsync`, `SetStateLabelAsync`) implemented by `GhCliPublisher`; a task with no linked GitHub issue is silently skipped, and a write failure is logged but never fails the task. Every write attempt — comment or label, succeeded or not — is persisted in the new append-only `factory.github_write` table (migration 009, which also excludes `Rejected` from the active-issue partial unique index alongside the existing terminal statuses). Verified: every new and changed SQL statement (the `github_write` insert, the `GetPublishedTasksAsync` join query, the corrected active-issue index migration, and the full `ReadyForPublish → Published → Completed` transition sequence with writes recorded in between) was executed verbatim against a real PostgreSQL 16 instance end to end — this caught a real bug in the migration itself (`DROP INDEX IF EXISTS ux_factory_task_active_issue` without a schema qualifier silently missed the existing `factory`-schema index via `search_path` resolution, so the old index definition survived undetected until the corrected `DROP INDEX IF EXISTS factory.ux_factory_task_active_issue` was verified against a fresh migration run). `gh pr view`'s and `gh issue edit`'s exact output/argument handling could not be verified against a live GitHub repository (no `gh` CLI or GitHub auth in this environment); `GhCliClient`/`GhCliPublisher`'s argument construction and JSON parsing are covered by new unit tests against a fake process runner instead. dotnet build/test could not be run (no .NET SDK); a CI run on the pull request is the outstanding verification.
+
+## Next up
+
+Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
+
+### Restore and harden the vertical slice
+
+### Prepare human-controlled publication
 
 ### Improve autonomy
 
