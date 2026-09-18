@@ -10,6 +10,7 @@ internal sealed class FakeTaskStore : ITaskStore
     public FactoryTaskStatus Status { get; set; } = FactoryTaskStatus.Claimed;
     public List<(FactoryTaskStatus From, FactoryTaskStatus To, string? Reason)> Transitions { get; } = [];
     public Dictionary<Guid, StepRecord> Steps { get; } = [];
+    public List<string> StepOrder { get; } = [];
     public Dictionary<Guid, ExecutionStatus> Runs { get; } = [];
     public Dictionary<Guid, RepositoryConfiguration> RunConfigurations { get; } = [];
     public List<AgentRunRecord> AgentRuns { get; } = [];
@@ -43,7 +44,7 @@ internal sealed class FakeTaskStore : ITaskStore
 
     public Task<Guid> StartStepAsync(Guid runId, string stepType, int attempt, CancellationToken cancellationToken)
     {
-        var id = Guid.NewGuid(); Steps[id] = new StepRecord(runId, stepType, ExecutionStatus.Running, null, null); return Task.FromResult(id);
+        var id = Guid.NewGuid(); Steps[id] = new StepRecord(runId, stepType, ExecutionStatus.Running, null, null); StepOrder.Add(stepType); return Task.FromResult(id);
     }
 
     public Task CompleteStepAsync(Guid stepId, ExecutionStatus status, string? error, string? output, CancellationToken cancellationToken)

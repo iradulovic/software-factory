@@ -95,6 +95,61 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Claiming_transitioning_and_retrying_a_task_records_task_events()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null, CancellationToken.None);
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null, CancellationToken.None));
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Preparing, FactoryTaskStatus.Failed, "Simulated failure", CancellationToken.None);
+            Assert.True(await fixture.Tasks.RetryAsync(fixture.TaskId, CancellationToken.None));
+
+            var events = (await fixture.Connection.QueryAsync<(string FromStatus, string ToStatus, string? Reason, string Actor)>("""
+                SELECT from_status AS "FromStatus", to_status AS "ToStatus", reason, actor
+                FROM factory.task_event WHERE task_id=@TaskId ORDER BY id
+                """, new { fixture.TaskId })).ToList();
+
+            Assert.Equal(4, events.Count);
+            Assert.Equal("Pending", events[0].FromStatus); Assert.Equal("Claimed", events[0].ToStatus);
+            Assert.Equal("Claimed by worker-a", events[0].Reason); Assert.Equal("orchestrator", events[0].Actor);
+            Assert.Equal("Claimed", events[1].FromStatus); Assert.Equal("Preparing", events[1].ToStatus);
+            Assert.Null(events[1].Reason); Assert.Equal("orchestrator", events[1].Actor);
+            Assert.Equal("Preparing", events[2].FromStatus); Assert.Equal("Failed", events[2].ToStatus);
+            Assert.Equal("Simulated failure", events[2].Reason); Assert.Equal("orchestrator", events[2].Actor);
+            Assert.Equal("Failed", events[3].FromStatus); Assert.Equal("Pending", events[3].ToStatus);
+            Assert.Equal("Retried by operator", events[3].Reason); Assert.Equal("human", events[3].Actor);
+        }
+    }
+
+    [Fact]
+    public async Task Recovering_an_abandoned_task_records_the_original_status_and_worker()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+            await fixture.Connection.ExecuteAsync("UPDATE factory.task SET status='Implementing', lease_until=now()-interval '1 minute' WHERE id=@TaskId", new { fixture.TaskId });
+
+            var recovered = await fixture.Tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, recovered?.Id);
+            Assert.Equal("worker-b", recovered?.ClaimedBy);
+
+            var reason = await fixture.Connection.ExecuteScalarAsync<string>("""
+                SELECT reason FROM factory.task_event WHERE task_id=@TaskId AND from_status='Implementing' AND to_status='Claimed'
+                """, new { fixture.TaskId });
+            Assert.Equal("Recovered from expired lease and claimed by worker-b", reason);
+        }
+    }
+
+    [Fact]
     public async Task Eligible_issue_is_created_once_and_can_be_claimed()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
