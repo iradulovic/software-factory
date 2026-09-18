@@ -110,7 +110,8 @@ public sealed class PublicationExecutorTests
         public string? PullRequestTitle { get; private set; }
         public string? PullRequestBody { get; private set; }
 
-        public PublicationRequest Request => new(Guid.NewGuid(), Guid.NewGuid(), BranchNameOverride ?? "factory/142-add-export",
+        private PublicationRequest? _request;
+        public PublicationRequest Request => _request ??= new(Guid.NewGuid(), Guid.NewGuid(), BranchNameOverride ?? "factory/142-add-export",
             "/tmp/worktree/issue-142", "main", 1, "acme", "billing", "Add invoice export", IssueNumber);
 
         public async Task ExecuteAsync()
