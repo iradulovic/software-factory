@@ -62,6 +62,39 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Interrupted_execution_is_closed_as_cancelled_and_released_for_recovery()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "worker-a", CancellationToken.None);
+            await fixture.Tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
+            await fixture.Tasks.SetRunConfigurationAsync(runId, new RepositoryConfiguration("main", ["dotnet build"], ["dotnet test"], 3, 1, true), CancellationToken.None);
+
+            await fixture.Tasks.CloseExecutionAsync(runId, ExecutionStatus.Cancelled, "Worker stopped", CancellationToken.None);
+            await fixture.Tasks.ReleaseLeaseAsync(fixture.TaskId, "worker-a", CancellationToken.None);
+
+            var execution = await fixture.Connection.QuerySingleAsync<(string RunStatus, string StepStatus, string? Error, string Configuration)>("""
+                SELECT r.status AS "RunStatus",s.status AS "StepStatus",s.error,r.repository_configuration::text AS "Configuration"
+                FROM factory.run r JOIN factory.step s ON s.run_id=r.id WHERE r.id=@runId
+                """, new { runId });
+            Assert.Equal("Cancelled", execution.RunStatus);
+            Assert.Equal("Cancelled", execution.StepStatus);
+            Assert.Equal("Worker stopped", execution.Error);
+            Assert.Contains("maxImplementationAttempts", execution.Configuration);
+            Assert.Contains("dotnet build", execution.Configuration);
+
+            var recovered = await fixture.Tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, recovered?.Id);
+            Assert.Equal("worker-b", recovered?.ClaimedBy);
+            Assert.Equal("Cancelled", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.run WHERE id=@runId", new { runId }));
+        }
+    }
+
+    [Fact]
     public async Task Eligible_issue_is_created_once_and_can_be_claimed()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

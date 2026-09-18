@@ -19,6 +19,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAgentAvailabilityChecker, CodexAvailabilityChecker>();
         services.AddSingleton<IRepositoryCache, RepositoryCache>();
         services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
+        services.AddSingleton<IWorktreeInspector, GitWorktreeInspector>();
         services.AddSingleton<IRepositoryConfigurationReader, RepositoryConfigurationReader>();
         services.AddSingleton<ITaskContextWriter, TaskContextWriter>();
         services.AddSingleton<IGitHubClient, GhCliClient>();

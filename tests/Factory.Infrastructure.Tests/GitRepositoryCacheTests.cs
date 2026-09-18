@@ -56,6 +56,39 @@ public sealed class GitRepositoryCacheTests
         finally { TestGit.DeleteRecursively(root); }
     }
 
+    [Fact]
+    public async Task Factory_directory_is_excluded_and_inspector_reports_only_real_changes()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-git-");
+        try
+        {
+            var git = new TestGit(root.FullName);
+            var upstream = await git.CreateUpstreamAsync("first");
+            var options = Options.Create(new FactoryOptions { RootDirectory = Path.Combine(root.FullName, "factory") });
+            var repository = new GitHubRepository(1, "acme", "billing", upstream, "main", true);
+            var cache = new RepositoryCache(git.Runner, options);
+            var inspector = new GitWorktreeInspector(git.Runner);
+            var worktree = await new GitWorktreeManager(cache, git.Runner, options).CreateAsync(repository, NewTask("Exclude", 3), CancellationToken.None);
+            var cachePath = await cache.PrepareAsync(repository, CancellationToken.None);
+
+            Assert.Contains(RepositoryCache.ExcludePattern, await File.ReadAllLinesAsync(Path.Combine(cachePath, "info", "exclude")));
+
+            Directory.CreateDirectory(Path.Combine(worktree.Path, ".factory"));
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, ".factory", "task.md"), "# Task");
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, ".factory", "result.json"), "{}");
+            Assert.False(await inspector.HasChangesAsync(worktree.Path, "origin/main", CancellationToken.None));
+
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, "Feature.cs"), "class Feature {}");
+            Assert.True(await inspector.HasChangesAsync(worktree.Path, "origin/main", CancellationToken.None));
+
+            await git.RunAsync(worktree.Path, "add", "Feature.cs");
+            await git.RunAsync(worktree.Path, "commit", "--quiet", "-m", "feature");
+            Assert.Equal("", await git.RunAsync(worktree.Path, "status", "--porcelain", "--untracked-files=all"));
+            Assert.True(await inspector.HasChangesAsync(worktree.Path, "origin/main", CancellationToken.None));
+        }
+        finally { TestGit.DeleteRecursively(root); }
+    }
+
     private static FactoryTask NewTask(string title, int issue) => new(Guid.NewGuid(), 1, 2, issue, title, "", "GitHubIssue", 0,
         FactoryTaskStatus.Pending, null, "main", null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);
 

@@ -54,7 +54,7 @@ Edit `src/Factory.GitHubSync/appsettings.json` and replace the disabled sample e
 
 The main settings cover the PostgreSQL connection, factory root, polling intervals, task concurrency, task lease and heartbeat intervals, Codex executable/arguments, default branch, and configured repositories. Environment-variable examples are in `.env.example`; no real credentials belong in configuration.
 
-Target repositories can optionally contain `.factory/config.json`:
+Target repositories can optionally contain `.factory/config.json`. It is read from the base branch commit (`origin/<baseBranch>`) before the agent runs and recorded on the run, so an agent cannot change how its own work is validated. Any key may be omitted and falls back to the default shown here:
 
 ```json
 {
@@ -131,7 +131,9 @@ The bootstrap exposes dashboard, tasks (including retry/cancel), runs, agents, r
 
 - The repository cache is a bare repository that tracks `origin` explicitly (`+refs/heads/*:refs/remotes/origin/*`). Caches created by earlier versions with `git clone --bare` are healed automatically on the next task.
 - One task is executed at a time; the schema and claim query support later multi-worker operation.
-- Active task leases are renewed by the owning worker. Expired executions are closed and reclaimed, reusing their validated deterministic worktree when present. Automatic worktree cleanup is not implemented yet.
+- Active task leases (default 10 minutes, renewed every 2 minutes) are renewed by the owning worker. Lost ownership cancels execution; a renewal that merely errors is retried until the lease would expire, so a short database outage does not kill a long agent run. Expired executions are closed and reclaimed, reusing their validated deterministic worktree when present. Automatic worktree cleanup is not implemented yet.
+- Interrupted executions (worker shutdown, cancellation, lost lease) close their run and running steps as `Cancelled`; a stopping worker also releases its lease so the task is reclaimable immediately.
+- Agent results with status `failed` fail the task, `blocked` and `needs-human` hand it to a human, and a `completed` result with no changes in the worktree fails instead of being validated. `.factory/` is excluded from Git in every worktree.
 - Lease expiry is not a process fence: if an old worker is completely frozen rather than stopped, it could theoretically resume and touch the worktree after another worker recovers the task. Responsive workers cancel execution when renewal fails; stronger fencing would require process isolation.
 - `gh issue list --limit 100` is the initial polling boundary; pagination for larger repositories is future work.
 - Agent stdout/stderr are stored in PostgreSQL for bootstrap observability and should be externalized if logs become large.

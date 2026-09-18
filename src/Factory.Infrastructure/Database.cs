@@ -68,6 +68,8 @@ internal sealed class TaskRow
 
 public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock clock) : ITaskStore
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     private NpgsqlConnection Connection() => new(options.Value.ConnectionString);
 
     public async Task<FactoryTask?> ClaimNextAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken)
@@ -126,6 +128,12 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             """;
         await using var connection = Connection();
         return await connection.ExecuteAsync(new CommandDefinition(sql, new { taskId, workerId, lease }, cancellationToken: cancellationToken)) == 1;
+    }
+
+    public async Task ReleaseLeaseAsync(Guid taskId, string workerId, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET lease_until=now() - interval '1 second' WHERE id=@taskId AND claimed_by=@workerId", new { taskId, workerId }, cancellationToken: cancellationToken));
     }
 
     public async Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken)
@@ -210,17 +218,16 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               @QuotaDetected,@QuotaResetAt,@AttemptNumber,@NeedsHuman,CAST(@ResultJson AS jsonb),@ResultSummary,CAST(@TestsRun AS jsonb),@TestsPassed,
               CAST(@FilesChanged AS jsonb),CAST(@Risks AS jsonb),@HumanReason)
             """;
-        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var parameters = new
         {
             r.Id, r.TaskId, r.RunId, r.StepId, r.Agent, r.StartedAt, r.CompletedAt, r.DurationSeconds, r.ExitCode, r.Status,
             r.StandardOutput, r.StandardError, r.QuotaDetected, r.QuotaResetAt, r.AttemptNumber, r.NeedsHuman,
-            ResultJson = r.Result is null ? null : JsonSerializer.Serialize(r.Result, jsonOptions),
+            ResultJson = r.Result is null ? null : JsonSerializer.Serialize(r.Result, JsonOptions),
             ResultSummary = r.Result?.Summary,
-            TestsRun = r.Result is null ? null : JsonSerializer.Serialize(r.Result.TestsRun, jsonOptions),
+            TestsRun = r.Result is null ? null : JsonSerializer.Serialize(r.Result.TestsRun, JsonOptions),
             TestsPassed = r.Result?.TestsPassed,
-            FilesChanged = r.Result is null ? null : JsonSerializer.Serialize(r.Result.FilesChanged, jsonOptions),
-            Risks = r.Result is null ? null : JsonSerializer.Serialize(r.Result.Risks, jsonOptions),
+            FilesChanged = r.Result is null ? null : JsonSerializer.Serialize(r.Result.FilesChanged, JsonOptions),
+            Risks = r.Result is null ? null : JsonSerializer.Serialize(r.Result.Risks, JsonOptions),
             HumanReason = r.Result?.HumanReason
         };
         await using var c = Connection();
@@ -230,5 +237,24 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public async Task CompleteRunAsync(Guid runId, ExecutionStatus status, CancellationToken cancellationToken)
     {
         await using var c = Connection(); await c.ExecuteAsync(new CommandDefinition("UPDATE factory.run SET status=@status,completed_at=@now WHERE id=@runId", new { runId, status = status.ToString(), now = clock.UtcNow }, cancellationToken: cancellationToken));
+    }
+
+    public async Task SetRunConfigurationAsync(Guid runId, RepositoryConfiguration configuration, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("UPDATE factory.run SET repository_configuration=CAST(@json AS jsonb) WHERE id=@runId",
+            new { runId, json = JsonSerializer.Serialize(configuration, JsonOptions) }, cancellationToken: cancellationToken));
+    }
+
+    public async Task CloseExecutionAsync(Guid runId, ExecutionStatus status, string reason, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE factory.step SET status=@status,completed_at=@now,
+              duration_ms=GREATEST(0,CAST(EXTRACT(EPOCH FROM (@now-started_at))*1000 AS BIGINT)),error=COALESCE(error,@reason)
+            WHERE run_id=@runId AND status='Running';
+            UPDATE factory.run SET status=@status,completed_at=@now WHERE id=@runId AND status='Running';
+            """;
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, new { runId, status = status.ToString(), now = clock.UtcNow, reason }, cancellationToken: cancellationToken));
     }
 }
