@@ -31,12 +31,14 @@ public sealed record FactoryTask(
     DateTimeOffset? FailedAt,
     string? FailureReason);
 
-public sealed record GitHubRepository(long Id, string Owner, string Name, string CloneUrl, string DefaultBranch, bool IsEnabled);
+/// <param name="LastSyncedAt">The point in time through which this repository's issues are known to be fully
+/// synchronized, used as the incremental sync checkpoint; <see langword="null"/> before the first sync.</param>
+public sealed record GitHubRepository(long Id, string Owner, string Name, string CloneUrl, string DefaultBranch, bool IsEnabled, DateTimeOffset? LastSyncedAt = null);
 
 public sealed record GitHubIssue(
     long Id, long RepositoryId, long GitHubIssueId, int IssueNumber, string Title, string Body,
     string State, string Author, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
-    IReadOnlyList<string> Labels, IReadOnlyList<GitHubComment> Comments);
+    IReadOnlyList<string> Labels, IReadOnlyList<GitHubComment> Comments, DateTimeOffset? ClosedAt = null);
 
 public sealed record GitHubComment(long GitHubCommentId, string Author, string Body, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
 

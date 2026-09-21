@@ -4,6 +4,104 @@ namespace Factory.Infrastructure.Tests;
 
 public sealed class GhCliTests
 {
+    private static readonly GitHubRepository Repository = new(1, "acme", "billing", "https://example.invalid/billing.git", "main", true);
+
+    [Fact]
+    public async Task GetIssuesAsync_fetches_every_page_until_a_short_page_ends_it()
+    {
+        var runner = new SequencedRunner();
+        runner.EnqueueIssueList(FullPage(1, 100, "2026-01-01T00:00:00Z"));
+        runner.EnqueueIssueList(FullPage(101, 100, "2026-01-02T00:00:00Z"));
+        runner.EnqueueIssueList(ShortPage(201, 5, "2026-01-03T00:00:00Z"));
+        for (var i = 0; i < 205; i++) runner.EnqueueCommentsView();
+        var client = new GhCliClient(runner);
+
+        var issues = await client.GetIssuesAsync(Repository, null, CancellationToken.None);
+
+        Assert.Equal(205, issues.Count);
+        var listCalls = runner.Requests.Where(r => r.Arguments is ["issue", "list", ..]).ToList();
+        Assert.Equal(3, listCalls.Count);
+        Assert.DoesNotContain(listCalls[0].Arguments, a => a == "updated:>=2026-01-01T00:00:00Z" || a.Contains("updated:>="));
+        Assert.Contains(listCalls[1].Arguments, a => a.Contains("updated:>=2026-01-01T00:00:00Z"));
+        Assert.Contains(listCalls[2].Arguments, a => a.Contains("updated:>=2026-01-02T00:00:00Z"));
+    }
+
+    [Fact]
+    public async Task GetIssuesAsync_passes_the_since_cursor_into_the_first_page_search_and_never_uses_a_separate_state_flag()
+    {
+        var runner = new SequencedRunner();
+        runner.EnqueueIssueList(ShortPage(1, 1, "2026-02-01T00:00:00Z"));
+        runner.EnqueueCommentsView();
+        var client = new GhCliClient(runner);
+
+        await client.GetIssuesAsync(Repository, new DateTimeOffset(2026, 1, 15, 0, 0, 0, TimeSpan.Zero), CancellationToken.None);
+
+        var listRequest = Assert.Single(runner.Requests, r => r.Arguments is ["issue", "list", ..]);
+        Assert.DoesNotContain("--state", listRequest.Arguments);
+        var searchIndex = listRequest.Arguments.ToList().IndexOf("--search");
+        Assert.Equal("sort:updated-asc updated:>=2026-01-15T00:00:00Z", listRequest.Arguments[searchIndex + 1]);
+    }
+
+    [Fact]
+    public async Task GetIssuesAsync_persists_closed_at_and_fetches_full_comments_per_issue_rather_than_the_lists_own_field()
+    {
+        var runner = new SequencedRunner();
+        runner.EnqueueIssueList("""
+            [{"id":"i1","number":7,"title":"Bug","body":"Repro","state":"CLOSED","author":{"login":"alice"},
+              "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-05T00:00:00Z","closedAt":"2026-01-05T00:00:00Z","labels":[]}]
+            """);
+        runner.EnqueueResponse(0, """{"comments":[{"id":"c1","author":{"login":"bob"},"body":"Reproduced","createdAt":"2026-01-02T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}]}""", "");
+        var client = new GhCliClient(runner);
+
+        var issues = await client.GetIssuesAsync(Repository, null, CancellationToken.None);
+
+        var issue = Assert.Single(issues);
+        Assert.Equal(new DateTimeOffset(2026, 1, 5, 0, 0, 0, TimeSpan.Zero), issue.ClosedAt);
+        var comment = Assert.Single(issue.Comments);
+        Assert.Equal("Reproduced", comment.Body);
+        var viewRequest = Assert.Single(runner.Requests, r => r.Arguments is ["issue", "view", ..]);
+        Assert.Equal(new[] { "issue", "view", "7", "--repo", "acme/billing", "--json", "comments" }, viewRequest.Arguments);
+    }
+
+    [Fact]
+    public async Task GetIssuesAsync_reports_a_clear_error_when_gh_reports_a_rate_limit()
+    {
+        var runner = new SequencedRunner();
+        runner.EnqueueResponse(1, "", "API rate limit exceeded for user ID 123.");
+        var client = new GhCliClient(runner);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetIssuesAsync(Repository, null, CancellationToken.None));
+        Assert.Contains("rate limit exceeded", ex.Message);
+    }
+
+    private static string FullPage(int startNumber, int count, string updatedAt) => Page(startNumber, count, updatedAt);
+    private static string ShortPage(int startNumber, int count, string updatedAt) => Page(startNumber, count, updatedAt);
+
+    private static string Page(int startNumber, int count, string updatedAt)
+    {
+        var issues = Enumerable.Range(startNumber, count).Select(number =>
+            $$"""{"id":"i{{number}}","number":{{number}},"title":"Issue {{number}}","body":"","state":"OPEN","author":{"login":"alice"},"createdAt":"2026-01-01T00:00:00Z","updatedAt":"{{updatedAt}}","closedAt":null,"labels":[]}""");
+        return "[" + string.Join(",", issues) + "]";
+    }
+
+    private sealed class SequencedRunner : IProcessRunner
+    {
+        private readonly Queue<(int ExitCode, string StdOut, string StdErr)> responses = new();
+        public List<ProcessRequest> Requests { get; } = [];
+
+        public void EnqueueIssueList(string json) => EnqueueResponse(0, json, "");
+        public void EnqueueCommentsView() => EnqueueResponse(0, """{"comments":[]}""", "");
+        public void EnqueueResponse(int exitCode, string stdout, string stderr) => responses.Enqueue((exitCode, stdout, stderr));
+
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            var (exitCode, stdout, stderr) = responses.Count > 0 ? responses.Dequeue() : (0, "[]", "");
+            var now = DateTimeOffset.UtcNow;
+            return Task.FromResult(new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, now, now, exitCode, stdout, stderr, false, false));
+        }
+    }
+
     [Theory]
     [InlineData("""{"state":"MERGED","merged":true}""", true, false)]
     [InlineData("""{"state":"CLOSED","merged":false}""", false, true)]

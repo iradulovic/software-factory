@@ -202,6 +202,25 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed],
             FactoryTaskStatus.Cancelled, false, "Cancelled by operator", cancellationToken);
 
+    public async Task<bool> CancelPendingForIssueAsync(long issueId, string reason, CancellationToken cancellationToken)
+    {
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled);
+        const string sql = """
+            WITH updated AS (
+              UPDATE factory.task SET status='Cancelled',claimed_by=NULL,claimed_at=NULL,lease_until=NULL
+              WHERE github_issue_id=@issueId AND status='Pending'
+              RETURNING id
+            ), logged AS (
+              INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+              SELECT id,'Pending','Cancelled',@reason,'orchestrator' FROM updated
+            )
+            SELECT count(*)::int FROM updated
+            """;
+        await using var connection = Connection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { issueId, reason }, cancellationToken: cancellationToken));
+        return count > 0;
+    }
+
     private async Task<bool> TransitionFromCurrentAsync(Guid taskId, IReadOnlyCollection<FactoryTaskStatus> allowedSources, FactoryTaskStatus next, bool resetExecution, string reason, CancellationToken cancellationToken)
     {
         await using var connection = Connection();

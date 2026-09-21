@@ -330,6 +330,72 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Sync_checkpoint_closed_at_and_pending_cancellation_are_persisted()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var github = new PostgresGitHubStore(settings);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+        var repository = new GitHubRepository(0, "factory-tests", suffix, $"https://example.invalid/{suffix}.git", "main", true);
+        await github.UpsertRepositoryAsync(repository, CancellationToken.None);
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        var repositoryId = await connection.ExecuteScalarAsync<long>("SELECT id FROM github.repository WHERE owner='factory-tests' AND name=@suffix", new { suffix });
+        long issueId = 0;
+        try
+        {
+            var enabled = await github.GetEnabledRepositoriesAsync(CancellationToken.None);
+            Assert.Null(enabled.Single(r => r.Id == repositoryId).LastSyncedAt);
+
+            var checkpoint = new DateTimeOffset(2026, 3, 1, 12, 0, 0, TimeSpan.Zero);
+            await github.MarkRepositorySyncedAsync(repositoryId, checkpoint, CancellationToken.None);
+            var afterMark = await github.GetRepositoryAsync(repositoryId, CancellationToken.None);
+            Assert.Equal(checkpoint, afterMark?.LastSyncedAt);
+
+            var now = DateTimeOffset.UtcNow;
+            var closedAt = now.AddMinutes(-1);
+            var issue = await github.UpsertIssueAsync(repositoryId, new GitHubIssue(0, repositoryId, Random.Shared.NextInt64(1, long.MaxValue),
+                1, "Closed issue", "Body", "CLOSED", "tester", now, now, ["factory:ready"], [], closedAt), CancellationToken.None);
+            issueId = issue.Id;
+
+            var reloaded = await github.GetIssueAsync(issueId, CancellationToken.None);
+            Assert.Equal(closedAt, reloaded?.ClosedAt);
+
+            // A closed issue is not eligible, so no task should ever have been created for it, and cancelling is a no-op.
+            Assert.False(await tasks.CancelPendingForIssueAsync(issueId, "Issue was closed on GitHub.", CancellationToken.None));
+
+            var openIssue = issue with { State = "OPEN", ClosedAt = null };
+            Assert.True(await tasks.CreateForIssueIfEligibleAsync(openIssue, "main", CancellationToken.None));
+            var status = await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE github_issue_id=@issueId", new { issueId });
+            Assert.Equal("Pending", status);
+
+            Assert.True(await tasks.CancelPendingForIssueAsync(issueId, "Issue was closed on GitHub.", CancellationToken.None));
+            var (cancelledStatus, reason) = await connection.QuerySingleAsync<(string Status, string? Reason)>(
+                "SELECT status,failure_reason FROM factory.task WHERE github_issue_id=@issueId", new { issueId });
+            Assert.Equal("Cancelled", cancelledStatus);
+            var eventReason = await connection.QuerySingleAsync<string>(
+                "SELECT reason FROM factory.task_event WHERE task_id=(SELECT id FROM factory.task WHERE github_issue_id=@issueId) AND to_status='Cancelled'", new { issueId });
+            Assert.Equal("Issue was closed on GitHub.", eventReason);
+
+            // Cancelling again is a no-op: the task is no longer Pending.
+            Assert.False(await tasks.CancelPendingForIssueAsync(issueId, "Issue was closed on GitHub.", CancellationToken.None));
+        }
+        finally
+        {
+            if (issueId != 0) await connection.ExecuteAsync("""
+                DELETE FROM factory.task_event WHERE task_id IN (SELECT id FROM factory.task WHERE github_issue_id=@issueId);
+                DELETE FROM factory.task WHERE github_issue_id=@issueId;
+                DELETE FROM github.issue WHERE id=@issueId;
+                """, new { issueId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Attempt_count_previous_summary_and_expired_quota_resume_are_persisted()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

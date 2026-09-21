@@ -61,6 +61,11 @@ public interface ITaskStore
     /// <summary>Whether the named agent's most recent invocation (across every task) detected quota exhaustion
     /// with a reset time that has not yet passed.</summary>
     Task<bool> IsAgentAtQuotaAsync(string agent, CancellationToken cancellationToken);
+
+    /// <summary>Cancels a task's <see cref="FactoryTaskStatus.Pending"/> request for the given GitHub issue
+    /// (never a task that is already active), with an explicit reason, because the issue was closed or lost its
+    /// <c>factory:ready</c> label on GitHub. Returns whether a task was actually cancelled.</summary>
+    Task<bool> CancelPendingForIssueAsync(long issueId, string reason, CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore
@@ -69,14 +74,22 @@ public interface IGitHubStore
     Task<GitHubRepository?> GetRepositoryAsync(long id, CancellationToken cancellationToken);
     Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken);
     Task UpsertRepositoryAsync(GitHubRepository repository, CancellationToken cancellationToken);
-    Task MarkRepositorySyncedAsync(long repositoryId, CancellationToken cancellationToken);
+
+    /// <summary>Records the point in time through which this repository's issues have been fully synchronized, so
+    /// the next cycle's <see cref="IGitHubClient.GetIssuesAsync"/> call can search only for what changed since
+    /// then. Pass the time the sync cycle started, not when it finished, so an issue updated while this cycle was
+    /// still running is safely re-fetched next time rather than silently skipped.</summary>
+    Task MarkRepositorySyncedAsync(long repositoryId, DateTimeOffset syncedThrough, CancellationToken cancellationToken);
     Task RecordRepositorySyncFailureAsync(long repositoryId, string error, CancellationToken cancellationToken);
     Task<GitHubIssue> UpsertIssueAsync(long repositoryId, GitHubIssue issue, CancellationToken cancellationToken);
 }
 
 public interface IGitHubClient
 {
-    Task<IReadOnlyList<GitHubIssue>> GetOpenIssuesAsync(GitHubRepository repository, CancellationToken cancellationToken);
+    /// <summary>All issues (open and closed) whose <c>updatedAt</c> is at or after <paramref name="since"/> (or
+    /// every issue, if <see langword="null"/>), fully paginated rather than capped at a single page, with every
+    /// comment fetched per issue rather than relying on <c>gh issue list</c>'s own nested comments field.</summary>
+    Task<IReadOnlyList<GitHubIssue>> GetIssuesAsync(GitHubRepository repository, DateTimeOffset? since, CancellationToken cancellationToken);
 
     /// <summary>The current state of a pull request the factory opened, or <see langword="null"/> if it could not be read.</summary>
     Task<PullRequestState?> GetPullRequestStateAsync(string owner, string name, int number, CancellationToken cancellationToken);

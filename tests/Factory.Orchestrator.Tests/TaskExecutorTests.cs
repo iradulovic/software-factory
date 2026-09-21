@@ -405,7 +405,7 @@ public sealed class TaskExecutorTests
             public Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken) => Task.FromResult<GitHubIssue?>(
                 new GitHubIssue(id, 1, 999, 42, "Add invoice export", "", "open", "me", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [], []));
             public Task UpsertRepositoryAsync(GitHubRepository repository, CancellationToken cancellationToken) => throw new NotSupportedException();
-            public Task MarkRepositorySyncedAsync(long repositoryId, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task MarkRepositorySyncedAsync(long repositoryId, DateTimeOffset syncedThrough, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task RecordRepositorySyncFailureAsync(long repositoryId, string error, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<GitHubIssue> UpsertIssueAsync(long repositoryId, GitHubIssue issue, CancellationToken cancellationToken) => throw new NotSupportedException();
         }
