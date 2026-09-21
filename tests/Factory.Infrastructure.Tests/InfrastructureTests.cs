@@ -121,7 +121,11 @@ public sealed class InfrastructureTests
     private static FactoryTask NewTask(string title, int issue) => new(Guid.NewGuid(), 1, 2, issue, title, "", "GitHubIssue", 0,
         FactoryTaskStatus.Pending, null, "main", null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);
 
-    private sealed class StubCache : IRepositoryCache { public Task<string> PrepareAsync(GitHubRepository repository, CancellationToken cancellationToken) => Task.FromResult("cache"); }
+    private sealed class StubCache : IRepositoryCache
+    {
+        public Task<string> PrepareAsync(GitHubRepository repository, CancellationToken cancellationToken) => Task.FromResult("cache");
+        public string GetPath(string owner, string name) => "cache";
+    }
     private sealed class StubRunner : IProcessRunner
     {
         public int CallCount { get; private set; }

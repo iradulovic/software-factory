@@ -38,3 +38,13 @@ public sealed class GitHubSyncOptions
 }
 
 public sealed record ConfiguredRepository(string Owner, string Name, string CloneUrl, string DefaultBranch = "main", bool Enabled = true);
+
+/// <summary>Governs the orchestrator-owned sweep that removes resting tasks' worktrees. Retention defaults to
+/// keeping <see cref="FactoryTaskStatus.Failed"/> and <see cref="FactoryTaskStatus.NeedsHuman"/> around for
+/// inspection; see <see cref="WorktreeCleanupPolicy"/> for the full set of statuses cleanup ever considers.</summary>
+public sealed class WorktreeCleanupOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int PollingIntervalSeconds { get; set; } = 300;
+    public List<FactoryTaskStatus> RetainStatuses { get; set; } = [.. WorktreeCleanupPolicy.DefaultRetainedStatuses];
+}

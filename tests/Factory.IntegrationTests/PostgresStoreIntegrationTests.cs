@@ -561,6 +561,66 @@ public sealed class PostgresStoreIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Worktree_cleanup_candidates_exclude_active_tasks_and_the_conditional_clear_only_applies_when_status_is_unchanged()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var suffix = Guid.NewGuid().ToString("N");
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('worktree-cleanup-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var restingTaskId = Guid.NewGuid();
+        var activeTaskId = Guid.NewGuid();
+        var noWorktreeTaskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch,worktree_path,branch_name)
+                VALUES(@restingTaskId,@repositoryId,'Resting task','Completed','main','/factory/worktrees/acme/w/issue-1','factory/1-x'),
+                      (@activeTaskId,@repositoryId,'Active task','Implementing','main','/factory/worktrees/acme/w/issue-2','factory/2-x'),
+                      (@noWorktreeTaskId,@repositoryId,'No worktree task','Failed','main',NULL,NULL)
+                """, new { restingTaskId, activeTaskId, noWorktreeTaskId, repositoryId });
+
+            var candidates = await tasks.GetWorktreeCleanupCandidatesAsync(CancellationToken.None);
+            var candidateIds = candidates.Select(c => c.TaskId).ToHashSet();
+            Assert.Contains(restingTaskId, candidateIds);
+            Assert.DoesNotContain(activeTaskId, candidateIds);
+            Assert.DoesNotContain(noWorktreeTaskId, candidateIds);
+            var restingCandidate = candidates.Single(c => c.TaskId == restingTaskId);
+            Assert.Equal(FactoryTaskStatus.Completed, restingCandidate.Status);
+            Assert.Equal("/factory/worktrees/acme/w/issue-1", restingCandidate.WorktreePath);
+
+            // A stale expected status (the active task's real status is Implementing) never clears anything.
+            Assert.False(await tasks.ClearWorkspaceIfStatusUnchangedAsync(activeTaskId, FactoryTaskStatus.Completed, CancellationToken.None));
+            var stillActive = await connection.ExecuteScalarAsync<string>("SELECT worktree_path FROM factory.task WHERE id=@activeTaskId", new { activeTaskId });
+            Assert.NotNull(stillActive);
+
+            Assert.True(await tasks.ClearWorkspaceIfStatusUnchangedAsync(restingTaskId, FactoryTaskStatus.Completed, CancellationToken.None));
+            var (clearedPath, clearedBranch) = await connection.QuerySingleAsync<(string? Path, string? Branch)>(
+                "SELECT worktree_path AS \"Path\",branch_name AS \"Branch\" FROM factory.task WHERE id=@restingTaskId", new { restingTaskId });
+            Assert.Null(clearedPath);
+            Assert.Null(clearedBranch);
+
+            // Now that it's already cleared, the same call again is a no-op (status matches but worktree_path is already null; nothing to touch).
+            var candidatesAfterClear = await tasks.GetWorktreeCleanupCandidatesAsync(CancellationToken.None);
+            Assert.DoesNotContain(restingTaskId, candidatesAfterClear.Select(c => c.TaskId));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@restingTaskId,@activeTaskId,@noWorktreeTaskId)", new { restingTaskId, activeTaskId, noWorktreeTaskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
 
     private sealed class LeaseFixture : IAsyncDisposable

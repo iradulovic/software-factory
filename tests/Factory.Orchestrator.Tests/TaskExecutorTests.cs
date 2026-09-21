@@ -418,6 +418,7 @@ public sealed class TaskExecutorTests
                 if (harness.WorktreeFailure is not null) throw harness.WorktreeFailure;
                 return Task.FromResult(GetLocation(repository, task));
             }
+            public Task RemoveAsync(string owner, string name, string worktreePath, CancellationToken cancellationToken) => Task.CompletedTask;
         }
 
         private sealed class FakeInspector(Harness harness) : IWorktreeInspector
