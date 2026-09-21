@@ -190,21 +190,39 @@ public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
     }
 }
 
+internal sealed class GitHubRepositoryRow
+{
+    public long Id { get; init; }
+    public string Owner { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string CloneUrl { get; init; } = "";
+    public string DefaultBranch { get; init; } = "";
+    public bool IsEnabled { get; init; }
+    public DateTime? LastSyncedAt { get; init; }
+}
+
 public sealed class PostgresGitHubStore(IOptions<FactoryOptions> options) : IGitHubStore
 {
+    private const string RepositoryColumns = "id,owner,name,clone_url AS CloneUrl,default_branch AS DefaultBranch,is_enabled AS IsEnabled,last_synced_at AS LastSyncedAt";
+
     private NpgsqlConnection Connection() => new(options.Value.ConnectionString);
 
     public async Task<IReadOnlyList<GitHubRepository>> GetEnabledRepositoriesAsync(CancellationToken cancellationToken)
     {
         await using var c = Connection();
-        return (await c.QueryAsync<GitHubRepository>(new CommandDefinition("SELECT id,owner,name,clone_url AS CloneUrl,default_branch AS DefaultBranch,is_enabled AS IsEnabled,last_synced_at AS LastSyncedAt FROM github.repository WHERE is_enabled", cancellationToken: cancellationToken))).AsList();
+        var rows = await c.QueryAsync<GitHubRepositoryRow>(new CommandDefinition($"SELECT {RepositoryColumns} FROM github.repository WHERE is_enabled", cancellationToken: cancellationToken));
+        return rows.Select(ToModel).ToList();
     }
 
     public async Task<GitHubRepository?> GetRepositoryAsync(long id, CancellationToken cancellationToken)
     {
         await using var c = Connection();
-        return await c.QuerySingleOrDefaultAsync<GitHubRepository>(new CommandDefinition("SELECT id,owner,name,clone_url AS CloneUrl,default_branch AS DefaultBranch,is_enabled AS IsEnabled,last_synced_at AS LastSyncedAt FROM github.repository WHERE id=@id", new { id }, cancellationToken: cancellationToken));
+        var row = await c.QuerySingleOrDefaultAsync<GitHubRepositoryRow>(new CommandDefinition($"SELECT {RepositoryColumns} FROM github.repository WHERE id=@id", new { id }, cancellationToken: cancellationToken));
+        return row is null ? null : ToModel(row);
     }
+
+    private static GitHubRepository ToModel(GitHubRepositoryRow row) =>
+        new(row.Id, row.Owner, row.Name, row.CloneUrl, row.DefaultBranch, row.IsEnabled, OffsetOrNull(row.LastSyncedAt));
 
     public async Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken)
     {
