@@ -247,7 +247,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             SELECT t.id AS "TaskId",t.status AS "Status",t.worktree_path AS "WorktreePath",
               gr.owner AS "RepositoryOwner",gr.name AS "RepositoryName"
             FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id
-            WHERE t.worktree_path IS NOT NULL AND t.status IN @eligibleStatuses
+            WHERE t.worktree_path IS NOT NULL AND t.status = ANY(@eligibleStatuses)
             """;
         var eligibleStatuses = WorktreeCleanupPolicy.EligibleStatuses.Select(s => s.ToString()).ToList();
         await using var connection = Connection();
