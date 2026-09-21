@@ -437,6 +437,19 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await using var c = Connection();
         return await c.ExecuteScalarAsync<int>(new CommandDefinition(sql, cancellationToken: cancellationToken));
     }
+
+    public async Task<bool> IsAgentAtQuotaAsync(string agent, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COALESCE(quota_detected AND quota_reset_at > now(), false)
+            FROM factory.agent_run
+            WHERE agent=@agent
+            ORDER BY started_at DESC
+            LIMIT 1
+            """;
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<bool>(new CommandDefinition(sql, new { agent }, cancellationToken: cancellationToken));
+    }
 }
 
 internal sealed class PreviousAttemptRow

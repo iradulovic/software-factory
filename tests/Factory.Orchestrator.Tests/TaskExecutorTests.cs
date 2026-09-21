@@ -245,6 +245,35 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task Falls_back_to_another_configured_agent_when_the_preferred_one_is_at_quota()
+    {
+        var harness = new Harness { PreferredAgent = "Codex", ConfiguredAgents = ["Codex", "Claude"] };
+        harness.Store.AgentsAtQuota.Add("Codex");
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+        Assert.Equal(["Claude"], harness.AgentInvocationNames);
+        var agentRun = Assert.Single(harness.Store.AgentRuns);
+        Assert.Equal("Claude", agentRun.Agent);
+    }
+
+    [Fact]
+    public async Task Waits_for_quota_when_every_configured_agent_is_exhausted()
+    {
+        var harness = new Harness { ConfiguredAgents = ["Codex", "Claude"] };
+        harness.Store.AgentsAtQuota.Add("Codex");
+        harness.Store.AgentsAtQuota.Add("Claude");
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.WaitingForQuota, harness.Store.Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.WaitingForQuota, "All configured agents are at quota.");
+        Assert.Empty(harness.Store.AgentRuns);
+        Assert.Equal(0, harness.AgentInvocations);
+    }
+
+    [Fact]
     public async Task Completed_status_without_changes_never_reaches_validation()
     {
         var harness = new Harness { HasChanges = false };
@@ -326,12 +355,15 @@ public sealed class TaskExecutorTests
         public Exception? WorktreeFailure { get; init; }
         public string? ConfigurationBaseRef { get; private set; }
         public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
-        public FactoryTask ClaimedTask { get; } = new(Guid.NewGuid(), 1, 2, 42, "Add invoice export", "", "GitHubIssue", 0,
-            FactoryTaskStatus.Claimed, null, "main", null, null, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null);
+        public string? PreferredAgent { get; init; }
+        private FactoryTask? _claimedTask;
+        public FactoryTask ClaimedTask => _claimedTask ??= new(Guid.NewGuid(), 1, 2, 42, "Add invoice export", "", "GitHubIssue", 0,
+            FactoryTaskStatus.Claimed, PreferredAgent, "main", null, null, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null);
         public List<(string Owner, string Name, int IssueNumber, string Body)> Comments { get; } = [];
         public List<string> Labels { get; } = [];
         public AttemptContext? WrittenAttempt { get; set; }
         public int AgentInvocations { get; private set; }
+        public IReadOnlyList<string> ConfiguredAgents { get; init; } = ["Codex"];
 
         public static ProcessResult Process(int? exitCode = 0, bool timedOut = false)
         {
@@ -342,7 +374,8 @@ public sealed class TaskExecutorTests
         public static AgentRunResult Agent(string status, string summary, string? humanReason = null, bool needsHuman = false) =>
             new(Process(), new AgentResult(status, summary, ["dotnet test"], true, ["src/Export.cs"], [], needsHuman, humanReason), null, false);
 
-        public void RecordAgentInvocation() => AgentInvocations++;
+        public List<string> AgentInvocationNames { get; } = [];
+        public void RecordAgentInvocation(string name) { AgentInvocations++; AgentInvocationNames.Add(name); }
 
         public static AgentRunRecord PriorAgentRun(Guid taskId) => new(Guid.NewGuid(), taskId, Guid.NewGuid(), Guid.NewGuid(), "Codex",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1.0, 1, "Failed", null, "boom", false, null, 1, false, null);
@@ -354,7 +387,7 @@ public sealed class TaskExecutorTests
                 new PrepareRepositoryStep(Store, new FakeGitHubStore(this)),
                 new CreateWorktreeStep(Store, new FakeWorktrees(this)),
                 new WriteContextStep(Store, new FakeContextWriter(this), new FakeConfigurationReader(this)),
-                new RunAgentStep(Store, new FakeAgent(this)),
+                new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store)),
                 new CollectDiffStep(Store, new FakeInspector(this)),
                 new ValidateStep(Store, new FakeProcessRunner(this)),
                 new PreparePublicationStep(Store, new FakeInspector(this)),
@@ -403,11 +436,13 @@ public sealed class TaskExecutorTests
             }
         }
 
-        private sealed class FakeAgent(Harness harness) : IAgentRunner
+        private sealed class FakeAgent(Harness harness, string name) : IAgentRunner
         {
+            public string Name => name;
+
             public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
             {
-                harness.RecordAgentInvocation();
+                harness.RecordAgentInvocation(name);
                 return Task.FromResult(harness.AgentResult);
             }
         }

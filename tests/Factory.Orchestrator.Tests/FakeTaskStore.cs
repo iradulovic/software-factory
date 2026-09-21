@@ -102,5 +102,8 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<PreviousAttemptSummary?> GetPreviousAttemptAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(PreviousAttempt);
     public Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken) => Task.FromResult(ExpiredQuotaTasksToResume);
 
+    public HashSet<string> AgentsAtQuota { get; } = [];
+    public Task<bool> IsAgentAtQuotaAsync(string agent, CancellationToken cancellationToken) => Task.FromResult(AgentsAtQuota.Contains(agent));
+
     public StepRecord Step(string stepType) => Steps.Values.Single(s => s.StepType == stepType);
 }

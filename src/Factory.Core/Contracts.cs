@@ -2,7 +2,12 @@ namespace Factory.Core;
 
 public interface IClock { DateTimeOffset UtcNow { get; } }
 public interface IProcessRunner { Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken); }
-public interface IAgentRunner { Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken); }
+public interface IAgentRunner
+{
+    /// <summary>Matches <see cref="AgentProfile.Name"/> and <see cref="FactoryTask.PreferredAgent"/>.</summary>
+    string Name { get; }
+    Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken);
+}
 public interface IAgentAvailabilityChecker
 {
     string Agent { get; }
@@ -52,6 +57,10 @@ public interface ITaskStore
     /// <summary>Moves every task whose recorded quota reset time has passed from <see cref="FactoryTaskStatus.WaitingForQuota"/>
     /// back to <see cref="FactoryTaskStatus.Pending"/>, and returns how many were resumed.</summary>
     Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken);
+
+    /// <summary>Whether the named agent's most recent invocation (across every task) detected quota exhaustion
+    /// with a reset time that has not yet passed.</summary>
+    Task<bool> IsAgentAtQuotaAsync(string agent, CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore

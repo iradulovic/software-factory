@@ -10,13 +10,21 @@ public static class ServiceCollectionExtensions
     {
         Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
         services.Configure<FactoryOptions>(configuration.GetSection("Factory"));
-        services.Configure<CodexOptions>(configuration.GetSection("Codex"));
         services.Configure<GitHubSyncOptions>(configuration.GetSection("GitHub"));
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IAgentResultReader, AgentResultReader>();
-        services.AddSingleton<IAgentRunner, CodexAgentRunner>();
-        services.AddSingleton<IAgentAvailabilityChecker, CodexAvailabilityChecker>();
+
+        // One IAgentRunner/IAgentAvailabilityChecker per configured agent profile: adding a CLI coding agent is
+        // a configuration change (see AgentProfilesOptions), never a new class or a registration here.
+        var profiles = configuration.GetSection("Agents").Get<AgentProfilesOptions>()?.Profiles is { Count: > 0 } configured
+            ? configured : new AgentProfilesOptions().Profiles;
+        foreach (var profile in profiles)
+        {
+            services.AddSingleton<IAgentRunner>(sp => new CliAgentRunner(profile, sp.GetRequiredService<IProcessRunner>(), sp.GetRequiredService<IAgentResultReader>(), sp.GetRequiredService<IClock>()));
+            services.AddSingleton<IAgentAvailabilityChecker>(sp => new CliAgentAvailabilityChecker(profile, sp.GetRequiredService<IProcessRunner>()));
+        }
+
         services.AddSingleton<IRepositoryCache, RepositoryCache>();
         services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
         services.AddSingleton<IWorktreeInspector, GitWorktreeInspector>();

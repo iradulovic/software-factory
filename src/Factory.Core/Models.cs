@@ -108,3 +108,20 @@ public sealed record PreviousAttemptSummary(
     IReadOnlyList<string> ChangedFiles,
     int LinesAdded,
     int LinesRemoved);
+
+/// <summary>
+/// A configuration-driven definition of one CLI coding agent. Every agent has the same shape — executable,
+/// arguments, how the prompt is delivered, timeout, and how quota exhaustion shows up in its output — so adding
+/// one is a configuration change, never a new class. <see cref="PromptDelivery"/> is <c>"stdin"</c> (the prompt is
+/// piped to the process) or <c>"argument"</c> (the prompt is appended to <see cref="Arguments"/>).
+/// </summary>
+public sealed record AgentProfile(
+    string Name,
+    string Executable,
+    IReadOnlyList<string> Arguments,
+    string PromptDelivery,
+    int TimeoutMinutes,
+    IReadOnlyList<string> QuotaSignatures,
+    IReadOnlyList<string> VersionArguments,
+    int AvailabilityTimeoutSeconds,
+    int QuotaCooldownHours);

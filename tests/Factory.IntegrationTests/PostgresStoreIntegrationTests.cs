@@ -373,6 +373,12 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Contains("compile error", previous.ValidationOutput);
             Assert.Contains("src/Export.cs", previous.ChangedFiles);
 
+            Assert.False(await tasks.IsAgentAtQuotaAsync("NeverUsedAgent", CancellationToken.None));
+            var quotaCheckStepId = await tasks.StartStepAsync(runId, "AgentImplementation", 2, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, runId, quotaCheckStepId, "Claude", DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow, 1, 1, "Failed", "", "rate limited", true, DateTimeOffset.UtcNow.AddHours(4), 2, false, null), CancellationToken.None);
+            Assert.True(await tasks.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
+
             // A quota-detected attempt whose reset time has already passed is auto-resumed to Pending.
             await connection.ExecuteAsync("""
                 INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@quotaTaskId,@repositoryId,'Quota task','WaitingForQuota','main')
