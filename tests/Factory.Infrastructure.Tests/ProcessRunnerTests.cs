@@ -30,19 +30,19 @@ public sealed class ProcessRunnerTests
     }
 
     [Fact]
-    public async Task Cancelling_the_token_kills_the_process_and_is_reported_as_cancelled_not_timed_out()
+    public async Task Cancelling_the_token_kills_the_process_and_throws()
     {
+        // The killed process's pipes are read with the same (now-cancelled) token, so the pending read itself
+        // throws rather than RunAsync returning a completed ProcessResult - distinct from a Timeout (see the next
+        // test), which uses an unlinked token for those reads and so always returns normally.
         var runner = new ProcessRunner(new SystemClock());
         using var cts = new CancellationTokenSource();
         var marker = Path.Combine(Path.GetTempPath(), $"factory-process-cancel-{Guid.NewGuid():N}");
 
         var run = runner.RunAsync(new ProcessRequest("sh", ["-c", $"sleep 30; touch {marker}"], "."), cts.Token);
         cts.Cancel();
-        var result = await run;
 
-        Assert.True(result.Cancelled);
-        Assert.False(result.TimedOut);
-        Assert.False(result.Succeeded);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run);
         await Task.Delay(TimeSpan.FromSeconds(1));
         Assert.False(File.Exists(marker));
     }
