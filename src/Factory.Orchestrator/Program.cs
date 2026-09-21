@@ -19,6 +19,8 @@ builder.Services.AddSingleton<TaskGitHubNotifier>();
 builder.Services.AddSingleton<TaskExecutor>();
 builder.Services.AddSingleton<LeaseMonitor>();
 builder.Services.AddSingleton<PublicationExecutor>();
+builder.Services.AddSingleton<WorktreeCleanupExecutor>();
 builder.Services.AddHostedService<Worker>();
 builder.Services.AddHostedService<PublicationWorker>();
+builder.Services.AddHostedService<WorktreeCleanupWorker>();
 await builder.Build().RunAsync();

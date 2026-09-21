@@ -70,6 +70,15 @@ public interface ITaskStore
     /// <summary>Records this worker process as alive, and the task it is currently executing, if any. Called on a
     /// heartbeat cadence so the dashboard can show worker status and detect one that has stopped reporting.</summary>
     Task RecordHeartbeatAsync(string workerId, string host, Guid? currentTaskId, CancellationToken cancellationToken);
+
+    /// <summary>Every resting task with a recorded worktree, whatever its status — <see cref="WorktreeCleanupPolicy"/>
+    /// decides which of these are actually eligible for cleanup under the configured retention policy.</summary>
+    Task<IReadOnlyList<WorktreeCleanupCandidate>> GetWorktreeCleanupCandidatesAsync(CancellationToken cancellationToken);
+
+    /// <summary>Clears a task's recorded worktree and branch, but only if its status is still exactly
+    /// <paramref name="expectedStatus"/> — protecting against a task that resumed (e.g. a human retry) between
+    /// being listed as a cleanup candidate and actually being cleaned up. Returns whether it was cleared.</summary>
+    Task<bool> ClearWorkspaceIfStatusUnchangedAsync(Guid taskId, FactoryTaskStatus expectedStatus, CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore
@@ -98,11 +107,22 @@ public interface IGitHubClient
     /// <summary>The current state of a pull request the factory opened, or <see langword="null"/> if it could not be read.</summary>
     Task<PullRequestState?> GetPullRequestStateAsync(string owner, string name, int number, CancellationToken cancellationToken);
 }
-public interface IRepositoryCache { Task<string> PrepareAsync(GitHubRepository repository, CancellationToken cancellationToken); }
+public interface IRepositoryCache
+{
+    Task<string> PrepareAsync(GitHubRepository repository, CancellationToken cancellationToken);
+
+    /// <summary>The deterministic cache path for a repository, computed with no I/O — the same path
+    /// <see cref="PrepareAsync"/> would prepare, without fetching.</summary>
+    string GetPath(string owner, string name);
+}
 public interface IWorktreeManager
 {
     WorktreeLocation GetLocation(GitHubRepository repository, FactoryTask task);
     Task<WorktreeLocation> CreateAsync(GitHubRepository repository, FactoryTask task, CancellationToken cancellationToken);
+
+    /// <summary>Removes a resting task's worktree, orchestrator-owned like its creation. If the worktree directory
+    /// is already gone, prunes the cache's stale administrative record instead of failing.</summary>
+    Task RemoveAsync(string owner, string name, string worktreePath, CancellationToken cancellationToken);
 }
 public sealed record WorktreeLocation(string BranchName, string Path);
 public interface IRepositoryConfigurationReader { Task<RepositoryConfiguration> ReadAsync(string worktreePath, string baseRef, CancellationToken cancellationToken); }

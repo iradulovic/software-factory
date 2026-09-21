@@ -42,6 +42,18 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.CompletedTask;
     }
 
+    public List<WorktreeCleanupCandidate> WorktreeCleanupCandidates { get; } = [];
+    public Task<IReadOnlyList<WorktreeCleanupCandidate>> GetWorktreeCleanupCandidatesAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<WorktreeCleanupCandidate>>(WorktreeCleanupCandidates);
+
+    public List<(Guid TaskId, FactoryTaskStatus ExpectedStatus)> ClearedWorkspaces { get; } = [];
+    public bool NextClearWorkspaceSucceeds { get; set; } = true;
+    public Task<bool> ClearWorkspaceIfStatusUnchangedAsync(Guid taskId, FactoryTaskStatus expectedStatus, CancellationToken cancellationToken)
+    {
+        ClearedWorkspaces.Add((taskId, expectedStatus));
+        return Task.FromResult(NextClearWorkspaceSucceeds);
+    }
+
     public Task TransitionAsync(Guid taskId, FactoryTaskStatus expected, FactoryTaskStatus next, string? failureReason, CancellationToken cancellationToken)
     {
         TaskStateMachine.EnsureCanTransition(expected, next);

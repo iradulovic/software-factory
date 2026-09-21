@@ -10,9 +10,11 @@ public sealed class RepositoryCache(IProcessRunner runner, IOptions<FactoryOptio
     // creates refs/remotes/origin/* and `git fetch` only updates FETCH_HEAD. The cache therefore tracks the remote explicitly.
     public const string FetchRefspec = "+refs/heads/*:refs/remotes/origin/*";
 
+    public string GetPath(string owner, string name) => Path.GetFullPath(Path.Combine(options.Value.RootDirectory, "repositories", owner, name + ".git"));
+
     public async Task<string> PrepareAsync(GitHubRepository repository, CancellationToken cancellationToken)
     {
-        var path = Path.GetFullPath(Path.Combine(options.Value.RootDirectory, "repositories", repository.Owner, repository.Name + ".git"));
+        var path = GetPath(repository.Owner, repository.Name);
         var parent = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(parent);
         if (!Directory.Exists(path))
@@ -123,6 +125,21 @@ public sealed partial class GitWorktreeManager(IRepositoryCache cache, IProcessR
         var result = await runner.RunAsync(new ProcessRequest("git", ["worktree", "add", location.Path, "-b", location.BranchName, $"origin/{task.BaseBranch}"], cachePath, Timeout: TimeSpan.FromMinutes(5)), cancellationToken);
         if (!result.Succeeded) throw new InvalidOperationException($"Worktree creation failed: {result.StandardError}");
         return location;
+    }
+
+    public async Task RemoveAsync(string owner, string name, string worktreePath, CancellationToken cancellationToken)
+    {
+        var cachePath = cache.GetPath(owner, name);
+        if (Directory.Exists(worktreePath))
+        {
+            var result = await runner.RunAsync(new ProcessRequest("git", ["worktree", "remove", "--force", worktreePath], cachePath, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
+            if (!result.Succeeded) throw new InvalidOperationException($"Worktree removal failed: {result.StandardError}");
+        }
+        else if (Directory.Exists(cachePath))
+        {
+            // Already gone from disk (e.g. removed by hand); still prune the cache's now-stale administrative record.
+            await runner.RunAsync(new ProcessRequest("git", ["worktree", "prune"], cachePath, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        }
     }
 
     [GeneratedRegex("[^a-z0-9]+")]

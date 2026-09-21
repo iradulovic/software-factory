@@ -109,6 +109,10 @@ public sealed record PullRequestState(bool Merged, bool Closed);
 /// <see cref="IGitHubClient"/> to look up its pull request's current state.</summary>
 public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, string RepositoryName, int PullRequestNumber);
 
+/// <summary>A resting task with a recorded worktree, identified well enough for <see cref="WorktreeCleanupPolicy"/>
+/// to decide whether to remove it and for <see cref="IWorktreeManager"/> to remove it.</summary>
+public sealed record WorktreeCleanupCandidate(Guid TaskId, FactoryTaskStatus Status, string WorktreePath, string RepositoryOwner, string RepositoryName);
+
 /// <summary>Where a task sits in its bounded implementation-attempt budget, for both enforcement and for
 /// telling the agent which attempt this is.</summary>
 public sealed record AttemptContext(int Number, int MaxAttempts, PreviousAttemptSummary? Previous);

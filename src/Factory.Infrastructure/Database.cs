@@ -66,6 +66,15 @@ internal sealed class TaskRow
     private static DateTimeOffset? Offset(DateTime? value) => value is null ? null : Offset(value.Value);
 }
 
+internal sealed class WorktreeCleanupCandidateRow
+{
+    public Guid TaskId { get; init; }
+    public string Status { get; init; } = "";
+    public string WorktreePath { get; init; } = "";
+    public string RepositoryOwner { get; init; } = "";
+    public string RepositoryName { get; init; } = "";
+}
+
 public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock clock) : ITaskStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -230,6 +239,27 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             """;
         await using var connection = Connection();
         await connection.ExecuteAsync(new CommandDefinition(sql, new { workerId, host, currentTaskId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<IReadOnlyList<WorktreeCleanupCandidate>> GetWorktreeCleanupCandidatesAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT t.id AS "TaskId",t.status AS "Status",t.worktree_path AS "WorktreePath",
+              gr.owner AS "RepositoryOwner",gr.name AS "RepositoryName"
+            FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id
+            WHERE t.worktree_path IS NOT NULL AND t.status = ANY(@eligibleStatuses)
+            """;
+        var eligibleStatuses = WorktreeCleanupPolicy.EligibleStatuses.Select(s => s.ToString()).ToList();
+        await using var connection = Connection();
+        var rows = await connection.QueryAsync<WorktreeCleanupCandidateRow>(new CommandDefinition(sql, new { eligibleStatuses }, cancellationToken: cancellationToken));
+        return rows.Select(row => new WorktreeCleanupCandidate(row.TaskId, Enum.Parse<FactoryTaskStatus>(row.Status), row.WorktreePath, row.RepositoryOwner, row.RepositoryName)).ToList();
+    }
+
+    public async Task<bool> ClearWorkspaceIfStatusUnchangedAsync(Guid taskId, FactoryTaskStatus expectedStatus, CancellationToken cancellationToken)
+    {
+        const string sql = "UPDATE factory.task SET worktree_path=NULL,branch_name=NULL WHERE id=@taskId AND status=@status";
+        await using var connection = Connection();
+        return await connection.ExecuteAsync(new CommandDefinition(sql, new { taskId, status = expectedStatus.ToString() }, cancellationToken: cancellationToken)) == 1;
     }
 
     private async Task<bool> TransitionFromCurrentAsync(Guid taskId, IReadOnlyCollection<FactoryTaskStatus> allowedSources, FactoryTaskStatus next, bool resetExecution, string reason, CancellationToken cancellationToken)

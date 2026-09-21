@@ -11,6 +11,7 @@ public static class ServiceCollectionExtensions
         Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
         services.Configure<FactoryOptions>(configuration.GetSection("Factory"));
         services.Configure<GitHubSyncOptions>(configuration.GetSection("GitHub"));
+        services.Configure<WorktreeCleanupOptions>(configuration.GetSection("WorktreeCleanup"));
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IAgentResultReader, AgentResultReader>();
