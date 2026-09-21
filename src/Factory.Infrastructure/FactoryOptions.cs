@@ -48,3 +48,15 @@ public sealed class WorktreeCleanupOptions
     public int PollingIntervalSeconds { get; set; } = 300;
     public List<FactoryTaskStatus> RetainStatuses { get; set; } = [.. WorktreeCleanupPolicy.DefaultRetainedStatuses];
 }
+
+/// <summary>Governs OpenTelemetry trace export (see <see cref="TelemetryExtensions.AddFactoryTelemetry"/>).
+/// Exporting is entirely optional: with no <see cref="OtlpEndpoint"/> configured, no exporter is registered at
+/// all, so a missing or unreachable collector never affects startup or the app's own health.</summary>
+public sealed class TelemetryOptions
+{
+    /// <summary>Overrides the host's own default service name (e.g. "Factory.Api") if set.</summary>
+    public string? ServiceName { get; set; }
+
+    /// <summary>The OTLP endpoint to export traces to, e.g. "http://localhost:4317". Left unset, no exporter is added.</summary>
+    public string? OtlpEndpoint { get; set; }
+}

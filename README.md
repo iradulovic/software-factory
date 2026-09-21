@@ -173,6 +173,17 @@ The Orchestrator's `Worker` records a heartbeat (worker id, host, current task) 
 
 A separate `WorktreeCleanupWorker` sweeps for resting tasks' worktrees every `WorktreeCleanup:PollingIntervalSeconds` (default 5 minutes) and removes them, never touching a task that is still active or one whose status changes in the moment cleanup gets to it. By default it retains (never removes) worktrees for `Failed` and `NeedsHuman` tasks, so there's still something to inspect after a run needed a human; configure `WorktreeCleanup:RetainStatuses` to change that, or `WorktreeCleanup:Enabled: false` to turn cleanup off entirely. Every path is validated as living inside the configured worktrees directory before anything is deleted.
 
+## Telemetry
+
+The API, Orchestrator, and GitHub Sync hosts all export OpenTelemetry traces through the same `Telemetry` configuration section, and all three tag spans with whichever of task, run, step, repository, and issue identifiers apply to that operation (never agent prompts, source content, stdout/stderr, or secrets):
+
+```text
+Telemetry__ServiceName=       # optional; defaults to Factory.Api / Factory.Orchestrator / Factory.GitHubSync per host
+Telemetry__OtlpEndpoint=      # e.g. http://localhost:4317; unset means no exporter is registered at all
+```
+
+With no `Telemetry__OtlpEndpoint` configured, nothing is exported and startup is unaffected by whether a collector is reachable — the option exists to opt in, not to require one.
+
 ## Current limitations and safety
 
 - The repository cache is a bare repository that tracks `origin` explicitly (`+refs/heads/*:refs/remotes/origin/*`). Caches created by earlier versions with `git clone --bare` are healed automatically on the next task.
@@ -182,6 +193,5 @@ A separate `WorktreeCleanupWorker` sweeps for resting tasks' worktrees every `Wo
 - Agent results with status `failed` fail the task, `blocked` and `needs-human` hand it to a human, and a `completed` result with no changes in the worktree fails instead of being validated. `.factory/` is excluded from Git in every worktree.
 - A validated task rests at `ReadyForPublish` rather than being marked `Completed` automatically. Reaching it requires the worktree to have every change committed on the expected branch; the orchestrator independently computes the base/head commit SHAs, changed files, and added/removed lines (shown on the task's details page) rather than trusting the agent's own report. Nothing currently moves a task past `ReadyForPublish`.
 - Lease expiry is not a process fence: if an old worker is completely frozen rather than stopped, it could theoretically resume and touch the worktree after another worker recovers the task. Responsive workers cancel execution when renewal fails; stronger fencing would require process isolation.
-- Validation command tokenization does not support quoting or shell operators.
 - A human-triggered `POST /api/tasks/{id}/publish` (or an `auto-draft` repository) pushes a `ReadyForPublish` task's own branch and opens a draft pull request through `gh`; a separate `PublicationWorker` performs this, independently of the main task pipeline. There is still no automatic merge, deployment, webhook handling, or Claude integration.
 - Only run trusted repositories: coding agents can execute repository code.

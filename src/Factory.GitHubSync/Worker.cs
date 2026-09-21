@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Factory.Core;
 using Factory.Infrastructure;
 using Microsoft.Extensions.Options;
@@ -19,6 +20,8 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
             {
                 foreach (var repository in await store.GetEnabledRepositoriesAsync(stoppingToken))
                 {
+                    using var repositoryActivity = FactoryTelemetry.Source.StartActivity("github.sync_repository");
+                    repositoryActivity?.SetTag("factory.repository_id", repository.Id);
                     try
                     {
                         // Recorded before fetching anything, not after: an issue updated mid-sync might already be
@@ -32,6 +35,9 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                             imported++;
                             if (await tasks.CreateForIssueIfEligibleAsync(saved, repository.DefaultBranch, stoppingToken))
                             {
+                                using var taskActivity = FactoryTelemetry.Source.StartActivity("github.create_task_for_issue");
+                                taskActivity?.SetTag("factory.repository_id", repository.Id);
+                                taskActivity?.SetTag("factory.issue_id", saved.Id);
                                 created++;
                                 continue;
                             }
@@ -64,6 +70,8 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
     {
         foreach (var published in await tasks.GetPublishedTasksAsync(cancellationToken))
         {
+            using var activity = FactoryTelemetry.Source.StartActivity("github.resolve_published_task");
+            activity?.SetTag("factory.task_id", published.TaskId);
             try
             {
                 var state = await client.GetPullRequestStateAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);

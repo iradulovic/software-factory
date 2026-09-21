@@ -1,9 +1,9 @@
+using System.Diagnostics;
 using Dapper;
 using Factory.Core;
 using Factory.Infrastructure;
 using Microsoft.Extensions.Options;
 using Npgsql;
-using OpenTelemetry.Trace;
 using Serilog;
 
 const string TaskListSql = """
@@ -32,7 +32,7 @@ builder.Host.UseSerilog((_, configuration) => configuration
     .MinimumLevel.Override("Microsoft.AspNetCore.Mvc.Infrastructure.DefaultActionDescriptorCollectionProvider", Serilog.Events.LogEventLevel.Warning)
     .WriteTo.Console()
     .WriteTo.File("logs/api-.log", rollingInterval: RollingInterval.Day));
-builder.Services.AddOpenTelemetry().WithTracing(tracing => tracing.AddSource("Factory.Api"));
+builder.Services.AddFactoryTelemetry(builder.Configuration, "Factory.Api");
 builder.Services.AddFactoryInfrastructure(builder.Configuration);
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.AddSingleton(sp => new NpgsqlDataSourceBuilder(sp.GetRequiredService<IOptions<FactoryOptions>>().Value.ConnectionString).Build());
@@ -98,6 +98,8 @@ app.MapGet("/api/tasks", async (string? status, string? repository, string? agen
 
 app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, CancellationToken ct) =>
 {
+    using var activity = FactoryTelemetry.Source.StartActivity("api.get_task");
+    activity?.SetTag("factory.task_id", id);
     await using var c = await db.OpenConnectionAsync(ct);
     var task = await c.QuerySingleOrDefaultAsync(new CommandDefinition(TaskListSql + " WHERE t.id=@id", new { id }, cancellationToken: ct));
     if (task is null) return Results.NotFound();
@@ -126,13 +128,23 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancella
 });
 
 app.MapPost("/api/tasks/{id:guid}/retry", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
-    await tasks.RetryAsync(id, ct) ? Results.Accepted($"/api/tasks/{id}") : Results.Conflict(new { error = "Task cannot be retried from its current state." }));
+{
+    using var activity = FactoryTelemetry.Source.StartActivity("api.retry_task");
+    activity?.SetTag("factory.task_id", id);
+    return await tasks.RetryAsync(id, ct) ? Results.Accepted($"/api/tasks/{id}") : Results.Conflict(new { error = "Task cannot be retried from its current state." });
+});
 
 app.MapPost("/api/tasks/{id:guid}/cancel", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
-    await tasks.CancelAsync(id, ct) ? Results.NoContent() : Results.Conflict(new { error = "Task cannot be cancelled." }));
+{
+    using var activity = FactoryTelemetry.Source.StartActivity("api.cancel_task");
+    activity?.SetTag("factory.task_id", id);
+    return await tasks.CancelAsync(id, ct) ? Results.NoContent() : Results.Conflict(new { error = "Task cannot be cancelled." });
+});
 
 app.MapPost("/api/tasks/{id:guid}/publish", async (Guid id, ITaskStore tasks, NpgsqlDataSource db, CancellationToken ct) =>
 {
+    using var activity = FactoryTelemetry.Source.StartActivity("api.publish_task");
+    activity?.SetTag("factory.task_id", id);
     await using var c = await db.OpenConnectionAsync(ct);
     var status = await c.ExecuteScalarAsync<string?>(new CommandDefinition("SELECT status FROM factory.task WHERE id=@id", new { id }, cancellationToken: ct));
     if (status is null) return Results.NotFound();
@@ -168,6 +180,8 @@ app.MapGet("/api/issues", async (string? repository, string? state, bool? eligib
 });
 app.MapGet("/api/issues/{id:long}", async (long id, NpgsqlDataSource db, CancellationToken ct) =>
 {
+    using var activity = FactoryTelemetry.Source.StartActivity("api.get_issue");
+    activity?.SetTag("factory.issue_id", id);
     await using var c = await db.OpenConnectionAsync(ct);
     var issue = await c.QuerySingleOrDefaultAsync(new CommandDefinition("""
         SELECT i.id,i.issue_number AS "issueNumber",i.title,i.body,i.state,i.author,i.created_at AS "createdAt",i.updated_at AS "updatedAt",i.closed_at AS "closedAt",
@@ -226,6 +240,8 @@ app.MapGet("/api/runs", async (string? status, string? worker, string? repositor
 app.MapGet("/api/runs/workers", Query("SELECT DISTINCT worker_id AS worker FROM factory.run ORDER BY worker_id"));
 app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, CancellationToken ct) =>
 {
+    using var activity = FactoryTelemetry.Source.StartActivity("api.get_run");
+    activity?.SetTag("factory.run_id", id);
     await using var c = await db.OpenConnectionAsync(ct);
     var run = await c.QuerySingleOrDefaultAsync(new CommandDefinition("""
         SELECT r.id,r.task_id AS "taskId",t.title,gr.owner || '/' || gr.name AS repository,
@@ -259,6 +275,8 @@ app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancellat
 
 app.MapGet("/api/steps/{id:guid}/log", async (Guid id, bool? tail, NpgsqlDataSource db, CancellationToken ct) =>
 {
+    using var activity = FactoryTelemetry.Source.StartActivity("api.get_step_log");
+    activity?.SetTag("factory.step_id", id);
     await using var c = await db.OpenConnectionAsync(ct);
     var logPath = await c.ExecuteScalarAsync<string?>(new CommandDefinition("SELECT log_path FROM factory.step WHERE id=@id", new { id }, cancellationToken: ct));
     if (logPath is null) return Results.NotFound(new { error = "No log was recorded for this step." });
@@ -285,6 +303,8 @@ app.MapGet("/api/repositories", Query("""
     """));
 app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, IRepositoryConfigurationReader configurationReader, CancellationToken ct) =>
 {
+    using var activity = FactoryTelemetry.Source.StartActivity("api.get_repository");
+    activity?.SetTag("factory.repository_id", id);
     await using var c = await db.OpenConnectionAsync(ct);
     var item = await c.QuerySingleOrDefaultAsync(new CommandDefinition("""
         SELECT r.id,r.owner,r.name,r.clone_url AS "cloneUrl",r.default_branch AS "defaultBranch",r.is_enabled AS "isEnabled",

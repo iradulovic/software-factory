@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Factory.Core;
 
 namespace Factory.Orchestrator;
@@ -22,6 +23,12 @@ public sealed class TaskExecutor(
 {
     public async Task ExecuteAsync(FactoryTask task, Guid runId, CancellationToken cancellationToken)
     {
+        using var activity = FactoryTelemetry.Source.StartActivity("task.execute");
+        activity?.SetTag("factory.task_id", task.Id);
+        activity?.SetTag("factory.run_id", runId);
+        activity?.SetTag("factory.repository_id", task.RepositoryId);
+        if (task.IssueNumber is { } issueNumber) activity?.SetTag("factory.issue_number", issueNumber);
+
         var context = new PipelineContext(task, runId);
         try
         {
@@ -63,6 +70,10 @@ public sealed class TaskExecutor(
     /// <returns><see langword="true"/> if the pipeline should continue to the next step.</returns>
     private async Task<bool> RunStepAsync(IPipelineStep step, PipelineContext context, CancellationToken cancellationToken)
     {
+        using var activity = FactoryTelemetry.Source.StartActivity(step.GetType().Name);
+        activity?.SetTag("factory.task_id", context.Task.Id);
+        activity?.SetTag("factory.run_id", context.RunId);
+
         var result = await step.ExecuteAsync(context, cancellationToken);
         switch (result.Outcome)
         {
