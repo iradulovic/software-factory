@@ -82,7 +82,7 @@ public sealed class InfrastructureTests
     public async Task Availability_checker_reports_available_from_successful_version_check()
     {
         var runner = new StubResultRunner(new ProcessResult("codex", ["--version"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, "codex 1.2.3\n", "", false, false));
-        var checker = new CodexAvailabilityChecker(runner, Options.Create(new CodexOptions()));
+        var checker = new CliAgentAvailabilityChecker(DefaultProfile, runner);
 
         var availability = await checker.CheckAsync(CancellationToken.None);
 
@@ -96,7 +96,7 @@ public sealed class InfrastructureTests
     public async Task Availability_checker_reports_unavailable_when_check_times_out()
     {
         var runner = new StubResultRunner(new ProcessResult("codex", ["--version"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, "", "", true, false));
-        var checker = new CodexAvailabilityChecker(runner, Options.Create(new CodexOptions()));
+        var checker = new CliAgentAvailabilityChecker(DefaultProfile, runner);
 
         var availability = await checker.CheckAsync(CancellationToken.None);
 
@@ -108,13 +108,15 @@ public sealed class InfrastructureTests
     [Fact]
     public async Task Availability_checker_reports_unavailable_when_executable_is_missing()
     {
-        var checker = new CodexAvailabilityChecker(new ThrowingRunner(), Options.Create(new CodexOptions()));
+        var checker = new CliAgentAvailabilityChecker(DefaultProfile, new ThrowingRunner());
 
         var availability = await checker.CheckAsync(CancellationToken.None);
 
         Assert.False(availability.Available);
         Assert.Equal("Executable not found", availability.Error);
     }
+
+    private static readonly AgentProfile DefaultProfile = new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5);
 
     private static FactoryTask NewTask(string title, int issue) => new(Guid.NewGuid(), 1, 2, issue, title, "", "GitHubIssue", 0,
         FactoryTaskStatus.Pending, null, "main", null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);

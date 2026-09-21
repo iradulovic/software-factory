@@ -18,6 +18,16 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
+- [ ] **SF-401 — Add config-driven agent profiles and `ClaudeAgentRunner`**
+  - Outcome: Claude Code and further CLI agents execute through the same agent boundary and persistence model as Codex.
+  - Acceptance criteria:
+    - Agent profiles (executable, arguments, prompt delivery, timeout, quota signature) are configuration-driven; adding an agent does not require a new class.
+    - `preferred_agent` on the task selects the profile; a fallback policy hands a task to the next available profile when the preferred provider is at quota.
+    - Authentication is inherited from the user's local CLI session.
+    - Result validation, quota detection, and execution recording match Codex behavior.
+    - Orchestration logic contains no agent-specific branching beyond profile selection.
+  - Status 2026-09-21: implemented. `CodexAgentRunner`/`CodexOptions`/`CodexAvailabilityChecker` are replaced by generic `CliAgentRunner`/`CliAgentAvailabilityChecker`, each constructed from a new `AgentProfile` record (executable, arguments, `PromptDelivery` of `"stdin"` or `"argument"`, timeout, quota signatures, version arguments, availability timeout, quota cooldown) — one `IAgentRunner`/`IAgentAvailabilityChecker` pair is registered per profile listed under the new `Agents:Profiles` configuration section (default: a single "Codex" profile matching the previous hardcoded behavior; adding "Claude" or any other CLI agent is a configuration addition). `RunAgentStep` no longer hardcodes an agent name anywhere — `AgentSelector.SelectAsync` (new, in `Factory.Orchestrator`) is now the one place any agent-specific decision is made: it returns the task's `PreferredAgent` if `ITaskStore.IsAgentAtQuotaAsync` (new; keyed by the agent's most recent `factory.agent_run` row across every task) says it isn't currently at quota, otherwise the next configured profile that isn't, otherwise `null` — at which point `RunAgentStep` reports `WaitingForQuota` without invoking any process. Authentication is unchanged: every profile just invokes its configured executable in the current environment, inheriting whatever CLI session is already authenticated. No new migration was needed (`IsAgentAtQuotaAsync` reads the existing `factory.agent_run.quota_detected`/`quota_reset_at` columns); no frontend changes were needed (agent name was already a plain string end to end). Verified: `IsAgentAtQuotaAsync`'s exact SQL was executed verbatim against a real PostgreSQL 16 instance for all three cases (an agent currently at quota, an agent never used, and an agent whose quota has already reset) before being committed. `dotnet build`/`dotnet test` could not be run locally (no .NET SDK); CI on the pull request is the outstanding verification.
+
 ## Next up
 
 Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
@@ -27,15 +37,6 @@ Ordered per `docs/concept-review.md` section 6: restore a working vertical slice
 ### Prepare human-controlled publication
 
 ### Improve autonomy
-
-- [ ] **SF-401 — Add config-driven agent profiles and `ClaudeAgentRunner`**
-  - Outcome: Claude Code and further CLI agents execute through the same agent boundary and persistence model as Codex.
-  - Acceptance criteria:
-    - Agent profiles (executable, arguments, prompt delivery, timeout, quota signature) are configuration-driven; adding an agent does not require a new class.
-    - `preferred_agent` on the task selects the profile; a fallback policy hands a task to the next available profile when the preferred provider is at quota.
-    - Authentication is inherited from the user's local CLI session.
-    - Result validation, quota detection, and execution recording match Codex behavior.
-    - Orchestration logic contains no agent-specific branching beyond profile selection.
 
 ### Extend observability and synchronization
 

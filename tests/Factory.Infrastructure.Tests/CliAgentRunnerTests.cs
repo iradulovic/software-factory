@@ -1,0 +1,90 @@
+using Factory.Core;
+
+namespace Factory.Infrastructure.Tests;
+
+public sealed class CliAgentRunnerTests
+{
+    private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+
+    private static AgentProfile Codex(int quotaCooldownHours = 5) =>
+        new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, quotaCooldownHours);
+
+    [Fact]
+    public async Task Quota_detection_records_a_reset_time_using_the_profiles_configured_cooldown()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 1, "", "Error: usage limit reached", false, false));
+        var agent = new CliAgentRunner(Codex(quotaCooldownHours: 3), runner, new NoResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.True(result.QuotaDetected);
+        Assert.Equal(Now.AddHours(3), result.QuotaResetAt);
+    }
+
+    [Fact]
+    public async Task No_configured_quota_signature_leaves_the_reset_time_null()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.False(result.QuotaDetected);
+        Assert.Null(result.QuotaResetAt);
+    }
+
+    [Fact]
+    public async Task Quota_signatures_are_configured_per_profile()
+    {
+        var runner = new RecordingRunner(new ProcessResult("claude", [], ".", Now, Now, 1, "", "rate limited, try later", false, false));
+        var profile = new AgentProfile("Claude", "claude", ["--print"], "stdin", 90, ["rate limited"], ["--version"], 5, 5);
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.True(result.QuotaDetected);
+        Assert.Equal("Claude", agent.Name);
+    }
+
+    [Fact]
+    public async Task Stdin_prompt_delivery_pipes_the_prompt_and_leaves_arguments_untouched()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+
+        await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Equal(["exec", "--full-auto", "-"], runner.Request!.Arguments);
+        Assert.NotNull(runner.Request.StandardInput);
+    }
+
+    [Fact]
+    public async Task Argument_prompt_delivery_appends_the_prompt_to_the_configured_arguments()
+    {
+        var runner = new RecordingRunner(new ProcessResult("claude", [], ".", Now, Now, 0, "done", "", false, false));
+        var profile = new AgentProfile("Claude", "claude", ["--print"], "argument", 90, ["rate limited"], ["--version"], 5, 5);
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+
+        await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Equal("--print", runner.Request!.Arguments[0]);
+        Assert.Contains("Implement the task", runner.Request.Arguments[^1]);
+        Assert.Null(runner.Request.StandardInput);
+    }
+
+    private sealed class FixedClock(DateTimeOffset now) : IClock { public DateTimeOffset UtcNow => now; }
+    private sealed class NoResultReader : IAgentResultReader
+    {
+        public Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken) =>
+            Task.FromResult<(AgentResult?, string?)>((null, "no result"));
+    }
+    private sealed class RecordingRunner(ProcessResult result) : IProcessRunner
+    {
+        public ProcessRequest? Request { get; private set; }
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
+        {
+            Request = request;
+            return Task.FromResult(result);
+        }
+    }
+}

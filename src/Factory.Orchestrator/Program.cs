@@ -10,6 +10,7 @@ builder.Services.AddFactoryInfrastructure(builder.Configuration);
 builder.Services.AddSingleton<PrepareRepositoryStep>();
 builder.Services.AddSingleton<CreateWorktreeStep>();
 builder.Services.AddSingleton<WriteContextStep>();
+builder.Services.AddSingleton<AgentSelector>();
 builder.Services.AddSingleton<RunAgentStep>();
 builder.Services.AddSingleton<CollectDiffStep>();
 builder.Services.AddSingleton<ValidateStep>();

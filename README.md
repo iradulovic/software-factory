@@ -17,7 +17,7 @@ Verification status: the Git cache and worktree flow is covered by tests that ru
 - Docker Desktop or another Docker Compose implementation
 - Git
 - [GitHub CLI](https://cli.github.com/) (`gh`)
-- [Codex CLI](https://developers.openai.com/codex/cli/)
+- [Codex CLI](https://developers.openai.com/codex/cli/) (the default configured agent profile; any other CLI coding agent can be added through configuration, see below)
 
 Authenticate interactive tools once as your normal user:
 
@@ -52,7 +52,22 @@ Edit `src/Factory.GitHubSync/appsettings.json` and replace the disabled sample e
 }
 ```
 
-The main settings cover the PostgreSQL connection, factory root, polling intervals, task concurrency, task lease and heartbeat intervals, Codex executable/arguments, default branch, and configured repositories. Environment-variable examples are in `.env.example`; no real credentials belong in configuration.
+The main settings cover the PostgreSQL connection, factory root, polling intervals, task concurrency, task lease and heartbeat intervals, configured CLI coding agents, default branch, and configured repositories. Environment-variable examples are in `.env.example`; no real credentials belong in configuration.
+
+Every CLI coding agent — Codex, Claude Code, or anything else with a CLI and a prompt — is configured under `Agents:Profiles`, never a new class:
+
+```json
+{
+  "Agents": {
+    "Profiles": [
+      { "Name": "Codex", "Executable": "codex", "Arguments": ["exec", "--full-auto", "-"], "PromptDelivery": "stdin", "TimeoutMinutes": 90, "QuotaSignatures": ["quota", "usage limit"], "VersionArguments": ["--version"], "AvailabilityTimeoutSeconds": 5, "QuotaCooldownHours": 5 },
+      { "Name": "Claude", "Executable": "claude", "Arguments": ["--print"], "PromptDelivery": "argument", "TimeoutMinutes": 90, "QuotaSignatures": ["rate limited"], "VersionArguments": ["--version"], "AvailabilityTimeoutSeconds": 5, "QuotaCooldownHours": 5 }
+    ]
+  }
+}
+```
+
+`PromptDelivery` is `"stdin"` (the prompt is piped in, like Codex) or `"argument"` (the prompt is appended to `Arguments`). A task's `preferredAgent` picks a profile by name; if that agent is currently at quota, the next configured profile that isn't runs the attempt instead, and only if every configured agent is at quota does the task wait. Authentication for every agent is inherited from whatever local CLI session (`codex login`, `claude login`, ...) is active in this environment — the factory never handles credentials itself.
 
 Target repositories can optionally contain `.factory/config.json`. It is read from the base branch commit (`origin/<baseBranch>`) before the agent runs and recorded on the run, so an agent cannot change how its own work is validated. Any key may be omitted and falls back to the default shown here:
 

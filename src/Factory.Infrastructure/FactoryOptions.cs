@@ -1,3 +1,5 @@
+using Factory.Core;
+
 namespace Factory.Infrastructure;
 
 public sealed class FactoryOptions
@@ -14,17 +16,15 @@ public sealed class FactoryOptions
     public string DashboardBaseUrl { get; set; } = "http://localhost:3000";
 }
 
-public sealed class CodexOptions
+/// <summary>The configured set of CLI coding agents. Defaults to a single "Codex" profile matching the
+/// bootstrap spec's original hardcoded behavior; adding "Claude" or any other CLI agent is a configuration
+/// addition here, never a new class.</summary>
+public sealed class AgentProfilesOptions
 {
-    public string Executable { get; set; } = "codex";
-    public string[] Arguments { get; set; } = ["exec", "--full-auto", "-"];
-    public int TimeoutMinutes { get; set; } = 90;
-    public string[] VersionArguments { get; set; } = ["--version"];
-    public int AvailabilityTimeoutSeconds { get; set; } = 5;
-
-    /// <summary>How long a quota-exhausted task waits before the orchestrator automatically resumes it, since
-    /// Codex's own output does not currently report an exact reset time.</summary>
-    public int QuotaCooldownHours { get; set; } = 5;
+    public List<AgentProfile> Profiles { get; set; } =
+    [
+        new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5)
+    ];
 }
 
 public sealed class GitHubSyncOptions
