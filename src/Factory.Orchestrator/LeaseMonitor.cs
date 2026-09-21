@@ -30,6 +30,7 @@ public sealed class LeaseMonitor(ITaskStore tasks, IClock clock, IOptions<Factor
                     if (await tasks.RenewLeaseAsync(taskId, options.Value.WorkerId, LeaseDuration, execution.Token))
                     {
                         expiresAt = clock.UtcNow + LeaseDuration;
+                        await tasks.RecordHeartbeatAsync(options.Value.WorkerId, Environment.MachineName, taskId, execution.Token);
                         continue;
                     }
                     logger.LogWarning("Lease ownership was lost for task {TaskId}; cancelling its execution", taskId);

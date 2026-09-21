@@ -35,6 +35,13 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<bool> CancelAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(false);
     public Task<bool> CancelPendingForIssueAsync(long issueId, string reason, CancellationToken cancellationToken) => Task.FromResult(false);
 
+    public List<(string WorkerId, string Host, Guid? CurrentTaskId)> Heartbeats { get; } = [];
+    public Task RecordHeartbeatAsync(string workerId, string host, Guid? currentTaskId, CancellationToken cancellationToken)
+    {
+        Heartbeats.Add((workerId, host, currentTaskId));
+        return Task.CompletedTask;
+    }
+
     public Task TransitionAsync(Guid taskId, FactoryTaskStatus expected, FactoryTaskStatus next, string? failureReason, CancellationToken cancellationToken)
     {
         TaskStateMachine.EnsureCanTransition(expected, next);

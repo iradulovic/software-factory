@@ -34,6 +34,22 @@ public sealed class LeaseMonitorTests
     }
 
     [Fact]
+    public async Task Successful_renewal_also_records_a_heartbeat_for_the_current_task()
+    {
+        var store = new FakeTaskStore();
+        using var execution = new CancellationTokenSource();
+        var taskId = Guid.NewGuid();
+
+        var monitoring = Monitor(store, leaseSeconds: 8).MonitorAsync(taskId, execution);
+        Assert.True(await WaitUntilAsync(() => store.Heartbeats.Count > 0, TimeSpan.FromSeconds(5)));
+
+        await execution.CancelAsync();
+        await monitoring;
+
+        Assert.Equal(("worker", Environment.MachineName, (Guid?)taskId), store.Heartbeats[0]);
+    }
+
+    [Fact]
     public async Task Renewal_failures_past_the_lease_expiry_cancel_execution()
     {
         var store = new FakeTaskStore { RenewLease = _ => throw new InvalidOperationException("database unavailable") };

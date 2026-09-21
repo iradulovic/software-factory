@@ -28,6 +28,11 @@ export const agentStatusSchema = z.object({
   runsToday:z.number(),successfulRuns:z.number(),quotaDetectedAt:z.string().nullable(),quotaResetAt:z.string().nullable()
 });
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
+export const workerSchema = z.object({
+  workerId: z.string(), host: z.string(), lastSeenAt: z.string(), currentTaskId: z.string().nullable(),
+  currentTaskTitle: z.string().nullable(), isStale: z.boolean()
+});
+export type Worker = z.infer<typeof workerSchema>;
 export const apiBase = process.env.NEXT_PUBLIC_FACTORY_API_URL ?? "http://localhost:5080";
 
 export async function getJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {

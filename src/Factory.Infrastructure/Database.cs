@@ -221,6 +221,17 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return count > 0;
     }
 
+    public async Task RecordHeartbeatAsync(string workerId, string host, Guid? currentTaskId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO factory.worker(worker_id,host,last_seen_at,current_task_id)
+            VALUES(@workerId,@host,now(),@currentTaskId)
+            ON CONFLICT(worker_id) DO UPDATE SET host=excluded.host,last_seen_at=excluded.last_seen_at,current_task_id=excluded.current_task_id
+            """;
+        await using var connection = Connection();
+        await connection.ExecuteAsync(new CommandDefinition(sql, new { workerId, host, currentTaskId }, cancellationToken: cancellationToken));
+    }
+
     private async Task<bool> TransitionFromCurrentAsync(Guid taskId, IReadOnlyCollection<FactoryTaskStatus> allowedSources, FactoryTaskStatus next, bool resetExecution, string reason, CancellationToken cancellationToken)
     {
         await using var connection = Connection();

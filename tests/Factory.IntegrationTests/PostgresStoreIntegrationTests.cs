@@ -516,6 +516,51 @@ public sealed class PostgresStoreIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Worker_heartbeat_upserts_host_and_current_task_and_clears_it_when_idle()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var workerId = $"worker-{Guid.NewGuid():N}";
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var suffix = Guid.NewGuid().ToString("N");
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('heartbeat-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@taskId,@repositoryId,'Heartbeat task','Implementing','main')
+                """, new { taskId, repositoryId });
+
+            await tasks.RecordHeartbeatAsync(workerId, "host-a", taskId, CancellationToken.None);
+            var busy = await connection.QuerySingleAsync<(string Host, Guid? CurrentTaskId)>(
+                "SELECT host,current_task_id AS \"CurrentTaskId\" FROM factory.worker WHERE worker_id=@workerId", new { workerId });
+            Assert.Equal("host-a", busy.Host);
+            Assert.Equal(taskId, busy.CurrentTaskId);
+
+            await tasks.RecordHeartbeatAsync(workerId, "host-a", null, CancellationToken.None);
+            var idle = await connection.QuerySingleAsync<Guid?>("SELECT current_task_id FROM factory.worker WHERE worker_id=@workerId", new { workerId });
+            Assert.Null(idle);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.worker WHERE worker_id=@workerId", new { workerId });
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.task WHERE id=@taskId;
+                """, new { taskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
 
     private sealed class LeaseFixture : IAsyncDisposable

@@ -307,6 +307,20 @@ app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, I
         configuration = await configurationReader.ReadAsync(worktreePath, $"origin/{(string)item.defaultBranch}", ct);
     return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration });
 });
+app.MapGet("/api/workers", async (NpgsqlDataSource db, IOptions<FactoryOptions> options, CancellationToken ct) =>
+{
+    // A worker heartbeats at least every max(PollingIntervalSeconds, LeaseHeartbeatSeconds); tripling that bound
+    // before calling it stale tolerates a couple of missed cycles without flapping the dashboard.
+    var staleAfterSeconds = Math.Max(options.Value.PollingIntervalSeconds, options.Value.LeaseHeartbeatSeconds) * 3;
+    await using var c = await db.OpenConnectionAsync(ct);
+    var workers = await c.QueryAsync(new CommandDefinition("""
+        SELECT w.worker_id AS "workerId",w.host,w.last_seen_at AS "lastSeenAt",w.current_task_id AS "currentTaskId",
+          t.title AS "currentTaskTitle",(now()-w.last_seen_at) > make_interval(secs => @staleAfterSeconds) AS "isStale"
+        FROM factory.worker w LEFT JOIN factory.task t ON t.id=w.current_task_id
+        ORDER BY w.last_seen_at DESC
+        """, new { staleAfterSeconds }, cancellationToken: ct));
+    return Results.Ok(workers);
+});
 app.MapGet("/api/agents", Query("SELECT COALESCE(preferred_agent,'Codex') AS agent,count(*) AS tasks,count(*) FILTER(WHERE status='Completed') AS successful FROM factory.task GROUP BY 1"));
 app.MapGet("/api/agents/{agent}/runs", async (string agent, NpgsqlDataSource db, CancellationToken ct) => { await using var c = await db.OpenConnectionAsync(ct); return Results.Ok(await c.QueryAsync(new CommandDefinition("SELECT id,task_id AS \"taskId\",run_id AS \"runId\",agent,started_at AS \"startedAt\",completed_at AS \"completedAt\",duration_seconds AS \"durationSeconds\",exit_code AS \"exitCode\",status,quota_detected AS \"quotaDetected\",quota_reset_at AS \"quotaResetAt\",attempt_number AS \"attemptNumber\",needs_human AS \"needsHuman\" FROM factory.agent_run WHERE agent=@agent ORDER BY started_at DESC LIMIT 100", new { agent }, cancellationToken: ct))); });
 app.MapGet("/api/metrics/summary", Query("SELECT count(*) AS attempted,count(*) FILTER(WHERE status='Completed') AS completed,count(*) FILTER(WHERE status='NeedsHuman') AS \"humanInterventions\" FROM factory.task"));

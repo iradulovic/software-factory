@@ -153,7 +153,9 @@ Sync is incremental: each repository records the point in time through which it 
 
 ## API
 
-The bootstrap exposes dashboard, tasks (including retry/cancel), runs, agents, repositories, and metrics under `/api`. Swagger is intentionally omitted to keep the host small.
+The bootstrap exposes dashboard, tasks (including retry/cancel), runs, agents, repositories, workers, and metrics under `/api`. Swagger is intentionally omitted to keep the host small.
+
+The Orchestrator's `Worker` records a heartbeat (worker id, host, current task) in `factory.worker` whenever it checks for work and while it renews a claimed task's lease; the dashboard sidebar shows the most recently seen worker's status from `GET /api/workers` and marks it stale once it hasn't reported for three times its own expected heartbeat interval, rather than assuming a worker is always online.
 
 ## Current limitations and safety
 
