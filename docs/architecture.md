@@ -12,11 +12,14 @@ A separate `PublicationWorker` polls `factory.publication` for requests — crea
 
 `Factory.Api` is a read/command boundary over PostgreSQL. `Factory.Web` is a polling Next.js client; it owns no workflow state. Human approval remains required for merging. No component merges changes in this milestone.
 
+**Large agent and validation output never goes to PostgreSQL whole.** Every `RunAgentStep`/`ValidateStep` invocation gives `IProcessRunner` a deterministic `LogsDirectory/{runId}/{stepId}.log` path (`StepLogPaths.Resolve`, computed once by `PostgresTaskStore.StartStepAsync` and persisted on `factory.step.log_path`); `ProcessRunner` streams stdout and stderr to that file, interleaved in arrival order, as the process runs, while only ever returning and persisting the last 64 KB as a bounded preview (`factory.step.output`/`factory.agent_run.stdout`/`stderr`). `GET /api/steps/{id}/log` serves the full file (404 if none was recorded, or if it isn't visible from wherever the API runs), and `?tail=true` returns just its last 64 KB — Task Details and Run Details poll that tail endpoint every few seconds while a step is `Running`, giving a live view of an agent at work.
+
 ## Durable boundaries
 
 - `github.*`: repositories, issues, labels, comments.
 - `factory.*`: tasks, runs, steps, agent invocations, publication attempts, an append-only `task_event` audit log of every status transition, and an append-only `github_write` log of every comment and label write attempted back onto GitHub.
 - Repository cache: `{FactoryRoot}/repositories/{owner}/{repository}.git`.
 - Worktrees: `{FactoryRoot}/worktrees/{owner}/{repository}/issue-{number}`.
+- Step logs: `{LogsDirectory}/{runId}/{stepId}.log` — the durable path is recorded on `factory.step`, but the file itself is only ever written by the orchestrator and read by the API; they must share this directory (the same volume in Docker, or the same host) for log retrieval to work.
 
 The orchestrator runs on the host so it can use local Git, SDK, GitHub CLI, and each configured CLI agent's authentication. PostgreSQL, API, and dashboard may run in Docker.

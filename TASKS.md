@@ -18,6 +18,15 @@ Keep identifiers stable. Add new work at the appropriate priority position rathe
 
 ## In progress
 
+- [ ] **SF-501 — Externalize large execution logs and add live tail**
+  - Outcome: PostgreSQL remains responsive as agent and validation output grows, and operators can watch an agent work.
+  - Acceptance criteria:
+    - Full stdout/stderr are streamed to files beneath the configured factory logs directory while the process runs.
+    - PostgreSQL stores bounded previews and durable paths.
+    - API log retrieval handles missing and truncated files explicitly and offers a tail endpoint.
+    - Task details show a live tail for the running agent step.
+  - Status 2026-09-21: implemented. `ProcessRunner` streams stdout/stderr to a file as the process runs (when the caller supplies `ProcessRequest.LogPath`), interleaved in arrival order, while still returning only a bounded 64 KB preview so quota-signature detection (which reads that same preview) keeps working without ever holding or persisting the full stream; without a `LogPath` behavior is unchanged. `RunAgentStep` and `ValidateStep` compute a deterministic `LogsDirectory/{runId}/{stepId}.log` path (`StepLogPaths.Resolve`, new in `Factory.Core`) and pass it through; `PostgresTaskStore.StartStepAsync` computes and persists that same path on `factory.step.log_path` (migration 010) at step creation, before the process ever runs. `GET /api/steps/{id}/log` serves the full file (404 with an explicit message if none was recorded or the file isn't visible from the API), and `?tail=true` returns its last 64 KB; task/run detail responses now also flag `hasLog` and `outputTruncated` (stored preview at the 64 KB cap) per step. A new `StepLog` component (in `components/ui.tsx`, shared by Task Details and Run Details) links to the full log and, while a step is `Running`, polls the tail endpoint every 3 seconds for a live view. Verified: `StepLogPaths`' path format, the `log_path` insert, and the `hasLog`/`outputTruncated` step-list queries were executed verbatim against a real PostgreSQL 16 instance; `ProcessRunner`'s streaming behavior is covered by new `ProcessRunnerTests` running real `sh` subprocesses (unchanged behavior without a log path, full interleaved capture with one, and preview truncation on output exceeding 64 KB while the log file still has everything) — these could not be executed here (no .NET SDK) but were reasoned through against real shell output captured directly. The frontend lint, type-check, and production build were run for real and passed. `dotnet build`/`dotnet test` could not be run locally; CI is the outstanding verification. Operational note added to README/architecture.md: the API reads log files directly from disk, so it must share `LogsDirectory` with the orchestrator (same host, or a mounted volume if containerized separately) — otherwise log retrieval 404s cleanly while the bounded dashboard preview keeps working regardless.
+
 ## Next up
 
 Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
@@ -29,14 +38,6 @@ Ordered per `docs/concept-review.md` section 6: restore a working vertical slice
 ### Improve autonomy
 
 ### Extend observability and synchronization
-
-- [ ] **SF-501 — Externalize large execution logs and add live tail**
-  - Outcome: PostgreSQL remains responsive as agent and validation output grows, and operators can watch an agent work.
-  - Acceptance criteria:
-    - Full stdout/stderr are streamed to files beneath the configured factory logs directory while the process runs.
-    - PostgreSQL stores bounded previews and durable paths.
-    - API log retrieval handles missing and truncated files explicitly and offers a tail endpoint.
-    - Task details show a live tail for the running agent step.
 
 - [ ] **SF-205 — Make GitHub synchronization incremental and convergent**
   - Outcome: repositories with more than 100 issues synchronize completely, and factory state converges with GitHub.

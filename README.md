@@ -69,6 +69,8 @@ Every CLI coding agent — Codex, Claude Code, or anything else with a CLI and a
 
 `PromptDelivery` is `"stdin"` (the prompt is piped in, like Codex) or `"argument"` (the prompt is appended to `Arguments`). A task's `preferredAgent` picks a profile by name; if that agent is currently at quota, the next configured profile that isn't runs the attempt instead, and only if every configured agent is at quota does the task wait. Authentication for every agent is inherited from whatever local CLI session (`codex login`, `claude login`, ...) is active in this environment — the factory never handles credentials itself.
 
+Every agent invocation and validation command streams its full stdout/stderr to a file under `Factory:LogsDirectory` (default `~/.software-factory/logs`) as it runs; only the last 64 KB ever reaches PostgreSQL. Task Details and Run Details show that bounded preview plus a link to the full log, and poll a live tail of it while a step is still running. The API reads these files directly from disk, so it needs to see the same `LogsDirectory` the orchestrator writes to — the same host, or the same mounted volume if you containerize the API separately from the orchestrator; otherwise log retrieval 404s cleanly (the bounded preview in the dashboard still works either way).
+
 Target repositories can optionally contain `.factory/config.json`. It is read from the base branch commit (`origin/<baseBranch>`) before the agent runs and recorded on the run, so an agent cannot change how its own work is validated. Any key may be omitted and falls back to the default shown here:
 
 ```json

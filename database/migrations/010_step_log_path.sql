@@ -1,0 +1,1 @@
+ALTER TABLE factory.step ADD COLUMN IF NOT EXISTS log_path TEXT;

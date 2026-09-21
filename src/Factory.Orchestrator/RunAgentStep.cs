@@ -1,11 +1,13 @@
 using Factory.Core;
+using Factory.Infrastructure;
+using Microsoft.Extensions.Options;
 
 namespace Factory.Orchestrator;
 
 /// <summary>Selects which configured agent runs this attempt, invokes it, records the invocation, and interprets
 /// its result contract. Agent selection (see <see cref="AgentSelector"/>) is the only agent-specific branching
 /// here: everything else is written against the agent-agnostic <see cref="AgentRunResult"/> contract.</summary>
-public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector) : IPipelineStep
+public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOptions<FactoryOptions> options) : IPipelineStep
 {
     public async Task<PipelineStepResult> ExecuteAsync(PipelineContext context, CancellationToken cancellationToken)
     {
@@ -13,7 +15,8 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector) : IPi
         if (agent is null) return PipelineStepResult.WaitingForQuota("All configured agents are at quota.");
 
         var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", context.AttemptNumber, cancellationToken);
-        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber), cancellationToken);
+        var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
+        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath), cancellationToken);
         await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), context.Task.Id, context.RunId, stepId, agent.Name, result.Process.StartedAt,
             result.Process.CompletedAt, result.Process.Duration.TotalSeconds, result.Process.ExitCode,
             result.Process.Succeeded ? "Succeeded" : "Failed", result.Process.StandardOutput, result.Process.StandardError,

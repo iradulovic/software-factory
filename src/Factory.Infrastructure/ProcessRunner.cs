@@ -1,10 +1,15 @@
 using System.Diagnostics;
+using System.Text;
 using Factory.Core;
 
 namespace Factory.Infrastructure;
 
 public sealed class ProcessRunner(IClock clock) : IProcessRunner
 {
+    /// <summary>The most of stdout or stderr ever returned to a caller or persisted; the full stream, when
+    /// <see cref="ProcessRequest.LogPath"/> is set, always reaches the log file regardless of this bound.</summary>
+    private const int PreviewLimit = 64 * 1024;
+
     public async Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
     {
         var start = clock.UtcNow;
@@ -33,25 +38,74 @@ public sealed class ProcessRunner(IClock clock) : IProcessRunner
             process.StandardInput.Close();
         }
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        using var timeout = request.Timeout is null ? null : new CancellationTokenSource(request.Timeout.Value);
-        using var linked = timeout is null
-            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
-
-        var timedOut = false;
-        var cancelled = false;
-        try { await process.WaitForExitAsync(linked.Token); }
-        catch (OperationCanceledException)
+        StreamWriter? log = null;
+        SemaphoreSlim? logLock = null;
+        if (request.LogPath is not null)
         {
-            timedOut = timeout?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested;
-            cancelled = cancellationToken.IsCancellationRequested;
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync(CancellationToken.None);
+            Directory.CreateDirectory(Path.GetDirectoryName(request.LogPath)!);
+            log = new StreamWriter(new FileStream(request.LogPath, FileMode.Create, FileAccess.Write, FileShare.Read), new UTF8Encoding(false));
+            logLock = new SemaphoreSlim(1, 1);
         }
 
-        return new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, clock.UtcNow,
-            process.HasExited ? process.ExitCode : null, await stdoutTask, await stderrTask, timedOut, cancelled);
+        try
+        {
+            var stdoutBuffer = new StringBuilder();
+            var stderrBuffer = new StringBuilder();
+            // Not linked.Token: a timeout kills the process but must never itself cancel these reads, so a killed
+            // process's already-buffered output still drains to completion once its streams close.
+            var stdoutTask = PumpAsync(process.StandardOutput, stdoutBuffer, log, logLock, cancellationToken);
+            var stderrTask = PumpAsync(process.StandardError, stderrBuffer, log, logLock, cancellationToken);
+
+            using var timeout = request.Timeout is null ? null : new CancellationTokenSource(request.Timeout.Value);
+            using var linked = timeout is null
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+
+            var timedOut = false;
+            var cancelled = false;
+            try { await process.WaitForExitAsync(linked.Token); }
+            catch (OperationCanceledException)
+            {
+                timedOut = timeout?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested;
+                cancelled = cancellationToken.IsCancellationRequested;
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+
+            await stdoutTask;
+            await stderrTask;
+
+            return new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, clock.UtcNow,
+                process.HasExited ? process.ExitCode : null, Bounded(stdoutBuffer), Bounded(stderrBuffer), timedOut, cancelled);
+        }
+        finally
+        {
+            if (log is not null) await log.DisposeAsync();
+            logLock?.Dispose();
+        }
+    }
+
+    private static string Bounded(StringBuilder buffer) =>
+        buffer.Length <= PreviewLimit ? buffer.ToString() : buffer.ToString(buffer.Length - PreviewLimit, PreviewLimit);
+
+    /// <summary>Reads one stream to completion, appending every chunk to <paramref name="buffer"/> and, when
+    /// <paramref name="log"/> is set, flushing the same chunk to the shared log file under <paramref name="logLock"/>
+    /// (stdout and stderr pumps share one file, so writes must be serialized).</summary>
+    private static async Task PumpAsync(StreamReader reader, StringBuilder buffer, StreamWriter? log, SemaphoreSlim? logLock, CancellationToken cancellationToken)
+    {
+        var chunk = new char[8192];
+        int read;
+        while ((read = await reader.ReadAsync(chunk, cancellationToken)) > 0)
+        {
+            buffer.Append(chunk, 0, read);
+            if (log is null) continue;
+            await logLock!.WaitAsync(cancellationToken);
+            try
+            {
+                await log.WriteAsync(chunk.AsMemory(0, read), cancellationToken);
+                await log.FlushAsync(cancellationToken);
+            }
+            finally { logLock.Release(); }
+        }
     }
 }
