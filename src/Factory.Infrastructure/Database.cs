@@ -237,8 +237,11 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 
     public async Task<Guid> StartStepAsync(Guid runId, string stepType, int attempt, CancellationToken cancellationToken)
     {
-        var id = Guid.NewGuid(); await using var c = Connection();
-        await c.ExecuteAsync(new CommandDefinition("INSERT INTO factory.step(id,run_id,step_type,status,started_at,attempt) VALUES(@id,@runId,@stepType,'Running',@now,@attempt)", new { id, runId, stepType, now = clock.UtcNow, attempt }, cancellationToken: cancellationToken)); return id;
+        var id = Guid.NewGuid();
+        var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, runId, id);
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("INSERT INTO factory.step(id,run_id,step_type,status,started_at,attempt,log_path) VALUES(@id,@runId,@stepType,'Running',@now,@attempt,@logPath)", new { id, runId, stepType, now = clock.UtcNow, attempt, logPath }, cancellationToken: cancellationToken));
+        return id;
     }
 
     public async Task CompleteStepAsync(Guid stepId, ExecutionStatus status, string? error, string? output, CancellationToken cancellationToken)

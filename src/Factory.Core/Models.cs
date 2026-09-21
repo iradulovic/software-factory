@@ -49,13 +49,16 @@ public sealed record AgentRunRecord(Guid Id, Guid TaskId, Guid RunId, Guid StepI
     DateTimeOffset? CompletedAt, double? DurationSeconds, int? ExitCode, string Status, string? StandardOutput,
     string? StandardError, bool QuotaDetected, DateTimeOffset? QuotaResetAt, int AttemptNumber, bool NeedsHuman, AgentResult? Result);
 
+/// <param name="LogPath">When set, stdout and stderr are streamed to this file as the process runs, interleaved
+/// in arrival order, in addition to the bounded preview <see cref="ProcessResult"/> always returns.</param>
 public sealed record ProcessRequest(
     string FileName,
     IReadOnlyList<string> Arguments,
     string WorkingDirectory,
     IReadOnlyDictionary<string, string?>? Environment = null,
     TimeSpan? Timeout = null,
-    string? StandardInput = null);
+    string? StandardInput = null,
+    string? LogPath = null);
 
 public sealed record ProcessResult(
     string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory, DateTimeOffset StartedAt,
@@ -65,7 +68,7 @@ public sealed record ProcessResult(
     public bool Succeeded => ExitCode == 0 && !TimedOut && !Cancelled;
 }
 
-public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber);
+public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null);
 public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, string? ValidationError, bool QuotaDetected, DateTimeOffset? QuotaResetAt = null);
 
 public sealed record AgentAvailability(string Agent, bool Available, string? Version, string? Error);
@@ -74,6 +77,14 @@ public sealed record AgentResult(string Status, string Summary, IReadOnlyList<st
     IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason);
 
 public sealed record ValidationCommand(string Name, string Executable, IReadOnlyList<string> Arguments);
+
+/// <summary>Where a step's full process output is streamed while it runs, deterministic from IDs the caller
+/// already has so no extra round trip is needed to know where to write or read it.</summary>
+public static class StepLogPaths
+{
+    public static string Resolve(string logsDirectory, Guid runId, Guid stepId) =>
+        Path.Combine(logsDirectory, runId.ToString(), $"{stepId}.log");
+}
 
 /// <summary><see cref="Publish"/> is "manual" (a human explicitly requests publication) or "auto-draft"
 /// (the orchestrator requests it itself as soon as a run reaches <c>ReadyForPublish</c>).</summary>

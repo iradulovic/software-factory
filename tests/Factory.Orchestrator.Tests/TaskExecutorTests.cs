@@ -387,9 +387,9 @@ public sealed class TaskExecutorTests
                 new PrepareRepositoryStep(Store, new FakeGitHubStore(this)),
                 new CreateWorktreeStep(Store, new FakeWorktrees(this)),
                 new WriteContextStep(Store, new FakeContextWriter(this), new FakeConfigurationReader(this)),
-                new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store)),
+                new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions())),
                 new CollectDiffStep(Store, new FakeInspector(this)),
-                new ValidateStep(Store, new FakeProcessRunner(this)),
+                new ValidateStep(Store, new FakeProcessRunner(this), Options.Create(new FactoryOptions())),
                 new PreparePublicationStep(Store, new FakeInspector(this)),
                 new TaskGitHubNotifier(Store, new FakeGitHubPublisher(this), Options.Create(new FactoryOptions()), NullLogger<TaskGitHubNotifier>.Instance),
                 NullLogger<TaskExecutor>.Instance);

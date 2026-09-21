@@ -404,6 +404,48 @@ public sealed class PostgresStoreIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Starting_a_step_persists_its_deterministic_log_path()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var factoryOptions = new FactoryOptions { ConnectionString = connectionString, LogsDirectory = "/tmp/factory-log-tests" };
+        var settings = Options.Create(factoryOptions);
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('log-path-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@taskId,@repositoryId,'Log path task','Implementing','main')
+                """, new { taskId, repositoryId });
+            var runId = await tasks.StartRunAsync(taskId, "integration-worker", CancellationToken.None);
+
+            var stepId = await tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
+
+            var logPath = await connection.ExecuteScalarAsync<string>("SELECT log_path FROM factory.step WHERE id=@stepId", new { stepId });
+            Assert.Equal(StepLogPaths.Resolve(factoryOptions.LogsDirectory, runId, stepId), logPath);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id=@taskId);
+                DELETE FROM factory.run WHERE task_id=@taskId;
+                DELETE FROM factory.task WHERE id=@taskId;
+                """, new { taskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
 
     private sealed class LeaseFixture : IAsyncDisposable

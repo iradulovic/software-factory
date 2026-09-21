@@ -108,7 +108,7 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancella
           base_commit AS "baseCommit",head_commit AS "headCommit",files_changed AS "filesChanged",lines_added AS "linesAdded",lines_removed AS "linesRemoved"
         FROM factory.run WHERE task_id=@id ORDER BY started_at DESC
         """, new { id }, cancellationToken: ct));
-    var steps = await c.QueryAsync(new CommandDefinition("SELECT s.id,s.run_id AS \"runId\",s.step_type AS \"stepType\",s.status,s.started_at AS \"startedAt\",s.completed_at AS \"completedAt\",s.duration_ms AS \"durationMs\",s.attempt,s.error,s.output FROM factory.step s JOIN factory.run r ON r.id=s.run_id WHERE r.task_id=@id ORDER BY s.started_at", new { id }, cancellationToken: ct));
+    var steps = await c.QueryAsync(new CommandDefinition("SELECT s.id,s.run_id AS \"runId\",s.step_type AS \"stepType\",s.status,s.started_at AS \"startedAt\",s.completed_at AS \"completedAt\",s.duration_ms AS \"durationMs\",s.attempt,s.error,s.output,(s.log_path IS NOT NULL) AS \"hasLog\",(coalesce(length(s.output),0)>=65536) AS \"outputTruncated\" FROM factory.step s JOIN factory.run r ON r.id=s.run_id WHERE r.task_id=@id ORDER BY s.started_at", new { id }, cancellationToken: ct));
     var agentRunRows = await c.QueryAsync<AgentRunDetailsRow>(new CommandDefinition("""
         SELECT id,run_id AS "RunId",agent,started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
           exit_code AS "ExitCode",status,stdout,stderr,quota_detected AS "QuotaDetected",attempt_number AS "AttemptNumber",needs_human AS "NeedsHuman",
@@ -246,7 +246,7 @@ app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancellat
         WHERE r.id=@id
         """, new { id }, cancellationToken: ct));
     if (run is null) return Results.NotFound();
-    var steps = await c.QueryAsync(new CommandDefinition("SELECT id,run_id AS \"runId\",step_type AS \"stepType\",status,started_at AS \"startedAt\",completed_at AS \"completedAt\",duration_ms AS \"durationMs\",attempt,error,output FROM factory.step WHERE run_id=@id ORDER BY started_at,id", new { id }, cancellationToken: ct));
+    var steps = await c.QueryAsync(new CommandDefinition("SELECT id,run_id AS \"runId\",step_type AS \"stepType\",status,started_at AS \"startedAt\",completed_at AS \"completedAt\",duration_ms AS \"durationMs\",attempt,error,output,(log_path IS NOT NULL) AS \"hasLog\",(coalesce(length(output),0)>=65536) AS \"outputTruncated\" FROM factory.step WHERE run_id=@id ORDER BY started_at,id", new { id }, cancellationToken: ct));
     var agentRunRows = await c.QueryAsync<AgentRunDetailsRow>(new CommandDefinition("""
         SELECT id,run_id AS "RunId",agent,started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
           exit_code AS "ExitCode",status,stdout,stderr,quota_detected AS "QuotaDetected",attempt_number AS "AttemptNumber",needs_human AS "NeedsHuman",
@@ -256,6 +256,24 @@ app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancellat
         """, new { id }, cancellationToken: ct));
     return Results.Ok(new { run, steps, agentRuns = agentRunRows.Select(AgentRunDetailsMapper.Map) });
 });
+
+app.MapGet("/api/steps/{id:guid}/log", async (Guid id, bool? tail, NpgsqlDataSource db, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var logPath = await c.ExecuteScalarAsync<string?>(new CommandDefinition("SELECT log_path FROM factory.step WHERE id=@id", new { id }, cancellationToken: ct));
+    if (logPath is null) return Results.NotFound(new { error = "No log was recorded for this step." });
+    if (!File.Exists(logPath)) return Results.NotFound(new { error = "The log file is not available on disk (it may not have been written yet, or this API instance does not share the orchestrator's log directory)." });
+
+    if (tail != true) return Results.File(logPath, "text/plain; charset=utf-8", enableRangeProcessing: true);
+
+    const int tailBytes = 64 * 1024;
+    await using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+    var start = Math.Max(0, stream.Length - tailBytes);
+    stream.Seek(start, SeekOrigin.Begin);
+    using var reader = new StreamReader(stream);
+    return Results.Text(await reader.ReadToEndAsync(ct), "text/plain", System.Text.Encoding.UTF8);
+});
+
 app.MapGet("/api/repositories", Query("""
     SELECT r.id,r.owner,r.name,r.clone_url AS "cloneUrl",r.default_branch AS "defaultBranch",r.is_enabled AS "isEnabled",r.last_synced_at AS "lastSyncedAt",
       failure.error AS "latestSyncFailure",failure.occurred_at AS "latestSyncFailureAt"

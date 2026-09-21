@@ -1,3 +1,7 @@
+"use client";
+import { useQuery } from "@tanstack/react-query";
+import { apiBase } from "@/lib/api";
+
 export function Badge({ value }: { value: string }) {
   const tone = /Completed|Succeeded|Ready/.test(value) ? "green" : /Failed|Cancelled|Rejected/.test(value) ? "red" : /Pending|Waiting/.test(value) ? "amber" : "blue";
   return <span className={`badge ${tone}`}>{value.replace(/([a-z])([A-Z])/g, "$1 $2")}</span>;
@@ -14,3 +18,23 @@ export function RelativeTime({ value }: { value?: string | null }) {
   return <time dateTime={value} title={date.toLocaleString()}>{date.toLocaleString()}</time>;
 }
 export function Empty({ children }: { children: React.ReactNode }) { return <div className="grid min-h-36 place-items-center text-sm text-slate-500">{children}</div>; }
+
+export function StepLog({ id, running, hasLog }: { id: string; running: boolean; hasLog: boolean }) {
+  const { data, error } = useQuery({
+    queryKey: ["step-log-tail", id],
+    queryFn: async () => {
+      const response = await fetch(`${apiBase}/api/steps/${id}/log?tail=true`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Log unavailable (${response.status})`);
+      return response.text();
+    },
+    enabled: running && hasLog,
+    refetchInterval: running ? 3000 : false
+  });
+  if (!hasLog) return null;
+  return (
+    <div className="mt-2">
+      {running && <div className="mb-2"><p className="eyebrow">Live tail</p><pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-[11px] text-emerald-300">{error ? "Live tail unavailable" : (data || "Waiting for output…")}</pre></div>}
+      <a className="text-xs text-emerald-400 hover:underline" href={`${apiBase}/api/steps/${id}/log`} target="_blank" rel="noreferrer">View full log</a>
+    </div>
+  );
+}

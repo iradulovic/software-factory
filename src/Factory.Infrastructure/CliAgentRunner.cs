@@ -20,8 +20,8 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
     public async Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
     {
         var invocation = profile.PromptDelivery == "argument"
-            ? new ProcessRequest(profile.Executable, [.. profile.Arguments, Prompt], request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes))
-            : new ProcessRequest(profile.Executable, profile.Arguments, request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), StandardInput: Prompt);
+            ? new ProcessRequest(profile.Executable, [.. profile.Arguments, Prompt], request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), LogPath: request.LogPath)
+            : new ProcessRequest(profile.Executable, profile.Arguments, request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), StandardInput: Prompt, LogPath: request.LogPath);
         var process = await processRunner.RunAsync(invocation, cancellationToken);
         var (result, error) = await resultReader.ReadAsync(request.WorkingDirectory, cancellationToken);
         var combined = process.StandardOutput + "\n" + process.StandardError;

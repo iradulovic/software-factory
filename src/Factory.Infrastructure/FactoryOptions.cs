@@ -14,6 +14,10 @@ public sealed class FactoryOptions
 
     /// <summary>Base URL of the dashboard, used to link back to a task from the GitHub comments the orchestrator posts.</summary>
     public string DashboardBaseUrl { get; set; } = "http://localhost:3000";
+
+    /// <summary>Where full agent and validation-command stdout/stderr are streamed while a step runs. Only
+    /// bounded previews of this ever reach PostgreSQL; the API reads the full file from here on request.</summary>
+    public string LogsDirectory { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".software-factory", "logs");
 }
 
 /// <summary>The configured set of CLI coding agents. Defaults to a single "Codex" profile matching the
