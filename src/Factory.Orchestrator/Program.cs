@@ -1,11 +1,10 @@
 using Factory.Infrastructure;
 using Factory.Orchestrator;
-using OpenTelemetry.Trace;
 using Serilog;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddSerilog(configuration => configuration.WriteTo.Console().WriteTo.File("logs/orchestrator-.log", rollingInterval: RollingInterval.Day));
-builder.Services.AddOpenTelemetry().WithTracing(tracing => tracing.AddSource("Factory.Orchestrator"));
+builder.Services.AddFactoryTelemetry(builder.Configuration, "Factory.Orchestrator");
 builder.Services.AddFactoryInfrastructure(builder.Configuration);
 builder.Services.AddSingleton<PrepareRepositoryStep>();
 builder.Services.AddSingleton<CreateWorktreeStep>();
