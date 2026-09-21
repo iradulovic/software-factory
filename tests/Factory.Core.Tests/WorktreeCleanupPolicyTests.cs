@@ -13,7 +13,7 @@ public sealed class WorktreeCleanupPolicyTests
     [InlineData(FactoryTaskStatus.Failed)]
     [InlineData(FactoryTaskStatus.NeedsHuman)]
     public void Failed_and_needs_human_are_retained_by_default(FactoryTaskStatus status) =>
-        Assert.True(WorktreeCleanupPolicy.DefaultRetainedStatuses.Contains(status));
+        Assert.Contains(status, WorktreeCleanupPolicy.DefaultRetainedStatuses);
 
     [Theory]
     [InlineData(FactoryTaskStatus.Failed)]
