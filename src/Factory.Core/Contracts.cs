@@ -66,6 +66,10 @@ public interface ITaskStore
     /// (never a task that is already active), with an explicit reason, because the issue was closed or lost its
     /// <c>factory:ready</c> label on GitHub. Returns whether a task was actually cancelled.</summary>
     Task<bool> CancelPendingForIssueAsync(long issueId, string reason, CancellationToken cancellationToken);
+
+    /// <summary>Records this worker process as alive, and the task it is currently executing, if any. Called on a
+    /// heartbeat cadence so the dashboard can show worker status and detect one that has stopped reporting.</summary>
+    Task RecordHeartbeatAsync(string workerId, string host, Guid? currentTaskId, CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore

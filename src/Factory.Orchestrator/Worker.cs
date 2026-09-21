@@ -14,6 +14,7 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExec
         {
             try
             {
+                await tasks.RecordHeartbeatAsync(options.Value.WorkerId, Environment.MachineName, null, stoppingToken);
                 var resumed = await tasks.ResumeExpiredQuotaTasksAsync(stoppingToken);
                 if (resumed > 0) logger.LogInformation("Resumed {Count} task(s) whose quota cooldown has passed", resumed);
 
@@ -35,6 +36,7 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExec
     {
         using var execution = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         var runId = await tasks.StartRunAsync(task.Id, options.Value.WorkerId, stoppingToken);
+        await tasks.RecordHeartbeatAsync(options.Value.WorkerId, Environment.MachineName, task.Id, stoppingToken);
         var heartbeat = leases.MonitorAsync(task.Id, execution);
         var interrupted = false;
         try
