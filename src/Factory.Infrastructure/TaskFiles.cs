@@ -40,7 +40,7 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
 
         if (configuration.MaxImplementationAttempts < 1 || configuration.MaxReviewAttempts < 0)
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxImplementationAttempts must be at least 1 and maxReviewAttempts must not be negative.");
-        if (configuration.BuildCommands.Any(string.IsNullOrWhiteSpace) || configuration.TestCommands.Any(string.IsNullOrWhiteSpace))
+        if (configuration.BuildCommands.Any(c => string.IsNullOrWhiteSpace(c.Executable)) || configuration.TestCommands.Any(c => string.IsNullOrWhiteSpace(c.Executable)))
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: build and test commands must not be empty.");
         if (configuration.Publish is not ("manual" or "auto-draft"))
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: publish must be 'manual' or 'auto-draft'.");
@@ -51,8 +51,8 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
 internal sealed class RepositoryConfigurationFile
 {
     public string? BaseBranch { get; init; }
-    public IReadOnlyList<string>? BuildCommands { get; init; }
-    public IReadOnlyList<string>? TestCommands { get; init; }
+    public IReadOnlyList<ValidationCommand>? BuildCommands { get; init; }
+    public IReadOnlyList<ValidationCommand>? TestCommands { get; init; }
     public int? MaxImplementationAttempts { get; init; }
     public int? MaxReviewAttempts { get; init; }
     public bool? RequireHumanMerge { get; init; }

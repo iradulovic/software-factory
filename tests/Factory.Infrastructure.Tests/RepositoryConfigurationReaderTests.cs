@@ -9,7 +9,7 @@ public sealed class RepositoryConfigurationReaderTests
     {
         var configuration = RepositoryConfigurationReader.Parse("""{"buildCommands":["dotnet build --nologo"],"maxImplementationAttempts":3}""", "origin/main");
 
-        Assert.Equal(new[] { "dotnet build --nologo" }, configuration.BuildCommands);
+        Assert.Equal([new ValidationCommand("dotnet", ["build", "--nologo"])], configuration.BuildCommands);
         Assert.Equal(RepositoryConfiguration.Default.TestCommands, configuration.TestCommands);
         Assert.Equal(3, configuration.MaxImplementationAttempts);
         Assert.Equal(RepositoryConfiguration.Default.MaxReviewAttempts, configuration.MaxReviewAttempts);
@@ -29,10 +29,53 @@ public sealed class RepositoryConfigurationReaderTests
     [Theory]
     [InlineData("""{"maxImplementationAttempts":0}""")]
     [InlineData("""{"testCommands":["dotnet test",""]}""")]
+    [InlineData("""{"testCommands":[[]]}""")]
+    [InlineData("""{"testCommands":[[""]]}""")]
+    [InlineData("""{"testCommands":[{"shell":""}]}""")]
+    [InlineData("""{"testCommands":[{"shell":"   "}]}""")]
+    [InlineData("""{"testCommands":[123]}""")]
     [InlineData("""{"publish":"auto-merge"}""")]
     [InlineData("not json")]
     public void Invalid_configuration_fails_clearly(string json) =>
         Assert.Contains(".factory/config.json", Assert.Throws<InvalidOperationException>(() => RepositoryConfigurationReader.Parse(json, "origin/main")).Message);
+
+    [Fact]
+    public void Array_shaped_commands_preserve_an_argument_containing_spaces_without_a_shell()
+    {
+        var configuration = RepositoryConfigurationReader.Parse(
+            """{"testCommands":[["dotnet","test","--filter","My Test With Spaces"]]}""", "origin/main");
+
+        Assert.Equal([new ValidationCommand("dotnet", ["test", "--filter", "My Test With Spaces"])], configuration.TestCommands);
+    }
+
+    [Fact]
+    public void Legacy_string_commands_split_on_whitespace_and_cannot_represent_a_spaced_argument()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("""{"buildCommands":["dotnet build --nologo"]}""", "origin/main");
+
+        Assert.Equal([new ValidationCommand("dotnet", ["build", "--nologo"])], configuration.BuildCommands);
+    }
+
+    [Fact]
+    public void Shell_opt_in_commands_resolve_to_a_literal_shell_invocation()
+    {
+        var configuration = RepositoryConfigurationReader.Parse(
+            """{"buildCommands":[{"shell":"dotnet build && dotnet test"}]}""", "origin/main");
+
+        var expected = OperatingSystem.IsWindows()
+            ? new ValidationCommand("cmd.exe", ["/c", "dotnet build && dotnet test"])
+            : new ValidationCommand("/bin/sh", ["-c", "dotnet build && dotnet test"]);
+        Assert.Equal([expected], configuration.BuildCommands);
+    }
+
+    [Fact]
+    public void Shell_opt_in_is_the_only_way_a_shell_is_ever_used()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("""{"buildCommands":["dotnet build"],"testCommands":[["dotnet","test"]]}""", "origin/main");
+
+        Assert.All(configuration.BuildCommands.Concat(configuration.TestCommands),
+            command => Assert.DoesNotContain(command.Executable, new[] { "/bin/sh", "cmd.exe" }));
+    }
 
     [Fact]
     public async Task Configuration_is_read_from_the_base_reference_not_the_worktree()
@@ -40,7 +83,7 @@ public sealed class RepositoryConfigurationReaderTests
         var runner = new StubRunner(0, """{"testCommands":["npm test"]}""", "");
         var configuration = await new RepositoryConfigurationReader(runner).ReadAsync("/worktrees/issue-1", "origin/main", CancellationToken.None);
 
-        Assert.Equal(new[] { "npm test" }, configuration.TestCommands);
+        Assert.Equal([new ValidationCommand("npm", ["test"])], configuration.TestCommands);
         Assert.NotNull(runner.Request);
         Assert.Equal("git", runner.Request.FileName);
         Assert.Equal(new[] { "show", "origin/main:.factory/config.json" }, runner.Request.Arguments);

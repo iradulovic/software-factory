@@ -76,13 +76,27 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
 ```json
 {
   "baseBranch": "main",
-  "buildCommands": ["dotnet build"],
-  "testCommands": ["dotnet test"],
+  "buildCommands": [["dotnet", "build"]],
+  "testCommands": [["dotnet", "test"]],
   "maxImplementationAttempts": 2,
   "maxReviewAttempts": 1,
   "requireHumanMerge": true,
   "publish": "manual"
 }
+```
+
+Each entry in `buildCommands`/`testCommands` is an executable plus its arguments, run directly through `IProcessRunner` — never through a shell, and never split on whitespace at run time, so an argument containing a space (a quoted test filter, a path) needs no escaping:
+
+```json
+{ "testCommands": [["dotnet", "test", "--filter", "FullyQualifiedName~My Test With Spaces"]] }
+```
+
+A command may also be written as a plain string (`"dotnet build"`), kept only as a migration path for configuration written before this format existed: it is split on whitespace exactly as before and so still cannot represent an argument containing a space. New configuration should use the array form.
+
+Shell operators (`&&`, `|`, redirection, ...) are never available implicitly. A command opts into a real shell explicitly with `{"shell": "..."}`, which runs the given string through `/bin/sh -c` (`cmd.exe /c` on Windows):
+
+```json
+{ "buildCommands": [{ "shell": "dotnet build && dotnet build -c Release" }] }
 ```
 
 `publish` is `"manual"` (default: a human must click Publish on a `ReadyForPublish` task) or `"auto-draft"` (the orchestrator requests publication itself as soon as a task reaches `ReadyForPublish`). Publishing pushes the task's own branch and opens a draft pull request; it never merges.

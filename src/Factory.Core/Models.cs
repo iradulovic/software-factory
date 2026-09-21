@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Factory.Core;
 
 public enum FactoryTaskStatus
@@ -78,7 +80,29 @@ public sealed record AgentAvailability(string Agent, bool Available, string? Ver
 public sealed record AgentResult(string Status, string Summary, IReadOnlyList<string> TestsRun, bool TestsPassed,
     IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason);
 
-public sealed record ValidationCommand(string Name, string Executable, IReadOnlyList<string> Arguments);
+/// <summary>An executable and its already-split arguments, never a shell command line. This is the only shape
+/// validation steps ever invoke: ".factory/config.json" build/test commands opt into a literal shell explicitly
+/// (see <see cref="ValidationCommandJsonConverter"/>), and even then it is just this same shape with the shell
+/// itself as the executable — no separate "use a shell" branch exists anywhere downstream.</summary>
+[JsonConverter(typeof(ValidationCommandJsonConverter))]
+public sealed record ValidationCommand(string Executable, IReadOnlyList<string> Arguments)
+{
+    public override string ToString() => Arguments.Count == 0 ? Executable : $"{Executable} {string.Join(' ', Arguments)}";
+
+    // A record's synthesized equality compares Arguments (IReadOnlyList<string>) by reference, since lists and
+    // arrays don't override Equals themselves; two commands with equal but distinct argument lists must still
+    // compare equal (tests, and anything else comparing a parsed command against an expected one, rely on this).
+    public bool Equals(ValidationCommand? other) =>
+        other is not null && Executable == other.Executable && Arguments.SequenceEqual(other.Arguments);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Executable);
+        foreach (var argument in Arguments) hash.Add(argument);
+        return hash.ToHashCode();
+    }
+}
 
 /// <summary>Where a step's full process output is streamed while it runs, deterministic from IDs the caller
 /// already has so no extra round trip is needed to know where to write or read it.</summary>
@@ -90,10 +114,11 @@ public static class StepLogPaths
 
 /// <summary><see cref="Publish"/> is "manual" (a human explicitly requests publication) or "auto-draft"
 /// (the orchestrator requests it itself as soon as a run reaches <c>ReadyForPublish</c>).</summary>
-public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<string> BuildCommands, IReadOnlyList<string> TestCommands,
+public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<ValidationCommand> BuildCommands, IReadOnlyList<ValidationCommand> TestCommands,
     int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual")
 {
-    public static RepositoryConfiguration Default { get; } = new("main", ["dotnet build"], ["dotnet test"], 2, 1, true, "manual");
+    public static RepositoryConfiguration Default { get; } =
+        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual");
 }
 
 /// <summary>Everything <see cref="IGitHubPublisher"/> needs to push a task's committed branch and open a draft pull request for it.</summary>

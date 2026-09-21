@@ -72,7 +72,8 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Equal(fixture.TaskId, claimed?.Id);
             var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "worker-a", CancellationToken.None);
             await fixture.Tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
-            await fixture.Tasks.SetRunConfigurationAsync(runId, new RepositoryConfiguration("main", ["dotnet build"], ["dotnet test"], 3, 1, true), CancellationToken.None);
+            await fixture.Tasks.SetRunConfigurationAsync(runId,
+                new RepositoryConfiguration("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 3, 1, true), CancellationToken.None);
 
             await fixture.Tasks.CloseExecutionAsync(runId, ExecutionStatus.Cancelled, "Worker stopped", CancellationToken.None);
             await fixture.Tasks.ReleaseLeaseAsync(fixture.TaskId, "worker-a", CancellationToken.None);

@@ -17,6 +17,49 @@ public sealed class ProcessRunnerTests
     }
 
     [Fact]
+    public async Task An_argument_containing_spaces_reaches_the_process_as_a_single_argument()
+    {
+        var runner = new ProcessRunner(new SystemClock());
+
+        // sh's "$#"/"$1" report argument count/value as the process itself received them; a naive whitespace
+        // split of a single "printf... My Test With Spaces" string would have produced five arguments, not one.
+        var result = await runner.RunAsync(new ProcessRequest("sh", ["-c", "printf 'count=%s value=%s' \"$#\" \"$1\"", "sh", "My Test With Spaces"], "."), CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("count=1 value=My Test With Spaces", result.StandardOutput);
+    }
+
+    [Fact]
+    public async Task Cancelling_the_token_kills_the_process_and_is_reported_as_cancelled_not_timed_out()
+    {
+        var runner = new ProcessRunner(new SystemClock());
+        using var cts = new CancellationTokenSource();
+        var marker = Path.Combine(Path.GetTempPath(), $"factory-process-cancel-{Guid.NewGuid():N}");
+
+        var run = runner.RunAsync(new ProcessRequest("sh", ["-c", $"sleep 30; touch {marker}"], "."), cts.Token);
+        cts.Cancel();
+        var result = await run;
+
+        Assert.True(result.Cancelled);
+        Assert.False(result.TimedOut);
+        Assert.False(result.Succeeded);
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        Assert.False(File.Exists(marker));
+    }
+
+    [Fact]
+    public async Task A_timeout_kills_the_process_and_is_reported_as_timed_out_not_cancelled()
+    {
+        var runner = new ProcessRunner(new SystemClock());
+
+        var result = await runner.RunAsync(new ProcessRequest("sh", ["-c", "sleep 30"], ".", Timeout: TimeSpan.FromMilliseconds(200)), CancellationToken.None);
+
+        Assert.True(result.TimedOut);
+        Assert.False(result.Cancelled);
+        Assert.False(result.Succeeded);
+    }
+
+    [Fact]
     public async Task A_log_path_receives_the_full_interleaved_output()
     {
         var root = Directory.CreateTempSubdirectory("factory-process-log-");
