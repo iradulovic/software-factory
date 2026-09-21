@@ -20,6 +20,7 @@ internal sealed class GitHubIssueRow
     public string Author { get; init; } = "";
     public DateTime CreatedAt { get; init; }
     public DateTime UpdatedAt { get; init; }
+    public DateTime? ClosedAt { get; init; }
 }
 
 internal sealed class GitHubCommentRow
@@ -36,27 +37,89 @@ internal sealed class GitHubCommentRow
 
 public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
 {
-    public async Task<IReadOnlyList<GitHubIssue>> GetOpenIssuesAsync(GitHubRepository repository, CancellationToken cancellationToken)
+    /// <summary>How many issues <c>gh issue list</c> is asked for per page. A full page means there may be more,
+    /// so the next page is requested with the cursor advanced to the last item's <c>updatedAt</c>.</summary>
+    private const int PageSize = 100;
+
+    /// <summary>A safety valve, not a real-world limit: aborts rather than looping forever (or silently
+    /// truncating) if pagination somehow never converges, e.g. because thousands of issues share one timestamp.</summary>
+    private const int MaxPages = 1000;
+
+    public async Task<IReadOnlyList<GitHubIssue>> GetIssuesAsync(GitHubRepository repository, DateTimeOffset? since, CancellationToken cancellationToken)
     {
-        var result = await runner.RunAsync(new ProcessRequest("gh", ["issue", "list", "--repo", $"{repository.Owner}/{repository.Name}", "--state", "all", "--limit", "100", "--json", "id,number,title,body,state,author,createdAt,updatedAt,closedAt,labels,comments"], Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
-        if (!result.Succeeded) throw new InvalidOperationException($"GitHub CLI failed: {result.StandardError}");
+        var fetched = new List<GitHubIssue>();
+        var cursor = since;
+        var pages = 0;
+        while (true)
+        {
+            if (++pages > MaxPages)
+                throw new InvalidOperationException($"GitHub issue sync for {repository.Owner}/{repository.Name} did not converge after {MaxPages} pages of {PageSize}; aborting rather than silently truncating history.");
+
+            // Everything is expressed through --search rather than combined with a separate --state flag: GitHub's
+            // search syntax already returns both open and closed issues unless narrowed with is:open/is:closed, so
+            // this is equivalent to the old --state all without risking an undocumented flag conflict.
+            var search = cursor is null ? "sort:updated-asc" : $"sort:updated-asc updated:>={cursor.Value.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}";
+            var result = await runner.RunAsync(new ProcessRequest("gh",
+                ["issue", "list", "--repo", $"{repository.Owner}/{repository.Name}", "--search", search, "--limit", PageSize.ToString(),
+                 "--json", "id,number,title,body,state,author,createdAt,updatedAt,closedAt,labels"],
+                Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
+            if (!result.Succeeded) throw new InvalidOperationException(DescribeFailure(result.StandardError));
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var page = document.RootElement.EnumerateArray().Select(issue => Parse(repository.Id, issue)).ToList();
+            fetched.AddRange(page);
+            if (page.Count < PageSize) break;
+            cursor = page[^1].UpdatedAt;
+        }
+
+        // The cursor can land two consecutive pages on the same boundary timestamp, so an issue can appear twice
+        // across pages; de-duplicating here (instead of relying on the caller's upsert alone) keeps sync counters
+        // accurate and avoids fetching that issue's comments twice below.
+        var deduplicated = fetched.GroupBy(issue => issue.IssueNumber).Select(group => group.Last()).OrderBy(issue => issue.UpdatedAt).ToList();
+        var withComments = new List<GitHubIssue>(deduplicated.Count);
+        foreach (var issue in deduplicated)
+            withComments.Add(issue with { Comments = await GetCommentsAsync(repository, issue.IssueNumber, cancellationToken) });
+        return withComments;
+    }
+
+    /// <summary><c>gh issue list --json comments</c> is a nested, capped connection; a full, unbounded comment
+    /// thread needs the single-issue view instead.</summary>
+    private async Task<IReadOnlyList<GitHubComment>> GetCommentsAsync(GitHubRepository repository, int issueNumber, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["issue", "view", issueNumber.ToString(), "--repo", $"{repository.Owner}/{repository.Name}", "--json", "comments"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!result.Succeeded) throw new InvalidOperationException(DescribeFailure(result.StandardError));
         using var document = JsonDocument.Parse(result.StandardOutput);
-        return document.RootElement.EnumerateArray().Select(issue => Parse(repository.Id, issue)).ToList();
+        return document.RootElement.GetProperty("comments").EnumerateArray().Select((x, index) => ParseComment(issueNumber, x, index)).ToList();
+    }
+
+    private static string DescribeFailure(string stderr)
+    {
+        var trimmed = stderr.Trim();
+        return trimmed.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
+            ? $"GitHub CLI rate limit exceeded: {trimmed}"
+            : $"GitHub CLI failed: {trimmed}";
     }
 
     private static GitHubIssue Parse(long repositoryId, JsonElement issue)
     {
         static DateTimeOffset Date(JsonElement element, string name) => DateTimeOffset.Parse(element.GetProperty(name).GetString()!);
+        static DateTimeOffset? NullableDate(JsonElement element, string name) =>
+            element.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null ? DateTimeOffset.Parse(value.GetString()!) : null;
         var labels = issue.GetProperty("labels").EnumerateArray().Select(x => x.GetProperty("name").GetString()!).ToList();
-        var comments = issue.GetProperty("comments").EnumerateArray().Select((x, index) => new GitHubComment(
-            StableLong(x.TryGetProperty("id", out var id) ? id.GetString() ?? $"{issue.GetProperty("number").GetInt32()}:{index}" : $"{issue.GetProperty("number").GetInt32()}:{index}"),
-            x.GetProperty("author").GetProperty("login").GetString() ?? "unknown", x.GetProperty("body").GetString() ?? "",
-            Date(x, "createdAt"), Date(x, "updatedAt"))).ToList();
         var nodeId = issue.GetProperty("id").GetString() ?? issue.GetProperty("number").GetInt32().ToString();
         var githubId = StableLong(nodeId);
         return new GitHubIssue(0, repositoryId, githubId, issue.GetProperty("number").GetInt32(), issue.GetProperty("title").GetString()!,
             issue.GetProperty("body").GetString() ?? "", issue.GetProperty("state").GetString()!, issue.GetProperty("author").GetProperty("login").GetString() ?? "unknown",
-            Date(issue, "createdAt"), Date(issue, "updatedAt"), labels, comments);
+            Date(issue, "createdAt"), Date(issue, "updatedAt"), labels, [], NullableDate(issue, "closedAt"));
+    }
+
+    private static GitHubComment ParseComment(int issueNumber, JsonElement x, int index)
+    {
+        static DateTimeOffset Date(JsonElement element, string name) => DateTimeOffset.Parse(element.GetProperty(name).GetString()!);
+        var id = StableLong(x.TryGetProperty("id", out var idProperty) ? idProperty.GetString() ?? $"{issueNumber}:{index}" : $"{issueNumber}:{index}");
+        return new GitHubComment(id, x.GetProperty("author").GetProperty("login").GetString() ?? "unknown", x.GetProperty("body").GetString() ?? "",
+            Date(x, "createdAt"), Date(x, "updatedAt"));
     }
 
     private static long StableLong(string value) => BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(value)), 0) & long.MaxValue;
@@ -134,28 +197,29 @@ public sealed class PostgresGitHubStore(IOptions<FactoryOptions> options) : IGit
     public async Task<IReadOnlyList<GitHubRepository>> GetEnabledRepositoriesAsync(CancellationToken cancellationToken)
     {
         await using var c = Connection();
-        return (await c.QueryAsync<GitHubRepository>(new CommandDefinition("SELECT id,owner,name,clone_url AS CloneUrl,default_branch AS DefaultBranch,is_enabled AS IsEnabled FROM github.repository WHERE is_enabled", cancellationToken: cancellationToken))).AsList();
+        return (await c.QueryAsync<GitHubRepository>(new CommandDefinition("SELECT id,owner,name,clone_url AS CloneUrl,default_branch AS DefaultBranch,is_enabled AS IsEnabled,last_synced_at AS LastSyncedAt FROM github.repository WHERE is_enabled", cancellationToken: cancellationToken))).AsList();
     }
 
     public async Task<GitHubRepository?> GetRepositoryAsync(long id, CancellationToken cancellationToken)
     {
         await using var c = Connection();
-        return await c.QuerySingleOrDefaultAsync<GitHubRepository>(new CommandDefinition("SELECT id,owner,name,clone_url AS CloneUrl,default_branch AS DefaultBranch,is_enabled AS IsEnabled FROM github.repository WHERE id=@id", new { id }, cancellationToken: cancellationToken));
+        return await c.QuerySingleOrDefaultAsync<GitHubRepository>(new CommandDefinition("SELECT id,owner,name,clone_url AS CloneUrl,default_branch AS DefaultBranch,is_enabled AS IsEnabled,last_synced_at AS LastSyncedAt FROM github.repository WHERE id=@id", new { id }, cancellationToken: cancellationToken));
     }
 
     public async Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken)
     {
         await using var c = Connection();
-        var row = await c.QuerySingleOrDefaultAsync<GitHubIssueRow>(new CommandDefinition("SELECT id,repository_id AS \"RepositoryId\",github_issue_id AS \"GitHubIssueId\",issue_number AS \"IssueNumber\",title,body,state,author,created_at AS \"CreatedAt\",updated_at AS \"UpdatedAt\" FROM github.issue WHERE id=@id", new { id }, cancellationToken: cancellationToken));
+        var row = await c.QuerySingleOrDefaultAsync<GitHubIssueRow>(new CommandDefinition("SELECT id,repository_id AS \"RepositoryId\",github_issue_id AS \"GitHubIssueId\",issue_number AS \"IssueNumber\",title,body,state,author,created_at AS \"CreatedAt\",updated_at AS \"UpdatedAt\",closed_at AS \"ClosedAt\" FROM github.issue WHERE id=@id", new { id }, cancellationToken: cancellationToken));
         if (row is null) return null;
         var labels = (await c.QueryAsync<string>(new CommandDefinition("SELECT name FROM github.issue_label WHERE issue_id=@id ORDER BY name", new { id }, cancellationToken: cancellationToken))).AsList();
         var commentRows = (await c.QueryAsync<GitHubCommentRow>(new CommandDefinition("SELECT github_comment_id AS \"GitHubCommentId\",author,body,created_at AS \"CreatedAt\",updated_at AS \"UpdatedAt\" FROM github.issue_comment WHERE issue_id=@id ORDER BY created_at", new { id }, cancellationToken: cancellationToken))).AsList();
         var comments = commentRows.Select(comment => comment.ToModel()).ToList();
         return new GitHubIssue(row.Id, row.RepositoryId, row.GitHubIssueId, row.IssueNumber, row.Title, row.Body, row.State, row.Author,
-            Offset(row.CreatedAt), Offset(row.UpdatedAt), labels, comments);
+            Offset(row.CreatedAt), Offset(row.UpdatedAt), labels, comments, OffsetOrNull(row.ClosedAt));
     }
 
     private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
+    private static DateTimeOffset? OffsetOrNull(DateTime? value) => value is null ? null : Offset(value.Value);
 
     public async Task UpsertRepositoryAsync(GitHubRepository r, CancellationToken cancellationToken)
     {
@@ -163,10 +227,10 @@ public sealed class PostgresGitHubStore(IOptions<FactoryOptions> options) : IGit
         await using var c = Connection(); await c.ExecuteAsync(new CommandDefinition(sql, r, cancellationToken: cancellationToken));
     }
 
-    public async Task MarkRepositorySyncedAsync(long repositoryId, CancellationToken cancellationToken)
+    public async Task MarkRepositorySyncedAsync(long repositoryId, DateTimeOffset syncedThrough, CancellationToken cancellationToken)
     {
         await using var c = Connection();
-        await c.ExecuteAsync(new CommandDefinition("UPDATE github.repository SET last_synced_at=now(),updated_at=now() WHERE id=@repositoryId", new { repositoryId }, cancellationToken: cancellationToken));
+        await c.ExecuteAsync(new CommandDefinition("UPDATE github.repository SET last_synced_at=@syncedThrough,updated_at=now() WHERE id=@repositoryId", new { repositoryId, syncedThrough }, cancellationToken: cancellationToken));
     }
 
     public async Task RecordRepositorySyncFailureAsync(long repositoryId, string error, CancellationToken cancellationToken)
@@ -184,12 +248,12 @@ public sealed class PostgresGitHubStore(IOptions<FactoryOptions> options) : IGit
     {
         await using var c = Connection(); await c.OpenAsync(cancellationToken); await using var tx = await c.BeginTransactionAsync(cancellationToken);
         const string issueSql = """
-            INSERT INTO github.issue(repository_id,github_issue_id,issue_number,title,body,state,author,created_at,updated_at,last_synced_at)
-            VALUES(@repositoryId,@GitHubIssueId,@IssueNumber,@Title,@Body,@State,@Author,@CreatedAt,@UpdatedAt,now())
-            ON CONFLICT(repository_id,github_issue_id) DO UPDATE SET title=excluded.title,body=excluded.body,state=excluded.state,author=excluded.author,updated_at=excluded.updated_at,last_synced_at=now()
+            INSERT INTO github.issue(repository_id,github_issue_id,issue_number,title,body,state,author,created_at,updated_at,closed_at,last_synced_at)
+            VALUES(@repositoryId,@GitHubIssueId,@IssueNumber,@Title,@Body,@State,@Author,@CreatedAt,@UpdatedAt,@ClosedAt,now())
+            ON CONFLICT(repository_id,github_issue_id) DO UPDATE SET title=excluded.title,body=excluded.body,state=excluded.state,author=excluded.author,updated_at=excluded.updated_at,closed_at=excluded.closed_at,last_synced_at=now()
             RETURNING id;
             """;
-        var id = await c.ExecuteScalarAsync<long>(new CommandDefinition(issueSql, new { repositoryId, issue.GitHubIssueId, issue.IssueNumber, issue.Title, issue.Body, issue.State, issue.Author, issue.CreatedAt, issue.UpdatedAt }, tx, cancellationToken: cancellationToken));
+        var id = await c.ExecuteScalarAsync<long>(new CommandDefinition(issueSql, new { repositoryId, issue.GitHubIssueId, issue.IssueNumber, issue.Title, issue.Body, issue.State, issue.Author, issue.CreatedAt, issue.UpdatedAt, issue.ClosedAt }, tx, cancellationToken: cancellationToken));
         await c.ExecuteAsync(new CommandDefinition("DELETE FROM github.issue_label WHERE issue_id=@id", new { id }, tx, cancellationToken: cancellationToken));
         foreach (var label in issue.Labels) await c.ExecuteAsync(new CommandDefinition("INSERT INTO github.issue_label(issue_id,name) VALUES(@id,@label)", new { id, label }, tx, cancellationToken: cancellationToken));
         const string commentSql = "INSERT INTO github.issue_comment(issue_id,github_comment_id,author,body,created_at,updated_at) VALUES(@id,@GitHubCommentId,@Author,@Body,@CreatedAt,@UpdatedAt) ON CONFLICT(issue_id,github_comment_id) DO UPDATE SET author=excluded.author,body=excluded.body,updated_at=excluded.updated_at";
