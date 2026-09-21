@@ -95,7 +95,7 @@ public sealed class TaskExecutorTests
     [Fact]
     public async Task Auto_draft_policy_requests_publication_once_ready_for_publish()
     {
-        var harness = new Harness { Configuration = new("main", ["custom-build"], ["custom-test"], 2, 1, true, "auto-draft") };
+        var harness = new Harness { Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 2, 1, true, "auto-draft") };
 
         var runId = await harness.ExecuteAsync();
 
@@ -120,7 +120,7 @@ public sealed class TaskExecutorTests
     [Fact]
     public async Task Second_attempt_receives_the_previous_attempts_summary()
     {
-        var harness = new Harness { Configuration = new("main", ["custom-build"], ["custom-test"], 3, 1, true) };
+        var harness = new Harness { Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 3, 1, true) };
         harness.Store.AgentRuns.Add(Harness.PriorAgentRun(harness.ClaimedTask.Id));
         harness.Store.PreviousAttempt = new PreviousAttemptSummary("Tried the wrong endpoint", "Test failed: boom", ["src/Export.cs"], 5, 1);
 
@@ -134,7 +134,7 @@ public sealed class TaskExecutorTests
     [Fact]
     public async Task Exceeding_the_attempt_limit_fails_before_invoking_the_agent_again()
     {
-        var harness = new Harness { Configuration = new("main", ["custom-build"], ["custom-test"], 1, 1, true) };
+        var harness = new Harness { Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 1, 1, true) };
         harness.Store.AgentRuns.Add(Harness.PriorAgentRun(harness.ClaimedTask.Id));
 
         var runId = await harness.ExecuteAsync();
@@ -345,7 +345,7 @@ public sealed class TaskExecutorTests
     {
         public FakeTaskStore Store { get; } = new();
         public List<ProcessRequest> Commands { get; } = [];
-        public RepositoryConfiguration Configuration { get; init; } = new("main", ["custom-build"], ["custom-test"], 2, 1, true);
+        public RepositoryConfiguration Configuration { get; init; } = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 2, 1, true);
         public AgentRunResult AgentResult { get; init; } = Agent("completed", "Implemented the export");
         public bool RepositoryFound { get; init; } = true;
         public bool HasChanges { get; init; } = true;

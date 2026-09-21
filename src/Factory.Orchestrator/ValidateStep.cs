@@ -20,17 +20,13 @@ public sealed class ValidateStep(ITaskStore tasks, IProcessRunner processes, IOp
             var stepType = configuration.BuildCommands.Contains(command) ? "Build" : "Test";
             var stepId = await tasks.StartStepAsync(context.RunId, stepType, 1, cancellationToken);
             var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
-            var process = await RunCommandAsync(command, context.Worktree!.Path, logPath, cancellationToken);
+            var process = await processes.RunAsync(
+                new ProcessRequest(command.Executable, command.Arguments, context.Worktree!.Path, Timeout: TimeSpan.FromMinutes(30), LogPath: logPath),
+                cancellationToken);
             await tasks.CompleteStepAsync(stepId, process.Succeeded ? ExecutionStatus.Succeeded : ExecutionStatus.Failed,
                 process.Succeeded ? null : process.StandardError, process.StandardOutput, cancellationToken);
             if (!process.Succeeded) return PipelineStepResult.Failed($"{stepType} failed: {process.StandardError}");
         }
         return PipelineStepResult.Ok;
-    }
-
-    private Task<ProcessResult> RunCommandAsync(string command, string directory, string logPath, CancellationToken cancellationToken)
-    {
-        var parts = command.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return processes.RunAsync(new ProcessRequest(parts[0], parts[1..], directory, Timeout: TimeSpan.FromMinutes(30), LogPath: logPath), cancellationToken);
     }
 }
