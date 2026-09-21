@@ -356,7 +356,9 @@ public sealed class PostgresStoreIntegrationTests
             var afterMark = await github.GetRepositoryAsync(repositoryId, CancellationToken.None);
             Assert.Equal(checkpoint, afterMark?.LastSyncedAt);
 
-            var now = DateTimeOffset.UtcNow;
+            // PostgreSQL's timestamptz only stores microsecond precision, so a value derived from UtcNow (which
+            // carries 100ns ticks) needs truncating before an exact round-trip equality check below.
+            var now = TruncateToMicroseconds(DateTimeOffset.UtcNow);
             var closedAt = now.AddMinutes(-1);
             var issue = await github.UpsertIssueAsync(repositoryId, new GitHubIssue(0, repositoryId, Random.Shared.NextInt64(1, long.MaxValue),
                 1, "Closed issue", "Body", "CLOSED", "tester", now, now, ["factory:ready"], [], closedAt), CancellationToken.None);
@@ -394,6 +396,8 @@ public sealed class PostgresStoreIntegrationTests
             await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
         }
     }
+
+    private static DateTimeOffset TruncateToMicroseconds(DateTimeOffset value) => new(value.Ticks - value.Ticks % 10, value.Offset);
 
     [Fact]
     public async Task Attempt_count_previous_summary_and_expired_quota_resume_are_persisted()
