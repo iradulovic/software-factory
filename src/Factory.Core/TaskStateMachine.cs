@@ -20,6 +20,16 @@ public static class TaskStateMachine
             [FactoryTaskStatus.Rejected] = [FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled]
         };
 
+    /// <summary>Statuses in which a worker actively owns a task's execution, so its lease is meaningful.
+    /// Expired-lease recovery in <c>ClaimNextAsync</c> only ever applies to these; every other status is a
+    /// resting state (awaiting publication, waiting for quota, needing a human, or terminal) that must never
+    /// be reclaimed as an abandoned execution, however long its now-stale lease sits unrenewed.</summary>
+    public static readonly IReadOnlyList<FactoryTaskStatus> ExecutingStatuses =
+    [
+        FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, FactoryTaskStatus.Planning,
+        FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, FactoryTaskStatus.Reviewing
+    ];
+
     public static bool CanTransition(FactoryTaskStatus from, FactoryTaskStatus to) =>
         Allowed.TryGetValue(from, out var states) && states.Contains(to);
 

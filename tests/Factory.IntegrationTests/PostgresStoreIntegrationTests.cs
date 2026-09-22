@@ -151,6 +151,103 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Reaching_a_resting_state_releases_ownership_so_an_expired_lease_can_never_reclaim_it()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(10), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null, CancellationToken.None);
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null, CancellationToken.None);
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null, CancellationToken.None);
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Validating, FactoryTaskStatus.ReadyForPublish, null, CancellationToken.None);
+
+            var (status, claimedBy, leaseUntil) = await fixture.Connection.QuerySingleAsync<(string Status, string? ClaimedBy, DateTime? LeaseUntil)>(
+                "SELECT status,claimed_by AS \"ClaimedBy\",lease_until AS \"LeaseUntil\" FROM factory.task WHERE id=@TaskId", new { fixture.TaskId });
+            Assert.Equal("ReadyForPublish", status);
+            Assert.Null(claimedBy);
+            Assert.Null(leaseUntil);
+
+            // SF-601 regression: even a stale lease timestamp left over from the worker's last renewal before the
+            // task came to rest (long since passed) must never make a validated, awaiting-publication task look
+            // like an abandoned execution.
+            await fixture.Connection.ExecuteAsync("UPDATE factory.task SET lease_until=now()-interval '1 hour' WHERE id=@TaskId", new { fixture.TaskId });
+
+            var reclaimed = await fixture.Tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(10), CancellationToken.None);
+            Assert.Null(reclaimed);
+            Assert.Equal("ReadyForPublish", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+        }
+    }
+
+    [Fact]
+    public async Task Executing_statuses_keep_ownership_but_a_resting_status_releases_it()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(10), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null, CancellationToken.None);
+            var stillOwned = await fixture.Connection.QuerySingleAsync<(string? ClaimedBy, DateTime? LeaseUntil)>(
+                "SELECT claimed_by AS \"ClaimedBy\",lease_until AS \"LeaseUntil\" FROM factory.task WHERE id=@TaskId", new { fixture.TaskId });
+            Assert.Equal("worker-a", stillOwned.ClaimedBy);
+            Assert.NotNull(stillOwned.LeaseUntil);
+
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null, CancellationToken.None);
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Implementing, FactoryTaskStatus.WaitingForQuota, "Codex quota reached", CancellationToken.None);
+
+            var released = await fixture.Connection.QuerySingleAsync<(string? ClaimedBy, DateTime? ClaimedAt, DateTime? LeaseUntil)>(
+                "SELECT claimed_by AS \"ClaimedBy\",claimed_at AS \"ClaimedAt\",lease_until AS \"LeaseUntil\" FROM factory.task WHERE id=@TaskId", new { fixture.TaskId });
+            Assert.Null(released.ClaimedBy);
+            Assert.Null(released.ClaimedAt);
+            Assert.Null(released.LeaseUntil);
+        }
+    }
+
+    [Fact]
+    public async Task Publication_remains_possible_once_a_validated_tasks_ownership_is_released()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                await fixture.Connection.ExecuteAsync(
+                    "UPDATE factory.task SET branch_name='factory/1-x', worktree_path='/tmp/wt/ready-for-publish' WHERE id=@TaskId", new { fixture.TaskId });
+
+                var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(10), CancellationToken.None);
+                Assert.Equal(fixture.TaskId, claimed?.Id);
+                await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null, CancellationToken.None);
+                await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null, CancellationToken.None);
+                await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null, CancellationToken.None);
+                await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Validating, FactoryTaskStatus.ReadyForPublish, null, CancellationToken.None);
+                Assert.Null(await fixture.Connection.ExecuteScalarAsync<string?>("SELECT claimed_by FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+
+                var requested = await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "operator", CancellationToken.None);
+                Assert.NotNull(requested);
+                var publication = await fixture.Tasks.ClaimNextPublicationAsync("publication-worker", CancellationToken.None);
+                Assert.NotNull(publication);
+                Assert.Equal(fixture.TaskId, publication!.TaskId);
+                Assert.Equal("factory/1-x", publication.BranchName);
+
+                await fixture.Tasks.CompletePublicationAsync(publication.Id, "PullRequestCreated", 7, "https://github.com/lease-tests/repo/pull/7", null, CancellationToken.None);
+                await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published, null, CancellationToken.None);
+                Assert.Equal("Published", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
+        }
+    }
+
+    [Fact]
     public async Task Change_summary_is_persisted_on_the_run()
     {
         var fixture = await LeaseFixture.CreateAsync();
