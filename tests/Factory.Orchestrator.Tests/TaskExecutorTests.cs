@@ -245,6 +245,37 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task Quota_detection_persists_agent_quota_status_independent_of_the_task_run()
+    {
+        var resetAt = DateTimeOffset.UtcNow.AddHours(5);
+        var harness = new Harness { AgentResult = new AgentRunResult(Harness.Process(), null, null, QuotaDetected: true,
+            QuotaResetAt: resetAt, Window: QuotaWindow.ShortTerm, ResetKind: QuotaResetKind.Estimated, QuotaDetail: "usage limit") };
+
+        await harness.ExecuteAsync();
+
+        var status = Assert.Single(harness.Store.RecordedQuotaStatuses);
+        Assert.Equal("Codex", status.Agent);
+        Assert.True(status.Detected);
+        Assert.Equal(QuotaWindow.ShortTerm, status.Window);
+        Assert.Equal(QuotaResetKind.Estimated, status.ResetKind);
+        Assert.Equal(resetAt, status.ResetAt);
+        Assert.Equal("usage limit", status.Detail);
+    }
+
+    [Fact]
+    public async Task A_successful_run_records_the_agent_as_not_at_quota()
+    {
+        var harness = new Harness();
+
+        await harness.ExecuteAsync();
+
+        var status = Assert.Single(harness.Store.RecordedQuotaStatuses);
+        Assert.Equal("Codex", status.Agent);
+        Assert.False(status.Detected);
+        Assert.Null(status.ResetAt);
+    }
+
+    [Fact]
     public async Task Falls_back_to_another_configured_agent_when_the_preferred_one_is_at_quota()
     {
         var harness = new Harness { PreferredAgent = "Codex", ConfiguredAgents = ["Codex", "Claude"] };

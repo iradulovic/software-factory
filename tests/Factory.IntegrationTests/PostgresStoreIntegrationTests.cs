@@ -541,11 +541,34 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Contains("compile error", previous.ValidationOutput);
             Assert.Contains("src/Export.cs", previous.ChangedFiles);
 
+            // Quota status (SF-602) is persisted independently of this agent_run audit row: IsAgentAtQuotaAsync
+            // never derives from agent_run history, only from a dedicated RecordAgentQuotaStatusAsync call.
             Assert.False(await tasks.IsAgentAtQuotaAsync("NeverUsedAgent", CancellationToken.None));
             var quotaCheckStepId = await tasks.StartStepAsync(runId, "AgentImplementation", 2, CancellationToken.None);
             await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, runId, quotaCheckStepId, "Claude", DateTimeOffset.UtcNow,
                 DateTimeOffset.UtcNow, 1, 1, "Failed", "", "rate limited", true, DateTimeOffset.UtcNow.AddHours(4), 2, false, null), CancellationToken.None);
+            Assert.False(await tasks.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
+
+            var checkedAt = DateTimeOffset.UtcNow;
+            await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus("Claude", true, QuotaWindow.ShortTerm, QuotaResetKind.Estimated,
+                checkedAt.AddHours(4), checkedAt, "rate limited"), CancellationToken.None);
             Assert.True(await tasks.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
+
+            // Restart persistence: a fresh store instance (simulating a process restart) reads the same status.
+            var restarted = new PostgresTaskStore(settings, new TestClock());
+            var status = await restarted.GetAgentQuotaStatusAsync("Claude", CancellationToken.None);
+            Assert.NotNull(status);
+            Assert.True(status!.Detected);
+            Assert.Equal(QuotaWindow.ShortTerm, status.Window);
+            Assert.Equal(QuotaResetKind.Estimated, status.ResetKind);
+            Assert.Equal("rate limited", status.Detail);
+            Assert.True(await restarted.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
+
+            // A later invocation that does not detect quota clears the agent's status immediately, without
+            // waiting for the previously recorded reset time to pass.
+            await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus("Claude", false, QuotaWindow.None, QuotaResetKind.None,
+                null, checkedAt.AddMinutes(1), null), CancellationToken.None);
+            Assert.False(await tasks.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
 
             // A quota-detected attempt whose reset time has already passed is auto-resumed to Pending.
             await connection.ExecuteAsync("""
@@ -562,6 +585,7 @@ public sealed class PostgresStoreIntegrationTests
         }
         finally
         {
+            await connection.ExecuteAsync("DELETE FROM factory.agent_availability WHERE agent='Claude'");
             await connection.ExecuteAsync("""
                 DELETE FROM factory.agent_run WHERE task_id IN (@taskId,@quotaTaskId);
                 DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id IN (@taskId,@quotaTaskId));

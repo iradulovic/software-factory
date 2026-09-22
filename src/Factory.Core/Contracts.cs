@@ -58,9 +58,18 @@ public interface ITaskStore
     /// back to <see cref="FactoryTaskStatus.Pending"/>, and returns how many were resumed.</summary>
     Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken);
 
-    /// <summary>Whether the named agent's most recent invocation (across every task) detected quota exhaustion
-    /// with a reset time that has not yet passed.</summary>
+    /// <summary>Whether the named agent currently has a recorded quota status whose reset time has not yet
+    /// passed. Backed by <see cref="RecordAgentQuotaStatusAsync"/>, independent of any particular task's run.</summary>
     Task<bool> IsAgentAtQuotaAsync(string agent, CancellationToken cancellationToken);
+
+    /// <summary>Persists this agent's current quota status, independent of any particular task or run. Called
+    /// after every invocation of the agent, whether or not quota was detected, so a status that cleared is
+    /// reflected immediately rather than only by scanning task-run history.</summary>
+    Task RecordAgentQuotaStatusAsync(AgentQuotaStatus status, CancellationToken cancellationToken);
+
+    /// <summary>The most recently recorded quota status for an agent, or <see langword="null"/> if none has ever
+    /// been recorded.</summary>
+    Task<AgentQuotaStatus?> GetAgentQuotaStatusAsync(string agent, CancellationToken cancellationToken);
 
     /// <summary>Cancels a task's <see cref="FactoryTaskStatus.Pending"/> request for the given GitHub issue
     /// (never a task that is already active), with an explicit reason, because the issue was closed or lost its

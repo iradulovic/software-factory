@@ -34,6 +34,31 @@ public sealed class CliAgentRunnerTests
     }
 
     [Fact]
+    public async Task A_successful_run_is_never_flagged_even_if_its_output_mentions_a_quota_signature()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "Implemented the quota dashboard feature.", "", false, false));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.False(result.QuotaDetected);
+        Assert.Null(result.QuotaResetAt);
+    }
+
+    [Fact]
+    public async Task Quota_detection_carries_the_classified_window_and_reset_kind_onto_the_result()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 1, "", "Error: usage limit reached", false, false));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Equal(QuotaWindow.ShortTerm, result.Window);
+        Assert.Equal(QuotaResetKind.Estimated, result.ResetKind);
+        Assert.Equal("usage limit", result.QuotaDetail);
+    }
+
+    [Fact]
     public async Task Quota_signatures_are_configured_per_profile()
     {
         var runner = new RecordingRunner(new ProcessResult("claude", [], ".", Now, Now, 1, "", "rate limited, try later", false, false));
