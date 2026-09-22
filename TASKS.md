@@ -30,6 +30,11 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
 
 ## In progress
 
+- [ ] **SF-611 — Add queue priorities and explicit task dependencies**
+  - Dependencies: SF-604, SF-610.
+  - Scope: expose priority controls and a minimal dependency model. A dependent task must wait until prerequisite changes are merged and available on its configured base. Continue to support independent issues across repositories with one coding execution at a time.
+  - Acceptance: reject dependency cycles; show blocked prerequisites; prove task B cannot run from a base missing task A. Rejected/cancelled prerequisites require a clear operator decision instead of releasing dependent work silently. Claim ordering honors priority among eligible tasks.
+
 ## Next up
 
 The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
@@ -44,12 +49,7 @@ SF-607 is complete; see **Completed** below. SF-608 is blocked; see **Blocked** 
 
 ### Priority 2 — Give the operator trustworthy control
 
-SF-609 and SF-610 are complete; see **Completed** below.
-
-- [ ] **SF-611 — Add queue priorities and explicit task dependencies**
-  - Dependencies: SF-604, SF-610.
-  - Scope: expose priority controls and a minimal dependency model. A dependent task must wait until prerequisite changes are merged and available on its configured base. Continue to support independent issues across repositories with one coding execution at a time.
-  - Acceptance: reject dependency cycles; show blocked prerequisites; prove task B cannot run from a base missing task A. Rejected/cancelled prerequisites require a clear operator decision instead of releasing dependent work silently. Claim ordering honors priority among eligible tasks.
+SF-609 and SF-610 are complete; see **Completed** below. SF-611 is in progress; see **In progress** above.
 
 - [ ] **SF-612 — Bound the outstanding human-review backlog**
   - Dependencies: SF-607, SF-610, SF-611.
