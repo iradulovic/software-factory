@@ -36,8 +36,23 @@ public interface ITaskStore
     /// <summary>Requests publication of a validated task. Returns the new publication's id, or <see langword="null"/>
     /// if one is already in flight for this task (an explicit human retry after a failed attempt is still allowed).</summary>
     Task<Guid?> RequestPublicationAsync(Guid taskId, Guid? runId, string requestedBy, CancellationToken cancellationToken);
-    Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, CancellationToken cancellationToken);
+
+    /// <summary>Claims the oldest <c>Requested</c> publication, or reclaims a <c>Publishing</c> one whose lease has
+    /// expired — the worker that held it crashed somewhere between claiming and recording completion. Push and
+    /// pull-request creation are idempotent under retry, so reclaiming and re-running a stranded attempt is always
+    /// safe.</summary>
+    Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken);
     Task CompletePublicationAsync(Guid publicationId, string status, int? pullRequestNumber, string? pullRequestUrl, string? error, CancellationToken cancellationToken);
+
+    /// <summary>Finishes a task's transition to <see cref="FactoryTaskStatus.Published"/> when its most recent
+    /// publication already succeeded (<c>PullRequestCreated</c>) but the task itself is still resting in
+    /// <see cref="FactoryTaskStatus.ReadyForPublish"/> — the worker crashed between recording that success and
+    /// making this transition. Returns how many tasks were reconciled.</summary>
+    Task<int> ReconcilePublishedTasksAsync(CancellationToken cancellationToken);
+
+    /// <summary>Persists the head commit a task's implementation was actually validated against, so publication
+    /// can refuse to push a worktree whose HEAD has since moved past what was validated.</summary>
+    Task SetValidatedHeadCommitAsync(Guid taskId, string headCommit, CancellationToken cancellationToken);
 
     /// <summary>Records one attempt to write to GitHub (a comment or a state-label change) as append-only operational
     /// state, regardless of whether it succeeded.</summary>
@@ -175,6 +190,13 @@ public interface IAgentResultReader { Task<(AgentResult? Result, string? Error)>
 public interface IGitHubPublisher
 {
     Task<PushResult> PushAsync(string worktreePath, string branchName, CancellationToken cancellationToken);
+
+    /// <summary>The existing open pull request for this branch, if any — checked before creating a new one so a
+    /// retried publication (for example after a crash right after a prior attempt's <c>gh pr create</c> already
+    /// succeeded) never creates a duplicate. <see langword="null"/> means none was found; a returned
+    /// <see cref="PullRequestResult"/> with <c>Succeeded=false</c> means the check itself failed.</summary>
+    Task<PullRequestResult?> FindExistingPullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken);
+
     Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken);
 
     /// <summary>Posts a comment on the issue backing a task, so people who work in GitHub see what the factory did

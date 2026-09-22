@@ -599,6 +599,7 @@ public sealed class TaskExecutorTests
         private sealed class FakeGitHubPublisher(Harness harness) : IGitHubPublisher
         {
             public Task<PushResult> PushAsync(string worktreePath, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<PullRequestResult?> FindExistingPullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken) => throw new NotSupportedException();
 
             public Task<GitHubWriteResult> CommentOnIssueAsync(string owner, string name, int issueNumber, string body, CancellationToken cancellationToken)
