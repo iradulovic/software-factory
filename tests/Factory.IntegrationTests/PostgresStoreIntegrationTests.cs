@@ -976,6 +976,203 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Claim_ordering_honors_an_operator_set_priority()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('priority-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var lowId = Guid.NewGuid();
+        var highId = Guid.NewGuid();
+        try
+        {
+            // "low" is created first, so without a priority override, created_at ordering alone would claim it first.
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@lowId,@repositoryId,'Low priority task','Pending','main')", new { lowId, repositoryId });
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@highId,@repositoryId,'High priority task','Pending','main')", new { highId, repositoryId });
+
+            await tasks.SetPriorityAsync(highId, int.MaxValue, CancellationToken.None);
+
+            var claimed = await tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(5), CancellationToken.None);
+            Assert.Equal(highId, claimed?.Id);
+            Assert.Equal(int.MaxValue, claimed?.Priority);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@lowId,@highId)", new { lowId, highId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task Dependency_management_rejects_self_dependencies_not_found_tasks_and_cycles_and_is_idempotent()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('dependency-management-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var c = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch)
+                VALUES(@a,@repositoryId,'Task A','Pending','main'),(@b,@repositoryId,'Task B','Pending','main'),(@c,@repositoryId,'Task C','Pending','main')
+                """, new { a, b, c, repositoryId });
+
+            Assert.Equal(AddDependencyOutcome.SelfDependency, await tasks.AddDependencyAsync(a, a, CancellationToken.None));
+            Assert.Equal(AddDependencyOutcome.TaskNotFound, await tasks.AddDependencyAsync(a, Guid.NewGuid(), CancellationToken.None));
+
+            Assert.Equal(AddDependencyOutcome.Added, await tasks.AddDependencyAsync(b, a, CancellationToken.None)); // B depends on A
+            Assert.Equal(AddDependencyOutcome.AlreadyExists, await tasks.AddDependencyAsync(b, a, CancellationToken.None));
+            Assert.Equal(AddDependencyOutcome.Added, await tasks.AddDependencyAsync(c, b, CancellationToken.None)); // C depends on B, so A <- B <- C
+
+            // A depending on C would close the cycle A <- B <- C <- A — rejected, checked transitively, not just
+            // the direct edge (A does not directly depend on C's prerequisite chain, only through B).
+            Assert.Equal(AddDependencyOutcome.WouldCreateCycle, await tasks.AddDependencyAsync(a, c, CancellationToken.None));
+
+            var dependenciesOfB = await tasks.GetDependenciesAsync(b, CancellationToken.None);
+            var dependency = Assert.Single(dependenciesOfB);
+            Assert.Equal(a, dependency.DependsOnTaskId);
+            Assert.Equal("Task A", dependency.DependsOnTitle);
+            Assert.Equal(FactoryTaskStatus.Pending, dependency.DependsOnStatus);
+
+            await tasks.RemoveDependencyAsync(b, a, CancellationToken.None);
+            Assert.Empty(await tasks.GetDependenciesAsync(b, CancellationToken.None));
+            // Removing an edge that no longer exists is a harmless no-op.
+            await tasks.RemoveDependencyAsync(b, a, CancellationToken.None);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_dependency WHERE task_id IN (@a,@b,@c) OR depends_on_task_id IN (@a,@b,@c)", new { a, b, c });
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@a,@b,@c)", new { a, b, c });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task A_task_with_an_unmerged_prerequisite_is_never_claimed_until_the_prerequisite_merges()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('dependency-claim-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var prerequisiteId = Guid.NewGuid();
+        var dependentId = Guid.NewGuid();
+        try
+        {
+            // Maximum priority on both guards this test against any unrelated Pending task left over elsewhere
+            // in this shared test database — these two must always be the ones actually contended over.
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch,priority)
+                VALUES(@prerequisiteId,@repositoryId,'Prerequisite task','Pending','main',2147483647),
+                      (@dependentId,@repositoryId,'Dependent task','Pending','main',2147483647)
+                """, new { prerequisiteId, dependentId, repositoryId });
+            Assert.Equal(AddDependencyOutcome.Added, await tasks.AddDependencyAsync(dependentId, prerequisiteId, CancellationToken.None));
+
+            // The prerequisite has not merged: it is claimed first (both are equally high priority, so claim
+            // order alone would otherwise be arbitrary between them), and the dependent is never claimed at
+            // all — proving task B genuinely cannot start, and so cannot ever run against a base missing task A.
+            var firstClaim = await tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(5), CancellationToken.None);
+            Assert.Equal(prerequisiteId, firstClaim?.Id);
+            Assert.Null(await tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(5), CancellationToken.None));
+
+            // The prerequisite merges: the dependent becomes claimable.
+            await connection.ExecuteAsync("UPDATE factory.task SET status='Completed' WHERE id=@prerequisiteId", new { prerequisiteId });
+            var secondClaim = await tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(5), CancellationToken.None);
+            Assert.Equal(dependentId, secondClaim?.Id);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_dependency WHERE task_id=@dependentId", new { dependentId });
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@prerequisiteId,@dependentId)", new { prerequisiteId, dependentId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task A_prerequisite_that_ends_without_merging_moves_its_dependent_to_needs_human()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('dependency-block-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var prerequisiteId = Guid.NewGuid();
+        var dependentId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch)
+                VALUES(@prerequisiteId,@repositoryId,'Prerequisite task','Pending','main'),(@dependentId,@repositoryId,'Dependent task','Pending','main')
+                """, new { prerequisiteId, dependentId, repositoryId });
+            await tasks.AddDependencyAsync(dependentId, prerequisiteId, CancellationToken.None);
+
+            // The prerequisite is still pending: nothing to block yet.
+            Assert.Equal(0, await tasks.BlockDependentsOnFailedPrerequisitesAsync(CancellationToken.None));
+
+            // The prerequisite is cancelled — it will never merge, so the dependent must not be silently left
+            // queued forever behind it, nor silently released to run against a base that will never contain it.
+            await connection.ExecuteAsync("UPDATE factory.task SET status='Cancelled' WHERE id=@prerequisiteId", new { prerequisiteId });
+            Assert.Equal(1, await tasks.BlockDependentsOnFailedPrerequisitesAsync(CancellationToken.None));
+
+            var (status, reason) = await connection.QuerySingleAsync<(string Status, string Reason)>(
+                "SELECT status AS \"Status\",failure_reason AS \"Reason\" FROM factory.task WHERE id=@dependentId", new { dependentId });
+            Assert.Equal("NeedsHuman", status);
+            Assert.Contains("Prerequisite task", reason);
+            Assert.Contains("Cancelled", reason);
+
+            // Idempotent: the dependent is no longer Pending, so a second sweep matches nothing further.
+            Assert.Equal(0, await tasks.BlockDependentsOnFailedPrerequisitesAsync(CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_dependency WHERE task_id=@dependentId", new { dependentId });
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@prerequisiteId,@dependentId)", new { prerequisiteId, dependentId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Quota_interruptions_are_excluded_from_the_implementation_attempt_budget_but_real_failures_are_not()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

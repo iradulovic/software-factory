@@ -8,6 +8,7 @@ public sealed record TaskListQuery(int Page, int Size, string SortExpression, st
             "repository" => "gr.owner || '/' || gr.name",
             "issueNumber" => "i.issue_number",
             "status" => "t.status",
+            "priority" => "t.priority",
             "agent" => "COALESCE(t.preferred_agent,'Codex')",
             "startedAt" => "t.started_at",
             "result" => "CASE WHEN t.failure_reason IS NOT NULL THEN t.failure_reason WHEN t.status IN ('Completed','ReadyForPublish') THEN 'Passed' WHEN t.status='Cancelled' THEN 'Cancelled' END",

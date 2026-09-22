@@ -3,9 +3,14 @@ import { z } from "zod";
 export const taskSchema = z.object({
   id: z.string(), title: z.string(), repository: z.string(), issueNumber: z.number().nullable(), status: z.string(),
   agent: z.string(), createdAt: z.string(), startedAt: z.string().nullable(), completedAt: z.string().nullable(),
-  durationSeconds: z.number(), result: z.string().nullable(), branchName: z.string().nullable().optional(), worktreePath: z.string().nullable().optional(), failureReason: z.string().nullable().optional()
+  durationSeconds: z.number(), result: z.string().nullable(), branchName: z.string().nullable().optional(), worktreePath: z.string().nullable().optional(), failureReason: z.string().nullable().optional(),
+  priority: z.number()
 });
 export type FactoryTask = z.infer<typeof taskSchema>;
+export const taskDependencySchema = z.object({
+  taskId: z.string(), dependsOnTaskId: z.string(), dependsOnTitle: z.string(), dependsOnStatus: z.string()
+});
+export type TaskDependency = z.infer<typeof taskDependencySchema>;
 export const runSchema = z.object({
   id:z.string(),taskId:z.string(),title:z.string(),repository:z.string(),startedAt:z.string(),completedAt:z.string().nullable(),
   status:z.string(),workerId:z.string(),durationSeconds:z.number(),currentStep:z.string().nullable(),result:z.string().nullable()

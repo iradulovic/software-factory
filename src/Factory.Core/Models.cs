@@ -10,6 +10,14 @@ public enum FactoryTaskStatus
 
 public enum ExecutionStatus { Pending, Running, Succeeded, Failed, Cancelled }
 
+/// <summary>The result of attempting to record a dependency edge (SF-611).</summary>
+public enum AddDependencyOutcome { Added, AlreadyExists, WouldCreateCycle, TaskNotFound, SelfDependency }
+
+/// <summary>One prerequisite <paramref name="DependsOnTaskId"/> must reach <see cref="FactoryTaskStatus.Completed"/>
+/// before <paramref name="TaskId"/> becomes claimable — <see cref="DependsOnTitle"/>/<see cref="DependsOnStatus"/>
+/// are read alongside the edge so the operator can see what is blocking a task without a second lookup.</summary>
+public sealed record TaskDependency(Guid TaskId, Guid DependsOnTaskId, string DependsOnTitle, FactoryTaskStatus DependsOnStatus);
+
 public sealed record FactoryTask(
     Guid Id,
     long RepositoryId,

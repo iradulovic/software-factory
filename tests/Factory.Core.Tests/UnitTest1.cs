@@ -4,6 +4,7 @@ public sealed class TaskStateMachineTests
 {
     [Theory]
     [InlineData(Factory.Core.FactoryTaskStatus.Pending, Factory.Core.FactoryTaskStatus.Claimed)]
+    [InlineData(Factory.Core.FactoryTaskStatus.Pending, Factory.Core.FactoryTaskStatus.NeedsHuman)]
     [InlineData(Factory.Core.FactoryTaskStatus.Claimed, Factory.Core.FactoryTaskStatus.Preparing)]
     [InlineData(Factory.Core.FactoryTaskStatus.Implementing, Factory.Core.FactoryTaskStatus.Validating)]
     [InlineData(Factory.Core.FactoryTaskStatus.Validating, Factory.Core.FactoryTaskStatus.ReadyForPublish)]
