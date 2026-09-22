@@ -2,12 +2,12 @@
 
 This file is the ordered handoff queue for feature work. `BOOTSTRAP_SPEC.md` describes the architecture; this file records what to build next.
 
-Last reviewed: 2026-09-17
+Last reviewed: 2026-09-22
 
 ## Agent workflow
 
 1. Follow an explicit user-selected task when one is provided.
-2. Otherwise, select the first unblocked item under **Next up**.
+2. Otherwise, select the first unblocked item under **Next up** whose dependencies are complete. Preserve the listed order; dependencies are hard prerequisites, not permission to skip higher-priority eligible work.
 3. Before editing code, move that entire item to **In progress**. Work on one tracker item per run.
 4. Treat its acceptance criteria as the scope boundary. Record newly discovered work as a separate item instead of expanding the current task.
 5. Apply the completion checks in `AGENTS.md`.
@@ -16,21 +16,154 @@ Last reviewed: 2026-09-17
 
 Keep identifiers stable. Add new work at the appropriate priority position rather than renumbering existing items.
 
+## Product direction and review baseline
+
+This is a personal development assistant for one developer on one dedicated Windows desktop, using subscription-authenticated Codex and Claude Code within the user's two $20 plans. The target outcome is useful progress while the developer is away: locally validated changes, draft pull requests, GitHub CI evidence, and clear requests for human input. Human review, manual testing, and merging remain part of the workflow. Automatic deployment and online website inspection are not prerequisites.
+
+Preserve the existing PostgreSQL state store, separate GitHub synchronization, isolated worktrees, explicit task transitions, shared process runner, independent validation, base-reference validation configuration, execution history, and human-controlled merging. Improve these boundaries incrementally; a rewrite or additional orchestration framework is outside this backlog's scope. Start with one coding execution at a time.
+
+Optimize for accepted useful changes per week and manageable human review time. Lines changed, successful process exits, and total quota consumed are supporting signals, not success criteria. Preserve capacity for the developer's interactive sessions. Avoid automatic API-key fallback or paid overage; provider switching must respect each subscription's limits.
+
+The 2026-09-22 review was primarily source inspection, not a live operational certification. It found gaps despite earlier completed tracker entries; the new tasks below supersede those entries' claims where relevant without rewriting history. During review, 37 core tests passed; the broader test invocation encountered missing OpenTelemetry references in the existing restore state, and fresh restore was blocked by access to the user-level NuGet configuration. This does not establish a source-code build regression. No live subscription-backed task or browser verification was performed.
+
+Subscription facts are time-sensitive. Before implementing provider handling, verify installed CLI behavior and current official documentation. The review sources were [OpenAI usage documentation](https://learn.chatgpt.com/docs/pricing), [Claude Pro limits](https://support.claude.com/en/articles/8325606-what-is-the-pro-plan), and [Claude programmatic execution](https://code.claude.com/docs/en/headless). Usage varies by workload; five-hour and weekly constraints must not be reduced to a fixed task count or a guessed universal reset time.
+
 ## In progress
 
 ## Next up
 
-Ordered per `docs/concept-review.md` section 6: restore a working vertical slice first, harden the executor, then build publication and the repair loop on top of a testable pipeline.
+The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
 
-### Restore and harden the vertical slice
+### Priority 0 — Repair execution and quota correctness
 
-### Prepare human-controlled publication
+- [ ] **SF-601 — Keep validated work out of execution recovery**
+  - Dependencies: none.
+  - Problem: `PostgresTaskStore.ClaimNextAsync` includes `ReadyForPublish` in expired-lease recovery; entering that resting state leaves the lease populated. Finished work can therefore be implemented again while awaiting publication approval.
+  - Scope: restrict recovery to executing states and release execution ownership on entry to resting states through the application transition boundary. Preserve recovery of genuinely abandoned executions.
+  - Acceptance: PostgreSQL integration tests prove `ReadyForPublish` remains unchanged beyond lease expiry, restart does not invoke an agent for it, and expired active execution is still recovered. Confirm publication remains possible after ownership is released.
+  - Start with: `src/Factory.Infrastructure/Database.cs`, `src/Factory.Orchestrator/TaskExecutor.cs`, `src/Factory.Core/TaskStateMachine.cs`.
 
-### Improve autonomy
+- [ ] **SF-602 — Model provider availability and classify quota signals accurately**
+  - Dependencies: SF-601.
+  - Problem: `CliAgentRunner` searches arbitrary output for words such as `quota` and reports detection time plus five hours as a reset. Successful output can match; weekly exhaustion is treated as a short cooldown.
+  - Scope: persist provider availability independently of task runs. Distinguish reported resets, estimated retry times, and unknown availability; represent short-window and weekly restrictions when reported. Use structured CLI signals where supported and narrowly matched error responses otherwise. Keep provider-specific parsing behind the agent boundary.
+  - Acceptance: tests cover successful output mentioning quota, genuine short-window and weekly exhaustion, missing/malformed reset information, and restart persistence. Unknown state uses bounded backoff or an explicit operator action; it is never displayed as a known reset or invented remaining percentage. Preserve raw diagnostic evidence without credentials.
+  - Start with: `src/Factory.Infrastructure/CliAgentRunner.cs`, `src/Factory.Orchestrator/AgentSelector.cs`, `src/Factory.Infrastructure/Database.cs`.
 
-### Extend observability and synchronization
+- [ ] **SF-603 — Separate implementation attempts from quota interruptions**
+  - Dependencies: SF-602.
+  - Problem: `CountAgentRunsAsync` counts every invocation toward `maxImplementationAttempts`, including quota failures, so tasks can exhaust their repair allowance without meaningful implementation attempts.
+  - Scope: define and persist attempt classification separately from invocation history. Quota interruptions retain partial work and do not consume the implementation-failure budget. Preserve a separate bounded policy for repeated operational failures so exclusion from the implementation budget cannot create a hot loop.
+  - Acceptance: tests prove repeated quota responses do not exhaust implementation attempts, real failed implementations do, invocation history remains complete, and interrupted work is retained. Define migration treatment for existing records explicitly.
+  - Start with: `src/Factory.Orchestrator/WriteContextStep.cs`, `src/Factory.Orchestrator/RunAgentStep.cs`, `src/Factory.Infrastructure/Database.cs`.
 
-### Operational polish
+- [ ] **SF-604 — Resume queued work from provider availability and switch providers promptly**
+  - Dependencies: SF-602, SF-603.
+  - Problem: tasks put into `WaitingForQuota` before any invocation have no agent-run reset record and can remain stuck. A task that hits Codex quota waits even when Claude is available.
+  - Scope: schedule waiting work from provider availability, not the waiting task's last invocation. When the chosen provider exhausts its allowance, make the same preserved task eligible for another permitted available provider. When all providers are blocked, wait without repeatedly preparing worktrees or invoking agents.
+  - Acceptance: integration/pipeline tests cover a task with no prior invocation, two blocked providers, one provider becoming available, mid-task fallback, restart while waiting, and no duplicate concurrent execution. No capacity means a visible wait reason and a bounded next check; available capacity resumes work without a manual Retry.
+  - Start with: `src/Factory.Orchestrator/Worker.cs`, `src/Factory.Orchestrator/AgentSelector.cs`, `src/Factory.Orchestrator/RunAgentStep.cs`, `src/Factory.Infrastructure/Database.cs`.
+
+### Priority 1 — Complete a dependable unattended implementation path
+
+- [ ] **SF-605 — Make the agent completion contract explicit**
+  - Dependencies: SF-601, SF-603.
+  - Problem: publication rejects uncommitted work, but generated instructions do not require a commit. Result instructions list property names without accepted statuses, types, or a JSON example.
+  - Scope: document the exact result contract in generated task context, including supported status values, required fields/types, and a valid example. Require completed implementations to commit intended changes on the assigned branch before returning; retain orchestrator ownership of branch/worktree creation and publication.
+  - Acceptance: context/result tests cover every supported status and malformed output; completion instructions and `PreparePublicationStep` agree. Work remains available on failure, and generated `.factory` context/results are excluded from commits.
+  - Start with: `src/Factory.Infrastructure/TaskFiles.cs`, `src/Factory.Infrastructure/AgentResultReader.cs`, `src/Factory.Orchestrator/PreparePublicationStep.cs`.
+
+- [ ] **SF-606 — Automatically perform bounded validation repair**
+  - Dependencies: SF-603, SF-604, SF-605.
+  - Problem: previous-attempt context exists, but failed validation ends in `Failed` without automatically scheduling repair; SF-202 implemented retry context and limits rather than the full automatic loop.
+  - Scope: begin with one automatic repair attempt after a repairable build/test failure, subject to the configured implementation limit. Preserve the worktree and pass exact failed-command output. Classify authentication, missing dependencies, quota, and human decisions separately from repairable code failures.
+  - Acceptance: a failed test followed by a successful repair reaches publication readiness without operator input; repeated failure stops at the bound with an actionable reason. Restart cannot reset the budget. Operational failures do not trigger repeated code-edit attempts, and manual retry respects the same accounting.
+  - Start with: `src/Factory.Orchestrator/TaskExecutor.cs`, `src/Factory.Orchestrator/ValidateStep.cs`, `src/Factory.Orchestrator/WriteContextStep.cs`.
+
+- [ ] **SF-607 — Recover publication and reconcile existing pull requests**
+  - Dependencies: SF-601, SF-605.
+  - Problem: publication claims only select `Requested`; a crash can strand `Publishing`. GitHub may create a PR before the local success record is saved.
+  - Scope: recover stale publication claims and reconcile the task branch's existing PR before creation. Persist the validated head commit and verify that publication uses it. Keep push/PR creation idempotent under retry and keep cancellation/resting-state changes authoritative.
+  - Acceptance: tests cover interruption before push, after push, after remote PR creation, and before local task transition. Recovery records the existing PR without duplication or another implementation run; changed/unvalidated head commits cannot be silently published. Human merging remains unchanged.
+  - Start with: `src/Factory.Orchestrator/PublicationExecutor.cs`, `src/Factory.Orchestrator/PublicationWorker.cs`, `src/Factory.Infrastructure/Database.cs`, `src/Factory.Infrastructure/GitHub.cs`.
+
+- [ ] **SF-608 — Prove both subscription CLIs on the dedicated Windows desktop**
+  - Dependencies: SF-604, SF-605, SF-606, SF-607.
+  - Scope: validate installed Codex and Claude Code launch paths, subscription authentication, and explicit unattended tool permissions using the shared process runner. A version check establishes installation only; report authentication/permission readiness separately. Keep API billing and paid overage out of the configured workflow. Verify current CLI flags rather than copying stale examples.
+  - Acceptance: record one small live issue per provider through edit, tests, commit, result parsing, independent validation, draft PR, and CI with run/PR links and CLI versions. Exercise the actual Windows execution path and add appropriate Windows process-runner coverage; Ubuntu CI alone is insufficient. Reproduce quota/fallback edge cases deterministically with fixtures without intentionally exhausting real allowances.
+  - Evidence rules: use a designated test repository and normal subscription sessions. Missing authentication or required human setup blocks the live acceptance criterion; fixture tests must not be reported as live-provider evidence.
+  - Start with: `README.md`, `src/Factory.Infrastructure/FactoryOptions.cs`, `src/Factory.Infrastructure/ProcessRunner.cs`, `.github/workflows/ci.yml`.
+
+### Priority 2 — Give the operator trustworthy control
+
+- [ ] **SF-609 — Correct agent attribution and operational status**
+  - Dependencies: SF-602, SF-604.
+  - Problem: the shell hardcodes `Codex · available`; task/agent queries frequently use the preferred agent rather than the selected agent. A fallback run can be attributed to the wrong provider.
+  - Scope: persist/expose the selected agent at invocation start and distinguish installed, authenticated/verified, busy, quota-blocked, paused, unavailable, and unknown states where evidence supports them. Show reported versus estimated reset information accurately.
+  - Acceptance: UI/API tests or recorded checks cover fallback attribution, missing CLI, unknown readiness, and quota wait. The overview answers what finished, what needs the operator, why execution is idle, and when it may resume. Eliminate hardcoded availability and label process-level success separately from validated task success.
+  - Start with: `src/Factory.Api/Program.cs`, `web/Factory.Web/components/shell.tsx`, `web/Factory.Web/app/page.tsx`.
+
+- [ ] **SF-610 — Add durable pause and resume controls**
+  - Dependencies: SF-604, SF-609.
+  - Scope: support global pause-after-current-task/resume and provider-specific pause to reserve capacity for interactive use. Pausing stops new dispatch while allowing current work to finish; cancellation remains a distinct action. State the effect on pending publication explicitly in the UI.
+  - Acceptance: pause state survives restart; paused providers are excluded from selection; resume re-evaluates eligible work without bypassing quota restrictions. Dashboard shows the cause of paused dispatch and confirms control outcomes.
+
+- [ ] **SF-611 — Add queue priorities and explicit task dependencies**
+  - Dependencies: SF-604, SF-610.
+  - Scope: expose priority controls and a minimal dependency model. A dependent task must wait until prerequisite changes are merged and available on its configured base. Continue to support independent issues across repositories with one coding execution at a time.
+  - Acceptance: reject dependency cycles; show blocked prerequisites; prove task B cannot run from a base missing task A. Rejected/cancelled prerequisites require a clear operator decision instead of releasing dependent work silently. Claim ordering honors priority among eligible tasks.
+
+- [ ] **SF-612 — Bound the outstanding human-review backlog**
+  - Dependencies: SF-607, SF-610, SF-611.
+  - Scope: add a configurable limit on outstanding `ReadyForPublish` and open draft/published review work. Apply it before dispatching another implementation; existing publication and reconciliation must continue so the limit cannot deadlock the queue.
+  - Acceptance: reaching the limit pauses new implementation with a visible reason; merging or explicitly resolving review work frees capacity. Test state changes and restart without double-counting a task as both ready and published.
+
+- [ ] **SF-613 — Accept human feedback and continue existing task work**
+  - Dependencies: SF-605, SF-606, SF-607, SF-609.
+  - Scope: let the operator attach corrections or manual-test failures and continue the same task with its existing changes and prior evidence. Snapshot the new instructions per attempt. Define how an explicit human continuation grants a bounded new repair allowance after an earlier budget is exhausted.
+  - Acceptance: feedback appears in the next generated context, previous attempts remain auditable, and continuation does not discard work or create a duplicate PR. Existing-PR updates are revalidated and published through the orchestrator. If a worktree was cleaned up, restore the recorded branch safely or report an actionable blocker.
+
+- [ ] **SF-614 — Surface GitHub CI status for the published commit**
+  - Dependencies: SF-607, SF-609.
+  - Scope: synchronize check status and links for the exact published head commit. Show pending, passed, failed, and unavailable evidence separately from local validation. Initially route failures to human review; automatic CI repair is optional follow-up work.
+  - Acceptance: stale successful checks on an older head never mark new changes green; failed checks link to diagnostics; missing checks/authentication errors remain explicit. CI visibility does not automatically merge or deploy.
+
+### Priority 3 — Establish sustainable desktop operation
+
+- [ ] **SF-615 — Provide repeatable startup and desktop recovery**
+  - Dependencies: SF-608, SF-610.
+  - Scope: provide one documented startup entry point and health checks for PostgreSQL, Sync, Orchestrator, API, dashboard, CLI availability, and shared log paths. Document or implement a simple user-session startup/restart mechanism suitable for subscription-authenticated CLIs. Address sleep, reboot, missing authentication, and local dependency failures.
+  - Acceptance: record a restart/reboot recovery exercise on the desktop; existing work resumes or shows a specific blocker without database edits or duplicate agents. Startup failures are visible and actionable. Refresh stale README/development claims about publication, Claude profiles, command parsing, and log storage as part of the operational instructions.
+
+- [ ] **SF-616 — Back up and restore local factory state and unpublished work**
+  - Dependencies: SF-610, SF-615.
+  - Scope: document and provide a simple backup/restore procedure for PostgreSQL, repository caches/unpushed branches, and dirty worktrees. Use a consistent paused/quiescent procedure and preserve the mapping from database tasks to local Git state. GitHub alone is not a backup of these assets.
+  - Acceptance: restore a disposable backup into a separate location and verify task history, an unpushed commit, and uncommitted work. Define retention, backup destination configuration, and credential handling; recovery must not start dispatch automatically against an unverified restore.
+
+- [ ] **SF-617 — Measure useful outcomes and human review effort**
+  - Dependencies: SF-609, SF-613, SF-614.
+  - Scope: keep metrics small: validated changes ready for review, merged/accepted changes, retries, quota waiting, human interventions, and optional review-time entry. Distinguish agent/process success, local validation, CI success, and merge outcome. Expose remaining quota only when supported by real provider evidence.
+  - Acceptance: metric definitions and attribution are documented and tested against representative histories, including fallback and rejected work. Reports can assess accepted changes per week and review burden without treating lines changed or consumed quota as productivity.
+
+- [ ] **SF-618 — Demonstrate the unattended three-issue milestone**
+  - Dependencies: SF-608, SF-609, SF-610, SF-611, SF-612, SF-613, SF-614, SF-615, SF-616, SF-617.
+  - Scope: queue three small independent issues before leaving the desk, with both providers configured and the intended publication policy. Review results after the unattended interval.
+  - Acceptance: each issue has validated draft-PR/CI evidence or an actionable blocker; provider waiting/fallback and a worker restart recover without database intervention. Exercise simulated quota events separately when real limits are not encountered; label simulation evidence explicitly. Record human review effort and any remaining failure paths before declaring the milestone complete. Manual tests and merges stay with the developer.
+
+## Optional backlog
+
+These items preserve the review's nice-to-have suggestions but are outside automatic task selection. Promote an item into **Next up** only when requested or when recorded usage evidence justifies it; preserve its identifier and prerequisites.
+
+- [ ] **SF-701 — Resume provider sessions when it reduces repeated context work** — Depends on SF-608 and SF-613. Persist supported session identifiers and continuation checkpoints; retain a fresh-session fallback and portable handoff when switching providers. Acceptance: interrupted same-provider work resumes without losing task constraints, and cross-provider continuation does not depend on incompatible private session formats.
+- [ ] **SF-702 — Add selective second-agent review** — Depends on SF-617. Make review opt-in by task/risk, bounded, and measured against human corrections avoided. Acceptance: useful findings are persisted and actionable; review obeys the same quotas, pause controls, and attempt bounds. A mandatory review pass for every task is not the default.
+- [ ] **SF-703 — Add repository-configured local browser smoke tests** — Depends on SF-608. Start local applications and run deterministic browser checks where a repository benefits. Acceptance: start/stop/timeout handling and failure artifacts work locally without requiring deployment or online site access.
+- [ ] **SF-704 — Add model and reasoning presets** — Depends on SF-602, SF-608, and SF-617. Offer explicit presets supported by installed subscription CLIs and record the selected settings per invocation. Acceptance: unavailable selections fail clearly, provider quotas remain shared correctly across presets, and evaluation compares accepted outcomes and review effort rather than assuming a preset saves a fixed quota percentage.
+- [ ] **SF-705 — Provide a concise daily digest** — Depends on SF-609, SF-614, and SF-617. Summarize finished work, CI failures, items needing the developer, and meaningful quota/worker blockers. Acceptance: one digest links to actionable records and avoids repeated unchanged alerts; external delivery requires an explicitly configured destination.
+- [ ] **SF-706 — Repair selected CI failures automatically** — Depends on SF-606, SF-613, and SF-614. Feed failures from the exact published commit into a bounded repair attempt when they can be reproduced or addressed locally. Acceptance: stale CI results cannot initiate repair, updated commits receive fresh validation/checks, and infrastructure/authentication failures become clear blockers rather than repeated code changes.
+
+## Deferred scope
+
+Multi-machine execution, multiple concurrent coding workers, additional agent providers, automatic deployment/online review, elaborate analytics, and mandatory AI review of every task remain deferred. The existing stack is sufficient for the personal workflow; promote broader scope only after the unattended milestone and evidence of a concrete bottleneck. Automatic merging remains outside the intended product boundary.
 
 ## Blocked
 
