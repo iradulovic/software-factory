@@ -58,7 +58,12 @@ SF-609 through SF-614 are complete; see **Completed** below.
   - Scope: document and provide a simple backup/restore procedure for PostgreSQL, repository caches/unpushed branches, and dirty worktrees. Use a consistent paused/quiescent procedure and preserve the mapping from database tasks to local Git state. GitHub alone is not a backup of these assets.
   - Acceptance: restore a disposable backup into a separate location and verify task history, an unpushed commit, and uncommitted work. Define retention, backup destination configuration, and credential handling; recovery must not start dispatch automatically against an unverified restore.
 
-SF-617 is complete; see **Completed** below. SF-615 and SF-616 both depend on SF-608, which is blocked (see **Blocked** below) — not eligible until it unblocks.
+- [ ] **SF-701 — Resume provider sessions when it reduces repeated context work**
+  - Dependencies: SF-608, SF-613.
+  - Scope: persist supported session identifiers and continuation checkpoints; retain a fresh-session fallback and portable handoff when switching providers.
+  - Acceptance: interrupted same-provider work resumes without losing task constraints, and cross-provider continuation does not depend on incompatible private session formats.
+
+SF-617 is complete; see **Completed** below. SF-615, SF-616, and SF-701 all depend on SF-608, which is blocked (see **Blocked** below) — none are eligible until it unblocks.
 
 - [ ] **SF-618 — Demonstrate the unattended three-issue milestone**
   - Dependencies: SF-608, SF-609, SF-610, SF-611, SF-612, SF-613, SF-614, SF-615, SF-616, SF-617.
@@ -69,7 +74,6 @@ SF-617 is complete; see **Completed** below. SF-615 and SF-616 both depend on SF
 
 These items preserve the review's nice-to-have suggestions but are outside automatic task selection. Promote an item into **Next up** only when requested or when recorded usage evidence justifies it; preserve its identifier and prerequisites.
 
-- [ ] **SF-701 — Resume provider sessions when it reduces repeated context work** — Depends on SF-608 and SF-613. Persist supported session identifiers and continuation checkpoints; retain a fresh-session fallback and portable handoff when switching providers. Acceptance: interrupted same-provider work resumes without losing task constraints, and cross-provider continuation does not depend on incompatible private session formats.
 - [ ] **SF-702 — Add selective second-agent review** — Depends on SF-617. Make review opt-in by task/risk, bounded, and measured against human corrections avoided. Acceptance: useful findings are persisted and actionable; review obeys the same quotas, pause controls, and attempt bounds. A mandatory review pass for every task is not the default.
 - [ ] **SF-703 — Add repository-configured local browser smoke tests** — Depends on SF-608. Start local applications and run deterministic browser checks where a repository benefits. Acceptance: start/stop/timeout handling and failure artifacts work locally without requiring deployment or online site access.
 - [ ] **SF-704 — Add model and reasoning presets** — Depends on SF-602, SF-608, and SF-617. Offer explicit presets supported by installed subscription CLIs and record the selected settings per invocation. Acceptance: unavailable selections fail clearly, provider quotas remain shared correctly across presets, and evaluation compares accepted outcomes and review effort rather than assuming a preset saves a fixed quota percentage.
