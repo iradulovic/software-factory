@@ -182,8 +182,9 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
           pull_request_number AS "pullRequestNumber",pull_request_url AS "pullRequestUrl",error
         FROM factory.publication WHERE task_id=@id ORDER BY requested_at DESC
         """, new { id }, cancellationToken: ct));
+    var feedback = await tasks.GetFeedbackAsync(id, ct);
     var dependencyDtos = dependencies.Select(d => new { d.TaskId, d.DependsOnTaskId, d.DependsOnTitle, DependsOnStatus = d.DependsOnStatus.ToString() });
-    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos });
+    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos, feedback });
 });
 
 app.MapPost("/api/tasks/{id:guid}/retry", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
@@ -191,6 +192,16 @@ app.MapPost("/api/tasks/{id:guid}/retry", async (Guid id, ITaskStore tasks, Canc
     using var activity = FactoryTelemetry.Source.StartActivity("api.retry_task");
     activity?.SetTag("factory.task_id", id);
     return await tasks.RetryAsync(id, ct) ? Results.Accepted($"/api/tasks/{id}") : Results.Conflict(new { error = "Task cannot be retried from its current state." });
+});
+
+app.MapPost("/api/tasks/{id:guid}/continue", async (Guid id, ContinueRequest body, ITaskStore tasks, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(body.Feedback)) return Results.BadRequest(new { error = "Feedback is required." });
+    using var activity = FactoryTelemetry.Source.StartActivity("api.continue_task");
+    activity?.SetTag("factory.task_id", id);
+    return await tasks.ContinueWithFeedbackAsync(id, body.Feedback, ct)
+        ? Results.Accepted($"/api/tasks/{id}")
+        : Results.Conflict(new { error = "Task cannot be continued from its current state." });
 });
 
 app.MapPost("/api/tasks/{id:guid}/cancel", async (Guid id, ITaskStore tasks, CancellationToken ct) =>

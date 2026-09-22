@@ -15,8 +15,11 @@ public static class TaskStateMachine
             [FactoryTaskStatus.Implementing] = [FactoryTaskStatus.Validating, FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Validating] = [FactoryTaskStatus.Reviewing, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Reviewing] = [FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed, FactoryTaskStatus.Cancelled],
-            [FactoryTaskStatus.ReadyForPublish] = [FactoryTaskStatus.Published, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Cancelled],
-            [FactoryTaskStatus.Published] = [FactoryTaskStatus.Completed, FactoryTaskStatus.Rejected, FactoryTaskStatus.Cancelled],
+            // ReadyForPublish/Published -> Pending (SF-613): an explicit operator continuation — a manual-test
+            // failure found on validated-but-unpushed or already-published work — sends the task back for a
+            // fresh implementation attempt on the same branch, never a plain automatic Retry.
+            [FactoryTaskStatus.ReadyForPublish] = [FactoryTaskStatus.Published, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled],
+            [FactoryTaskStatus.Published] = [FactoryTaskStatus.Completed, FactoryTaskStatus.Rejected, FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.WaitingForQuota] = [FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.NeedsHuman] = [FactoryTaskStatus.Pending, FactoryTaskStatus.Completed, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Failed] = [FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled],

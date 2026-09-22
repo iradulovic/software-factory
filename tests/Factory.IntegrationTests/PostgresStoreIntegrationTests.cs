@@ -1276,6 +1276,125 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Continuing_with_feedback_resets_the_implementation_attempt_budget_and_records_the_feedback()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('continue-feedback-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@taskId,@repositoryId,'Exhausted task','Failed','main')", new { taskId, repositoryId });
+
+            // Two prior implementation attempts, exhausting a budget of (say) 2.
+            for (var i = 1; i <= 2; i++)
+            {
+                var runId = await tasks.StartRunAsync(taskId, "integration-worker", CancellationToken.None);
+                var stepId = await tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
+                await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, runId, stepId, "Codex", DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow, 1, 1, "Failed", "out", "still broken", false, null, i, false, null), CancellationToken.None);
+            }
+            Assert.Equal(2, await tasks.CountAgentRunsAsync(taskId, CancellationToken.None));
+
+            Assert.True(await tasks.ContinueWithFeedbackAsync(taskId, "The CSV export must quote fields containing commas.", CancellationToken.None));
+
+            var status = await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId });
+            Assert.Equal("Pending", status);
+
+            // The budget is reset — only runs since this feedback count, so a bounded fresh allowance is
+            // granted, not an unlimited one and not a permanently exhausted one.
+            Assert.Equal(0, await tasks.CountAgentRunsAsync(taskId, CancellationToken.None));
+
+            var recorded = await tasks.GetFeedbackAsync(taskId, CancellationToken.None);
+            var entry = Assert.Single(recorded);
+            Assert.Equal("The CSV export must quote fields containing commas.", entry.Body);
+            Assert.Equal("operator", entry.CreatedBy);
+
+            // A fresh attempt after the continuation counts toward the new cycle only.
+            var newRunId = await tasks.StartRunAsync(taskId, "integration-worker", CancellationToken.None);
+            var newStepId = await tasks.StartStepAsync(newRunId, "AgentImplementation", 1, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, newRunId, newStepId, "Codex", DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow, 1, 0, "Succeeded", "out", "", false, null, 1, false, null), CancellationToken.None);
+            Assert.Equal(1, await tasks.CountAgentRunsAsync(taskId, CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_feedback WHERE task_id=@taskId", new { taskId });
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.agent_run WHERE task_id=@taskId;
+                DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id=@taskId);
+                DELETE FROM factory.run WHERE task_id=@taskId;
+                DELETE FROM factory.task WHERE id=@taskId;
+                """, new { taskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task Continuation_is_allowed_from_resting_states_including_an_open_pull_request_but_refused_mid_execution()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('continue-statuses-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var publishedId = Guid.NewGuid();
+        var implementingId = Guid.NewGuid();
+        try
+        {
+            // Published (an open pull request) is a valid source: a manual-test failure found on already-published
+            // work must be able to continue on the exact same branch, so a later publish updates the same PR.
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch,branch_name,worktree_path)
+                VALUES(@publishedId,@repositoryId,'Published task','Published','main','factory/existing-branch','/factory/worktrees/existing')
+                """, new { publishedId, repositoryId });
+            Assert.True(await tasks.ContinueWithFeedbackAsync(publishedId, "The reviewer found an off-by-one error.", CancellationToken.None));
+            var (status, branchName, worktreePath) = await connection.QuerySingleAsync<(string Status, string BranchName, string WorktreePath)>(
+                "SELECT status AS \"Status\",branch_name AS \"BranchName\",worktree_path AS \"WorktreePath\" FROM factory.task WHERE id=@publishedId", new { publishedId });
+            Assert.Equal("Pending", status);
+            // The existing branch/worktree are left completely untouched — continuing keeps working on the same
+            // changes rather than starting over, so a later publish never creates a duplicate pull request.
+            Assert.Equal("factory/existing-branch", branchName);
+            Assert.Equal("/factory/worktrees/existing", worktreePath);
+
+            // A task actively executing is never a valid continuation target — the operator should wait or cancel.
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@implementingId,@repositoryId,'Implementing task','Implementing','main')", new { implementingId, repositoryId });
+            Assert.False(await tasks.ContinueWithFeedbackAsync(implementingId, "Too early.", CancellationToken.None));
+            Assert.Empty(await tasks.GetFeedbackAsync(implementingId, CancellationToken.None));
+            Assert.Equal("Implementing", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@implementingId", new { implementingId }));
+
+            // A nonexistent task is refused, not thrown.
+            Assert.False(await tasks.ContinueWithFeedbackAsync(Guid.NewGuid(), "Nothing to see here.", CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_feedback WHERE task_id IN (@publishedId,@implementingId)", new { publishedId, implementingId });
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@publishedId,@implementingId)", new { publishedId, implementingId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Quota_interruptions_are_excluded_from_the_implementation_attempt_budget_but_real_failures_are_not()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
