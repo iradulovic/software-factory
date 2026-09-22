@@ -63,7 +63,7 @@ app.MapGet("/", () => Results.Ok(new
 }));
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
-app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct) =>
+app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, IOptions<FactoryOptions> options, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
     var metrics = await c.QuerySingleAsync<DashboardMetricsRow>(new CommandDefinition("""
@@ -72,6 +72,7 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvail
           count(*) FILTER (WHERE status='Pending') AS "PendingTasks",
           count(*) FILTER (WHERE status='Completed' AND completed_at >= CURRENT_DATE) AS "CompletedToday",
           count(*) FILTER (WHERE status='NeedsHuman') AS "NeedsOperator",
+          count(*) FILTER (WHERE status IN ('ReadyForPublish','Published')) AS "ReviewBacklog",
           COALESCE(round(100.0 * count(*) FILTER (WHERE status='Completed') / NULLIF(count(*) FILTER (WHERE status IN ('Completed','Failed','Rejected')),0),1),0) AS "SuccessRate"
         FROM factory.task
         """, cancellationToken: ct));
@@ -80,15 +81,22 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvail
     var throughput = await c.QueryAsync(new CommandDefinition("SELECT d::date AS day,count(t.id) AS completed FROM generate_series(CURRENT_DATE-6,CURRENT_DATE,'1 day') d LEFT JOIN factory.task t ON t.completed_at::date=d::date GROUP BY d ORDER BY d", cancellationToken: ct));
     var agentStatus = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct);
 
+    // A cap on outstanding review work (SF-612) — ReadyForPublish + Published tasks — so unattended
+    // implementation can never outrun the operator's own review capacity. Zero or negative disables it.
+    var reviewBacklogLimit = options.Value.MaxOutstandingReviewWork;
+    var reviewBacklogAtLimit = reviewBacklogLimit > 0 && metrics.ReviewBacklog >= reviewBacklogLimit;
+    var reviewBacklog = new { count = metrics.ReviewBacklog, limit = reviewBacklogLimit, atLimit = reviewBacklogAtLimit };
+
     // "Why is nothing running right now" — answered from the same evidence already gathered above, so the
     // operator never has to cross-reference the pending count against the agent table by hand.
     string? idleReason = metrics.ActiveTasks > 0 ? null
         : metrics.PendingTasks == 0 ? "No pending tasks queued."
+        : reviewBacklogAtLimit ? $"Review backlog limit reached ({metrics.ReviewBacklog}/{reviewBacklogLimit}); merge or resolve outstanding review work to continue."
         : agentStatus.Count > 0 && agentStatus.All(a => a.State is "QuotaBlocked" or "Unavailable" or "Unknown")
             ? "No configured agent is currently available to claim work."
         : "Waiting to claim the next pending task.";
 
-    return Results.Ok(new { metrics, active, activity, throughput, agentStatus, idleReason });
+    return Results.Ok(new { metrics, active, activity, throughput, agentStatus, idleReason, reviewBacklog });
 });
 
 app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct) =>

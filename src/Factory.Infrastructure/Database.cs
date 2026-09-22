@@ -92,7 +92,15 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
                   -- only an already-executing recovery (below) skips this, since that task already started.
                   SELECT 1 FROM factory.task_dependency td JOIN factory.task dep ON dep.id=td.depends_on_task_id
                   WHERE td.task_id=factory.task.id AND dep.status <> 'Completed'
-                ))
+                )
+                AND (@maxOutstandingReviewWork <= 0 OR (
+                  -- SF-612: cap outstanding review work (validated-but-unpublished ReadyForPublish plus
+                  -- already-published-awaiting-merge Published) so unattended implementation can never outrun
+                  -- the operator's own review capacity. Only a brand-new Pending claim is gated — publication
+                  -- and reconciliation, which free this count back up, are untouched, and a recovery below never
+                  -- rechecks the limit since that task already started before it could matter.
+                  SELECT count(*) FROM factory.task WHERE status IN ('ReadyForPublish','Published')
+                ) < @maxOutstandingReviewWork))
                 OR (status = ANY(@executingStatuses) AND lease_until < now())
               ORDER BY priority DESC, created_at FOR UPDATE SKIP LOCKED LIMIT 1
             ), failed_steps AS (
@@ -157,7 +165,8 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             """;
         var executingStatuses = TaskStateMachine.ExecutingStatuses.Select(s => s.ToString()).ToList();
         await using var connection = Connection();
-        var row = await connection.QuerySingleOrDefaultAsync<TaskRow>(new CommandDefinition(sql, new { workerId, lease, executingStatuses }, cancellationToken: cancellationToken));
+        var row = await connection.QuerySingleOrDefaultAsync<TaskRow>(new CommandDefinition(sql,
+            new { workerId, lease, executingStatuses, maxOutstandingReviewWork = options.Value.MaxOutstandingReviewWork }, cancellationToken: cancellationToken));
         return row?.ToModel();
     }
 
@@ -758,6 +767,13 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             """;
         await using var c = Connection();
         return await c.ExecuteScalarAsync<int>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+    }
+
+    public async Task<int> CountOutstandingReviewWorkAsync(CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT count(*)::int FROM factory.task WHERE status IN ('ReadyForPublish','Published')", cancellationToken: cancellationToken));
     }
 }
 

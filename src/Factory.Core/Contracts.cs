@@ -114,6 +114,14 @@ public interface ITaskStore
     /// once per poll cycle; returns how many tasks were moved.</summary>
     Task<int> BlockDependentsOnFailedPrerequisitesAsync(CancellationToken cancellationToken);
 
+    /// <summary>Counts tasks currently resting in <see cref="FactoryTaskStatus.ReadyForPublish"/> (validated,
+    /// waiting to be pushed) or <see cref="FactoryTaskStatus.Published"/> (already pushed, waiting on human
+    /// review/merge) — the operator's outstanding review backlog (SF-612), the same set <see cref="ClaimNextAsync"/>
+    /// caps a new <see cref="FactoryTaskStatus.Pending"/> claim against. Counts current task status directly
+    /// rather than <c>factory.publication</c> rows, so a task with more than one publication attempt (a retry, or
+    /// a reclaimed stale lease) is never counted more than once.</summary>
+    Task<int> CountOutstandingReviewWorkAsync(CancellationToken cancellationToken);
+
     /// <summary>Records one attempt to write to GitHub (a comment or a state-label change) as append-only operational
     /// state, regardless of whether it succeeded.</summary>
     Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken);

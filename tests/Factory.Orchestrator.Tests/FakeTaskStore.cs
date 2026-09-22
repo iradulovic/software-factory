@@ -156,6 +156,10 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<int> BlockDependentsOnFailedPrerequisitesAsync(CancellationToken cancellationToken) =>
         Task.FromResult(TasksToBlockOnFailedPrerequisites);
 
+    public int OutstandingReviewWorkCount { get; set; }
+    public Task<int> CountOutstandingReviewWorkAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(OutstandingReviewWorkCount);
+
     public Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken)
     {
         GitHubWrites.Add((taskId, kind, detail, succeeded, error));

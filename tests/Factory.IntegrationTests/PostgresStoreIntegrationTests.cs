@@ -1173,6 +1173,109 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Reaching_the_outstanding_review_backlog_limit_pauses_new_claims_until_review_work_resolves()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var baselineSettings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(baselineSettings).MigrateAsync(CancellationToken.None);
+        var baselineStore = new PostgresTaskStore(baselineSettings, new TestClock());
+        // The limit is set relative to whatever the shared test database already holds, so this test never
+        // assumes it owns the only ReadyForPublish/Published rows in existence.
+        var baseline = await baselineStore.CountOutstandingReviewWorkAsync(CancellationToken.None);
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var suffix = Guid.NewGuid().ToString("N");
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('review-backlog-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var reviewTaskId = Guid.NewGuid();
+        var pendingId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@reviewTaskId,@repositoryId,'Awaiting review','ReadyForPublish','main')", new { reviewTaskId, repositoryId });
+            // Maximum priority guards this test against any unrelated Pending task left over elsewhere in this
+            // shared test database — if anything is claimable, this is the row that would be claimed first.
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch,priority) VALUES(@pendingId,@repositoryId,'New implementation','Pending','main',2147483647)", new { pendingId, repositoryId });
+
+            // The limit exactly equals the current backlog (baseline plus the one ReadyForPublish task just
+            // added): reaching it must pause a brand-new Pending claim, however high its priority.
+            var gatedSettings = Options.Create(new FactoryOptions { ConnectionString = connectionString, MaxOutstandingReviewWork = baseline + 1 });
+            var gatedStore = new PostgresTaskStore(gatedSettings, new TestClock());
+            Assert.Equal(baseline + 1, await gatedStore.CountOutstandingReviewWorkAsync(CancellationToken.None));
+            Assert.Null(await gatedStore.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(5), CancellationToken.None));
+
+            // The review task resolves (merged) — capacity frees, and the same store now claims the pending task.
+            await connection.ExecuteAsync("UPDATE factory.task SET status='Completed' WHERE id=@reviewTaskId", new { reviewTaskId });
+            var claimed = await gatedStore.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(5), CancellationToken.None);
+            Assert.Equal(pendingId, claimed?.Id);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@reviewTaskId,@pendingId)", new { reviewTaskId, pendingId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task Outstanding_review_work_is_counted_from_task_status_never_inflated_by_repeated_publication_attempts()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('review-count-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var readyId = Guid.NewGuid();
+        var publishedId = Guid.NewGuid();
+        var pendingId = Guid.NewGuid();
+        var completedId = Guid.NewGuid();
+        try
+        {
+            var baseline = await tasks.CountOutstandingReviewWorkAsync(CancellationToken.None);
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch)
+                VALUES(@readyId,@repositoryId,'Ready','ReadyForPublish','main'),
+                      (@publishedId,@repositoryId,'Published','Published','main'),
+                      (@pendingId,@repositoryId,'Pending','Pending','main'),
+                      (@completedId,@repositoryId,'Completed','Completed','main')
+                """, new { readyId, publishedId, pendingId, completedId, repositoryId });
+            // The published task has two publication rows — a first attempt an earlier crashed worker never
+            // recorded completion for, reclaimed and superseded by a second, successful one — proving the count
+            // comes from factory.task.status, never from summing factory.publication rows (which would double it).
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.publication(id,task_id,status,requested_by) VALUES
+                  (@first,@publishedId,'Publishing','operator'),(@second,@publishedId,'PullRequestCreated','operator')
+                """, new { first = Guid.NewGuid(), second = Guid.NewGuid(), publishedId });
+
+            // Only ReadyForPublish and Published count — Pending and Completed never do — and exactly once each.
+            Assert.Equal(baseline + 2, await tasks.CountOutstandingReviewWorkAsync(CancellationToken.None));
+
+            // Restart-safe: a freshly constructed store (simulating a process restart, no in-memory state to
+            // carry over) queries current database state and reaches the identical answer.
+            var restarted = new PostgresTaskStore(Options.Create(new FactoryOptions { ConnectionString = connectionString }), new TestClock());
+            Assert.Equal(baseline + 2, await restarted.CountOutstandingReviewWorkAsync(CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@publishedId", new { publishedId });
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@readyId,@publishedId,@pendingId,@completedId)", new { readyId, publishedId, pendingId, completedId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Quota_interruptions_are_excluded_from_the_implementation_attempt_budget_but_real_failures_are_not()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
