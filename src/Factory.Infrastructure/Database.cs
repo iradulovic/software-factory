@@ -88,7 +88,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               SELECT id,status AS old_status,status <> 'Pending' AS recovered
               FROM factory.task
               WHERE status='Pending'
-                OR (status IN ('Claimed','Preparing','Planning','Implementing','Validating','Reviewing','ReadyForPublish') AND lease_until < now())
+                OR (status = ANY(@executingStatuses) AND lease_until < now())
               ORDER BY priority DESC, created_at FOR UPDATE SKIP LOCKED LIMIT 1
             ), failed_steps AS (
               UPDATE factory.step s
@@ -150,8 +150,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               claimed."FailureReason"
             FROM claimed;
             """;
+        var executingStatuses = TaskStateMachine.ExecutingStatuses.Select(s => s.ToString()).ToList();
         await using var connection = Connection();
-        var row = await connection.QuerySingleOrDefaultAsync<TaskRow>(new CommandDefinition(sql, new { workerId, lease }, cancellationToken: cancellationToken));
+        var row = await connection.QuerySingleOrDefaultAsync<TaskRow>(new CommandDefinition(sql, new { workerId, lease, executingStatuses }, cancellationToken: cancellationToken));
         return row?.ToModel();
     }
 
@@ -187,9 +188,14 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         TaskStateMachine.EnsureCanTransition(expected, next);
         var completion = next == FactoryTaskStatus.Completed ? ", completed_at=now()" : next == FactoryTaskStatus.Failed ? ", failed_at=now()" : "";
+        // Leaving active execution releases the worker's ownership right here, at the single application-level
+        // transition boundary, so a resting task's now-meaningless lease can never make ClaimNextAsync mistake it
+        // for an abandoned execution (this is what keeps a validated ReadyForPublish task, for example, from being
+        // implemented again while it waits for a human to publish it).
+        var releaseOwnership = TaskStateMachine.ExecutingStatuses.Contains(next) ? "" : ", claimed_by=NULL, claimed_at=NULL, lease_until=NULL";
         var sql = $"""
             WITH updated AS (
-              UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion} WHERE id=@taskId AND status=@expected
+              UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion}{releaseOwnership} WHERE id=@taskId AND status=@expected
               RETURNING id
             ), logged AS (
               INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
