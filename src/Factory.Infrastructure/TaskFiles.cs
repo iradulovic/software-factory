@@ -99,19 +99,56 @@ public sealed class TaskContextWriter : ITaskContextWriter
             - Follow AGENTS.md
             - Do not modify unrelated files
             - Run relevant tests
-            - Do not push or create a pull request
+            - Commit every intended change on this branch before finishing — uncommitted work cannot be validated or published
+            - Do not push, create a pull request, or touch any other branch or worktree
 
             ## Attempt
 
             This is attempt {attempt.Number} of {attempt.MaxAttempts}.
 
             {DescribePreviousAttempt(attempt.Previous)}
-            ## Completion
-
-            Write `.factory/result.json` with: status, summary, testsRun, testsPassed, filesChanged, risks, needsHuman, and humanReason.
+            {CompletionContract}
             """;
         await File.WriteAllTextAsync(Path.Combine(directory, "task.md"), content, cancellationToken);
     }
+
+    // Generated from AgentResultContract.Statuses (Factory.Core), not hand-copied, so this documentation and
+    // AgentResultReader's actual validation can never silently disagree (SF-605).
+    private static readonly string CompletionContract = $$"""
+        ## Completion
+
+        Write `.factory/result.json` as a single JSON object matching exactly this contract:
+
+        | Field | Type | Required | Meaning |
+        |---|---|---|---|
+        | `status` | string | yes | One of {{string.Join(", ", AgentResultContract.Statuses.Select(s => $"`\"{s}\"`"))}} (see below). |
+        | `summary` | string | yes, non-empty | One or two sentences describing the outcome. |
+        | `testsRun` | string[] | yes (may be empty) | Test commands or suites actually run. |
+        | `testsPassed` | bool | yes | Whether `testsRun` passed. |
+        | `filesChanged` | string[] | yes (may be empty) | Files intentionally changed. |
+        | `risks` | string[] | yes (may be empty) | Anything a human reviewer should double-check. |
+        | `needsHuman` | bool | yes | `true` forces human review regardless of `status`. |
+        | `humanReason` | string or null | only when `needsHuman` is `true`, or `status` is `"blocked"`/`"needs-human"` | Why a human is needed. |
+
+        - `"completed"`: the task was implemented and its changes committed on this branch; independent build/test validation runs next.
+        - `"failed"`: the agent could not complete the task.
+        - `"blocked"` / `"needs-human"`: the agent cannot proceed without a human decision (handled identically); explain why in `humanReason`.
+
+        Example:
+
+        ```json
+        {
+          "status": "completed",
+          "summary": "Added CSV export for the billing report.",
+          "testsRun": ["dotnet test"],
+          "testsPassed": true,
+          "filesChanged": ["src/Billing/CsvExporter.cs"],
+          "risks": [],
+          "needsHuman": false,
+          "humanReason": null
+        }
+        ```
+        """;
 
     private static string DescribePreviousAttempt(PreviousAttemptSummary? previous)
     {

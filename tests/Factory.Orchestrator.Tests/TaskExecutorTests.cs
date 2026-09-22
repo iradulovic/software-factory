@@ -148,16 +148,17 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
-    public async Task Dirty_worktree_fails_instead_of_being_published()
+    public async Task Dirty_worktree_fails_immediately_before_a_validation_cycle_is_wasted_on_it()
     {
         var harness = new Harness { IsClean = false };
 
         var runId = await harness.ExecuteAsync();
 
         Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
-        AssertLastTransition(harness.Store, FactoryTaskStatus.Validating, FactoryTaskStatus.Failed,
-            "Worktree has uncommitted changes; the agent must commit its work before it can be published.");
-        Assert.Equal(ExecutionStatus.Failed, harness.Store.Step("PreparePublication").Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.Failed,
+            "Agent made changes but did not commit them; committed work on this branch is required before it can be validated or published.");
+        Assert.Equal(ExecutionStatus.Failed, harness.Store.Step("CollectDiff").Status);
+        Assert.DoesNotContain(harness.Store.Transitions, t => t.To == FactoryTaskStatus.Validating);
         Assert.False(harness.Store.ChangeSummaries.ContainsKey(runId));
         Assert.Equal(ExecutionStatus.Failed, harness.Store.Runs[runId]);
     }
@@ -510,7 +511,8 @@ public sealed class TaskExecutorTests
         {
             public Task<bool> HasChangesAsync(string worktreePath, string baseRef, CancellationToken cancellationToken) => Task.FromResult(harness.HasChanges);
             public Task<ChangeSummary> SummarizeAsync(string worktreePath, string baseRef, CancellationToken cancellationToken) => Task.FromResult(new ChangeSummary(
-                harness.IsClean, harness.CurrentBranchOverride ?? "factory/42-add-invoice-export", "base-sha", "head-sha", ["src/Export.cs"], 12, 3));
+                harness.IsClean, harness.CurrentBranchOverride ?? "factory/42-add-invoice-export", "base-sha", "head-sha",
+                harness.HasChanges ? ["src/Export.cs"] : [], 12, 3));
         }
 
         private sealed class FakeContextWriter(Harness harness) : ITaskContextWriter

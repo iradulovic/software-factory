@@ -110,6 +110,8 @@ A quota-interrupted invocation never got a real chance to implement anything, so
 
 A `WaitingForQuota` task resumes from real-time provider availability, not its own history: even a task that was interrupted before ever being invoked (every configured provider was already at quota) resumes automatically the moment any configured provider becomes available again, and a task that last used a now-still-blocked provider still resumes as soon as a different configured one frees up — no manual Retry needed either way.
 
+The agent must commit every intended change on its assigned branch before finishing — `.factory/task.md` says so explicitly, and `CollectDiffStep` now rejects uncommitted changes immediately, before spending a build/test validation cycle on work that would have been rejected at publish time anyway. `.factory/task.md` also documents the exact `.factory/result.json` contract the agent must write: every accepted `status` value (`"completed"`, `"failed"`, `"blocked"`, `"needs-human"`), each field's type and requiredness, and a valid JSON example — generated from the same source `AgentResultReader` validates against, so the two can never disagree. `.factory/` itself is excluded from every commit via the repository cache's `info/exclude`, so the agent's own generated context and result files are never accidentally committed.
+
 ## 3. Build, test, and migrate
 
 The same checks run in GitHub Actions on every push to `main` and every pull request (`.github/workflows/ci.yml`): backend build and tests against a PostgreSQL service container, and frontend lint, type-check, and build. The workflow uses no secrets.
