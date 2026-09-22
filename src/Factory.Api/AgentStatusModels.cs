@@ -7,8 +7,7 @@ public sealed class AgentStatsRow
 }
 
 /// <summary>An agent's operational state, resolved from every source of evidence this system actually has —
-/// never a hardcoded default. <c>Paused</c> is deliberately not a case here: durable pause/resume (SF-610) does
-/// not exist yet, so there is no evidence to distinguish it from any other state.</summary>
+/// never a hardcoded default.</summary>
 public enum AgentOperationalState
 {
     /// <summary>The version-check process failed, timed out, or the executable could not be found at all.</summary>
@@ -17,6 +16,11 @@ public enum AgentOperationalState
     /// <summary>The availability check itself could not be completed (an unexpected error, not a normal
     /// "not installed" outcome) — genuinely unknown, not silently reported as available or unavailable.</summary>
     Unknown,
+
+    /// <summary>Operator-paused (SF-610), reserving this agent's capacity for interactive use. Takes priority
+    /// over every other reachable state below except <c>Unavailable</c>/<c>Unknown</c>, since it is a deliberate
+    /// choice the operator should see clearly even if the agent also happens to be busy finishing prior work.</summary>
+    Paused,
 
     /// <summary>Currently at quota per the independently persisted status (<c>ITaskStore.IsAgentAtQuotaAsync</c>),
     /// regardless of whether any task happens to be invoking it right now.</summary>
@@ -40,13 +44,15 @@ public static class AgentOperationalStateResolver
     /// <param name="availabilityCheckSucceeded">Whether the version-check process ran and exited successfully.</param>
     /// <param name="availabilityCheckErrored">Whether the availability check itself threw an unexpected error,
     /// distinct from a normal "not installed"/"timed out" outcome.</param>
+    /// <param name="isPaused">Whether the operator has paused this specific agent (SF-610).</param>
     /// <param name="isAtQuota">The independently persisted current quota status for this agent.</param>
     /// <param name="isBusy">Whether a task is currently invoking this agent right now.</param>
     /// <param name="hasSuccessfulRun">Whether this agent has ever completed a successful invocation.</param>
-    public static AgentOperationalState Resolve(bool availabilityCheckSucceeded, bool availabilityCheckErrored, bool isAtQuota, bool isBusy, bool hasSuccessfulRun)
+    public static AgentOperationalState Resolve(bool availabilityCheckSucceeded, bool availabilityCheckErrored, bool isPaused, bool isAtQuota, bool isBusy, bool hasSuccessfulRun)
     {
         if (availabilityCheckErrored) return AgentOperationalState.Unknown;
         if (!availabilityCheckSucceeded) return AgentOperationalState.Unavailable;
+        if (isPaused) return AgentOperationalState.Paused;
         if (isAtQuota) return AgentOperationalState.QuotaBlocked;
         if (isBusy) return AgentOperationalState.Busy;
         return hasSuccessfulRun ? AgentOperationalState.Verified : AgentOperationalState.Installed;
@@ -65,7 +71,8 @@ public static class AgentOperationalStateResolver
 /// <param name="State"><see cref="AgentOperationalState"/>'s name (e.g. "Verified", "QuotaBlocked") — a plain
 /// string on the wire, like every other status value this API sends, rather than relying on JSON enum-converter
 /// configuration that isn't set up anywhere else in this project.</param>
+/// <param name="PauseReason">Only meaningful when <see cref="State"/> is "Paused".</param>
 public sealed record AgentStatus(
     string Agent, string State, string? Version, string? Error, string? ActiveTask,
     int RunsToday, int SuccessfulRuns, DateTimeOffset? QuotaDetectedAt,
-    DateTimeOffset? QuotaResetAt, string? QuotaWindow, string? QuotaResetKind);
+    DateTimeOffset? QuotaResetAt, string? QuotaWindow, string? QuotaResetKind, string? PauseReason);

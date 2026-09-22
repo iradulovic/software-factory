@@ -378,7 +378,7 @@ public sealed class TaskExecutorTests
         await harness.ExecuteAsync();
 
         Assert.Equal(FactoryTaskStatus.WaitingForQuota, harness.Store.Status);
-        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.WaitingForQuota, "All configured agents are at quota.");
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.WaitingForQuota, "All configured agents are paused or at quota.");
         Assert.Empty(harness.Store.AgentRuns);
         Assert.Equal(0, harness.AgentInvocations);
     }

@@ -13,6 +13,9 @@ public sealed class AgentSelector(IEnumerable<IAgentRunner> runners, ITaskStore 
     {
         foreach (var runner in Order(preferredAgent))
         {
+            // A paused agent reserves its capacity for interactive use, exactly like being at quota from
+            // AgentSelector's point of view: skipped in favor of the next configured agent, never invoked.
+            if (await tasks.IsAgentPausedAsync(runner.Name, cancellationToken)) continue;
             if (!await tasks.IsAgentAtQuotaAsync(runner.Name, cancellationToken)) return runner;
         }
         return null;

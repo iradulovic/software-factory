@@ -566,6 +566,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
                 SELECT 1 FROM unnest(@configuredAgents) AS agent(name)
                 WHERE NOT COALESCE(
                   (SELECT detected AND reset_at > now() FROM factory.agent_availability aa WHERE aa.agent = agent.name), false)
+                  AND NOT COALESCE((SELECT paused FROM factory.dispatch_pause dp WHERE dp.scope = agent.name), false)
               ) AS any_available
             ), candidate AS (
               SELECT t.id FROM factory.task t, available
@@ -625,6 +626,62 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         var row = await c.QuerySingleOrDefaultAsync<AgentQuotaStatusRow>(new CommandDefinition(sql, new { agent }, cancellationToken: cancellationToken));
         return row?.ToModel();
     }
+
+    public Task<bool> IsDispatchPausedAsync(CancellationToken cancellationToken) => IsPausedAsync(DispatchPauseScope.Global, cancellationToken);
+    public Task<bool> IsAgentPausedAsync(string agent, CancellationToken cancellationToken) => IsPausedAsync(agent, cancellationToken);
+
+    private async Task<bool> IsPausedAsync(string scope, CancellationToken cancellationToken)
+    {
+        const string sql = "SELECT paused FROM factory.dispatch_pause WHERE scope=@scope";
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<bool?>(new CommandDefinition(sql, new { scope }, cancellationToken: cancellationToken)) ?? false;
+    }
+
+    public async Task<DispatchPauseState> GetDispatchPauseAsync(string scope, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT scope AS "Scope",paused AS "Paused",reason AS "Reason",paused_at AS "PausedAt",paused_by AS "PausedBy"
+            FROM factory.dispatch_pause WHERE scope=@scope
+            """;
+        await using var c = Connection();
+        var row = await c.QuerySingleOrDefaultAsync<DispatchPauseRow>(new CommandDefinition(sql, new { scope }, cancellationToken: cancellationToken));
+        return row?.ToModel() ?? DispatchPauseState.NotPaused(scope);
+    }
+
+    public async Task<IReadOnlyList<DispatchPauseState>> GetAllDispatchPausesAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT scope AS "Scope",paused AS "Paused",reason AS "Reason",paused_at AS "PausedAt",paused_by AS "PausedBy"
+            FROM factory.dispatch_pause
+            """;
+        await using var c = Connection();
+        var rows = await c.QueryAsync<DispatchPauseRow>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO factory.dispatch_pause(scope,paused,reason,paused_at,paused_by)
+            VALUES(@scope,@paused,@reason,CASE WHEN @paused THEN now() ELSE NULL END,CASE WHEN @paused THEN @actor ELSE NULL END)
+            ON CONFLICT(scope) DO UPDATE SET
+              paused=excluded.paused, reason=excluded.reason, paused_at=excluded.paused_at, paused_by=excluded.paused_by
+            """;
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, new { scope, paused, reason, actor }, cancellationToken: cancellationToken));
+    }
+}
+
+internal sealed class DispatchPauseRow
+{
+    public string Scope { get; init; } = "";
+    public bool Paused { get; init; }
+    public string? Reason { get; init; }
+    public DateTime? PausedAt { get; init; }
+    public string? PausedBy { get; init; }
+
+    public DispatchPauseState ToModel() => new(Scope, Paused, Reason,
+        PausedAt is null ? null : new DateTimeOffset(DateTime.SpecifyKind(PausedAt.Value, DateTimeKind.Utc)), PausedBy);
 }
 
 internal sealed class AgentQuotaStatusRow

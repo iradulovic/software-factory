@@ -61,6 +61,31 @@ public interface ITaskStore
     /// fallback) and from <c>factory.agent_run.agent</c> (only recorded after an invocation finishes).</summary>
     Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken);
 
+    /// <summary>Whether new dispatch is currently paused factory-wide (<see cref="DispatchPauseScope.Global"/>).
+    /// Checked once per poll iteration, before claiming — never mid-task, so a task already claimed and
+    /// executing always finishes undisturbed.</summary>
+    Task<bool> IsDispatchPausedAsync(CancellationToken cancellationToken);
+
+    /// <summary>Whether this specific agent is currently paused, reserving its capacity for interactive use.
+    /// Checked wherever an agent's availability is decided, alongside <see cref="IsAgentAtQuotaAsync"/>, so a
+    /// paused provider is never treated as available for a new selection or for resuming waiting work.</summary>
+    Task<bool> IsAgentPausedAsync(string agent, CancellationToken cancellationToken);
+
+    /// <summary>The current pause state for one scope (<see cref="DispatchPauseScope.Global"/> or an agent's
+    /// name), or <see cref="DispatchPauseState.NotPaused"/> if no row has ever been written for it.</summary>
+    Task<DispatchPauseState> GetDispatchPauseAsync(string scope, CancellationToken cancellationToken);
+
+    /// <summary>Every scope with a recorded pause row — global and/or per-agent — for the dashboard to show
+    /// every current pause at once. A scope never paused and never explicitly resumed has no row and is
+    /// therefore absent here, not merely reported as not paused.</summary>
+    Task<IReadOnlyList<DispatchPauseState>> GetAllDispatchPausesAsync(CancellationToken cancellationToken);
+
+    /// <summary>Pauses or resumes one scope (<see cref="DispatchPauseScope.Global"/> or an agent's name).
+    /// Resuming (<paramref name="paused"/> <see langword="false"/>) clears <paramref name="reason"/> and the
+    /// recorded actor/time along with it, so a later query never shows a stale reason for a pause that is no
+    /// longer in effect.</summary>
+    Task SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor, CancellationToken cancellationToken);
+
     /// <summary>Records one attempt to write to GitHub (a comment or a state-label change) as append-only operational
     /// state, regardless of whether it succeeded.</summary>
     Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken);
@@ -85,10 +110,12 @@ public interface ITaskStore
 
     /// <summary>Resumes the single highest-priority <see cref="FactoryTaskStatus.WaitingForQuota"/> task back to
     /// <see cref="FactoryTaskStatus.Pending"/>, but only if at least one of <paramref name="configuredAgents"/> is
-    /// not currently at quota (per <see cref="RecordAgentQuotaStatusAsync"/>) — scheduled from provider
-    /// availability, never a waiting task's own invocation history, so a task that was never actually invoked
-    /// (every provider was already at quota on its first attempt) is never stuck forever. Resumes at most one
-    /// task per call, deliberately: see the implementation for why. Returns how many were resumed (0 or 1).</summary>
+    /// both not currently at quota (per <see cref="RecordAgentQuotaStatusAsync"/>) and not operator-paused (per
+    /// <see cref="SetDispatchPauseAsync"/>) — scheduled from provider availability, never a waiting task's own
+    /// invocation history, so a task that was never actually invoked (every provider was already at quota on its
+    /// first attempt) is never stuck forever, and never resumed onto a provider the operator deliberately
+    /// reserved for interactive use. Resumes at most one task per call, deliberately: see the implementation for
+    /// why. Returns how many were resumed (0 or 1).</summary>
     Task<int> ResumeExpiredQuotaTasksAsync(IReadOnlyList<string> configuredAgents, CancellationToken cancellationToken);
 
     /// <summary>Whether the named agent currently has a recorded quota status whose reset time has not yet

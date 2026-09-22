@@ -26,9 +26,14 @@ export type GitHubIssue=z.infer<typeof issueSchema>;
 export const agentStatusSchema = z.object({
   agent:z.string(),state:z.string(),version:z.string().nullable(),error:z.string().nullable(),activeTask:z.string().nullable(),
   runsToday:z.number(),successfulRuns:z.number(),quotaDetectedAt:z.string().nullable(),
-  quotaResetAt:z.string().nullable(),quotaWindow:z.string().nullable(),quotaResetKind:z.string().nullable()
+  quotaResetAt:z.string().nullable(),quotaWindow:z.string().nullable(),quotaResetKind:z.string().nullable(),pauseReason:z.string().nullable()
 });
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
+export const pauseStateSchema = z.object({
+  scope:z.string(),paused:z.boolean(),reason:z.string().nullable(),pausedAt:z.string().nullable(),pausedBy:z.string().nullable()
+});
+export type PauseState = z.infer<typeof pauseStateSchema>;
+export const globalPauseScope = "__global__";
 export const workerSchema = z.object({
   workerId: z.string(), host: z.string(), lastSeenAt: z.string(), currentTaskId: z.string().nullable(),
   currentTaskTitle: z.string().nullable(), isStale: z.boolean()
