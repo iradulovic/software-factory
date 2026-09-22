@@ -376,16 +376,56 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
-    public async Task Validation_failure_fails_the_task_and_closes_the_run()
+    public async Task Repairable_validation_failure_is_automatically_rescheduled_for_repair()
     {
         var harness = new Harness { CommandSucceeds = request => request.FileName != "custom-test" };
 
         var runId = await harness.ExecuteAsync();
 
-        Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
-        AssertLastTransition(harness.Store, FactoryTaskStatus.Validating, FactoryTaskStatus.Failed, "Test failed: boom");
+        Assert.Equal(FactoryTaskStatus.Pending, harness.Store.Status);
         Assert.Equal(ExecutionStatus.Succeeded, harness.Store.Step("Build").Status);
         Assert.Equal(ExecutionStatus.Failed, harness.Store.Step("Test").Status);
+        Assert.Equal(ExecutionStatus.Failed, harness.Store.Runs[runId]);
+        Assert.Equal(new (FactoryTaskStatus, FactoryTaskStatus, string?)[]
+        {
+            (FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null),
+            (FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null),
+            (FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null),
+            (FactoryTaskStatus.Validating, FactoryTaskStatus.Failed, "Test failed: boom"),
+            (FactoryTaskStatus.Failed, FactoryTaskStatus.Pending, "Automatic repair scheduled: attempt 2 of 2.")
+        }, harness.Store.Transitions);
+    }
+
+    [Fact]
+    public async Task Repairable_validation_failure_with_no_remaining_budget_fails_terminally()
+    {
+        var harness = new Harness
+        {
+            Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 1, 1, true),
+            CommandSucceeds = request => request.FileName != "custom-test"
+        };
+
+        var runId = await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Validating, FactoryTaskStatus.Failed,
+            "Test failed: boom Implementation attempt limit (1) reached; this task will not be retried automatically.");
+        Assert.Equal(ExecutionStatus.Failed, harness.Store.Runs[runId]);
+    }
+
+    [Fact]
+    public async Task Operational_validation_failure_never_triggers_automatic_repair_even_with_budget_remaining()
+    {
+        var harness = new Harness
+        {
+            CommandSucceeds = request => request.FileName != "custom-build",
+            CommandFailureOutput = "dotnet: command not found"
+        };
+
+        var runId = await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Validating, FactoryTaskStatus.Failed, "Build failed: dotnet: command not found");
         Assert.Equal(ExecutionStatus.Failed, harness.Store.Runs[runId]);
     }
 
@@ -438,6 +478,7 @@ public sealed class TaskExecutorTests
         public bool IsClean { get; init; } = true;
         public string? CurrentBranchOverride { get; init; }
         public Func<ProcessRequest, bool> CommandSucceeds { get; init; } = _ => true;
+        public string CommandFailureOutput { get; init; } = "boom";
         public Exception? WorktreeFailure { get; init; }
         public string? ConfigurationBaseRef { get; private set; }
         public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
@@ -551,7 +592,7 @@ public sealed class TaskExecutorTests
                 harness.Commands.Add(request);
                 var succeeds = harness.CommandSucceeds(request);
                 var start = DateTimeOffset.UtcNow;
-                return Task.FromResult(new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, start.AddSeconds(1), succeeds ? 0 : 1, "output", succeeds ? "" : "boom", false, false));
+                return Task.FromResult(new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, start.AddSeconds(1), succeeds ? 0 : 1, "output", succeeds ? "" : harness.CommandFailureOutput, false, false));
             }
         }
 

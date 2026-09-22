@@ -8,10 +8,14 @@ namespace Factory.Orchestrator;
 /// </summary>
 public enum PipelineOutcome { Succeeded, Failed, NeedsHuman, WaitingForQuota }
 
-public sealed record PipelineStepResult(PipelineOutcome Outcome, string? Reason = null)
+/// <param name="Repairable">Only meaningful with <see cref="PipelineOutcome.Failed"/> (SF-606): whether the
+/// executor may automatically reschedule another implementation attempt for this failure, subject to the
+/// repository's own implementation-attempt budget, instead of ending the task at <c>Failed</c> and waiting for a
+/// human. Defaults to <see langword="false"/> — a step opts in explicitly; nothing is auto-repaired by accident.</param>
+public sealed record PipelineStepResult(PipelineOutcome Outcome, string? Reason = null, bool Repairable = false)
 {
     public static readonly PipelineStepResult Ok = new(PipelineOutcome.Succeeded);
-    public static PipelineStepResult Failed(string reason) => new(PipelineOutcome.Failed, reason);
+    public static PipelineStepResult Failed(string reason, bool repairable = false) => new(PipelineOutcome.Failed, reason, repairable);
     public static PipelineStepResult NeedsHuman(string reason) => new(PipelineOutcome.NeedsHuman, reason);
     public static PipelineStepResult WaitingForQuota(string reason) => new(PipelineOutcome.WaitingForQuota, reason);
 }

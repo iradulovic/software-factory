@@ -90,9 +90,30 @@ public sealed class TaskExecutor(
                 return false;
             case PipelineOutcome.Failed:
             default:
-                await TransitionAsync(context, FactoryTaskStatus.Failed, result.Reason, cancellationToken);
+                // A repairable failure (SF-606) — a genuine code problem, not a broken environment — gets one
+                // automatic repair attempt per remaining slot in the implementation-attempt budget: the run
+                // closes as Failed (this attempt genuinely did fail) but the task itself goes straight back to
+                // Pending, exactly as if a human had clicked Retry, so Worker's next poll cycle reclaims it into
+                // a fresh run. WriteContextStep's own budget check (using the same CountAgentRunsAsync) is what
+                // actually prevents a runaway loop; context.AttemptNumber here is that same count, already known.
+                if (result.Repairable && context.AttemptNumber < context.Configuration!.MaxImplementationAttempts)
+                {
+                    await TransitionAsync(context, FactoryTaskStatus.Failed, result.Reason, cancellationToken);
+                    await tasks.CompleteRunAsync(context.RunId, ExecutionStatus.Failed, cancellationToken);
+                    var nextAttempt = context.AttemptNumber + 1;
+                    await TransitionAsync(context, FactoryTaskStatus.Pending,
+                        $"Automatic repair scheduled: attempt {nextAttempt} of {context.Configuration.MaxImplementationAttempts}.", cancellationToken);
+                    logger.LogInformation("Task {TaskId} failed validation ({Reason}); automatically rescheduling repair attempt {Next} of {Max}",
+                        context.Task.Id, result.Reason, nextAttempt, context.Configuration.MaxImplementationAttempts);
+                    return false;
+                }
+
+                var terminalReason = result.Repairable
+                    ? $"{result.Reason} Implementation attempt limit ({context.Configuration!.MaxImplementationAttempts}) reached; this task will not be retried automatically."
+                    : result.Reason;
+                await TransitionAsync(context, FactoryTaskStatus.Failed, terminalReason, cancellationToken);
                 await tasks.CompleteRunAsync(context.RunId, ExecutionStatus.Failed, cancellationToken);
-                await notifier.NotifyFailedAsync(context, result.Reason ?? "No reason given.", cancellationToken);
+                await notifier.NotifyFailedAsync(context, terminalReason ?? "No reason given.", cancellationToken);
                 return false;
         }
     }

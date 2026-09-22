@@ -25,7 +25,14 @@ public sealed class ValidateStep(ITaskStore tasks, IProcessRunner processes, IOp
                 cancellationToken);
             await tasks.CompleteStepAsync(stepId, process.Succeeded ? ExecutionStatus.Succeeded : ExecutionStatus.Failed,
                 process.Succeeded ? null : process.StandardError, process.StandardOutput, cancellationToken);
-            if (!process.Succeeded) return PipelineStepResult.Failed($"{stepType} failed: {process.StandardError}");
+            if (!process.Succeeded)
+            {
+                // Only a failure that looks like a genuine code problem (not a broken environment) is eligible
+                // for the executor's automatic repair loop (SF-606); TaskExecutor still owns whether the
+                // repository's implementation-attempt budget actually allows one.
+                var repairable = ValidationFailureClassifier.Classify(process) == ValidationFailureKind.Repairable;
+                return PipelineStepResult.Failed($"{stepType} failed: {process.StandardError}", repairable);
+            }
         }
         return PipelineStepResult.Ok;
     }
