@@ -54,6 +54,13 @@ public interface ITaskStore
     /// can refuse to push a worktree whose HEAD has since moved past what was validated.</summary>
     Task SetValidatedHeadCommitAsync(Guid taskId, string headCommit, CancellationToken cancellationToken);
 
+    /// <summary>Records which agent is actually invoked for a task's current attempt, from the moment it is
+    /// selected (before the process starts) until that invocation finishes (pass <see langword="null"/> to
+    /// clear it) — the live signal of which provider is really running a task right now, distinct from
+    /// <see cref="FactoryTask.PreferredAgent"/> (a preference, not necessarily who ends up invoked after a
+    /// fallback) and from <c>factory.agent_run.agent</c> (only recorded after an invocation finishes).</summary>
+    Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken);
+
     /// <summary>Records one attempt to write to GitHub (a comment or a state-label change) as append-only operational
     /// state, regardless of whether it succeeded.</summary>
     Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken);

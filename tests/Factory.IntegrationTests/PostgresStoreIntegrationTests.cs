@@ -479,6 +479,67 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Agent_attribution_prefers_the_currently_invoking_agent_then_the_most_recent_run_then_the_preference()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            await fixture.Connection.ExecuteAsync("UPDATE factory.task SET preferred_agent='Codex' WHERE id=@TaskId", new { fixture.TaskId });
+
+            // No invocation has ever happened yet: falls back to the task's own preference.
+            Assert.Equal("Codex", await ResolveAgentAsync(fixture));
+
+            // A fallback run actually executed under a different agent than preferred — the most recent real
+            // invocation wins over the stale preference, exactly the "fallback attribution" bug SF-609 fixes.
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "worker-a", CancellationToken.None);
+            var stepId = await fixture.Tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
+            await fixture.Tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), fixture.TaskId, runId, stepId, "Claude",
+                DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddMinutes(-4), 60, 0, "Succeeded", "", "", false, null, 1, false, null),
+                CancellationToken.None);
+            Assert.Equal("Claude", await ResolveAgentAsync(fixture));
+
+            // A second attempt is now actively invoking Codex again: the live in-flight signal takes priority
+            // over history, so the task is correctly attributed to whoever is actually running it right now.
+            await fixture.Tasks.SetCurrentAgentAsync(fixture.TaskId, "Codex", CancellationToken.None);
+            Assert.Equal("Codex", await ResolveAgentAsync(fixture));
+
+            // Any status transition clears the live signal, so a finished invocation never looks permanently busy.
+            await fixture.Connection.ExecuteAsync("UPDATE factory.task SET status='Implementing' WHERE id=@TaskId", new { fixture.TaskId });
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null, CancellationToken.None);
+            Assert.Equal("Claude", await ResolveAgentAsync(fixture));
+        }
+
+        static async Task<string?> ResolveAgentAsync(LeaseFixture fixture) =>
+            await fixture.Connection.ExecuteScalarAsync<string?>("""
+                SELECT COALESCE(t.current_agent,(SELECT ar.agent FROM factory.agent_run ar WHERE ar.task_id=t.id ORDER BY ar.started_at DESC LIMIT 1),t.preferred_agent,'Codex')
+                FROM factory.task t WHERE t.id=@TaskId
+                """, new { fixture.TaskId });
+    }
+
+    [Fact]
+    public async Task Claiming_an_abandoned_execution_clears_a_stale_current_agent()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null, CancellationToken.None);
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null, CancellationToken.None);
+            await fixture.Tasks.SetCurrentAgentAsync(fixture.TaskId, "Codex", CancellationToken.None);
+            // Simulate the worker crashing mid-invocation, exactly like the existing abandoned-execution scenario.
+            await fixture.Connection.ExecuteAsync("UPDATE factory.task SET lease_until=now()-interval '1 minute' WHERE id=@TaskId", new { fixture.TaskId });
+
+            var recovered = await fixture.Tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(2), CancellationToken.None);
+
+            Assert.Equal(fixture.TaskId, recovered?.Id);
+            Assert.Null(await fixture.Connection.ExecuteScalarAsync<string?>("SELECT current_agent FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+        }
+    }
+
+    [Fact]
     public async Task Eligible_issue_is_created_once_and_can_be_claimed()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

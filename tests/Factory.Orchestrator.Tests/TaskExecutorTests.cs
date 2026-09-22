@@ -342,6 +342,30 @@ public sealed class TaskExecutorTests
         Assert.Equal(["Claude"], harness.AgentInvocationNames);
         var agentRun = Assert.Single(harness.Store.AgentRuns);
         Assert.Equal("Claude", agentRun.Agent);
+        // The fallback away from the task's own PreferredAgent ("Codex") is correctly attributed while it
+        // actually runs: current_agent is set to the agent really invoked, "Claude", not the preference.
+        Assert.Equal(["Claude", null], harness.Store.CurrentAgentCalls);
+    }
+
+    [Fact]
+    public async Task Current_agent_is_set_before_invocation_and_cleared_once_it_finishes()
+    {
+        var harness = new Harness();
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(["Codex", null], harness.Store.CurrentAgentCalls);
+    }
+
+    [Fact]
+    public async Task Current_agent_is_cleared_even_when_the_agent_throws_unexpectedly()
+    {
+        var harness = new Harness { AgentThrows = new InvalidOperationException("codex crashed") };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
+        Assert.Equal(["Codex", null], harness.Store.CurrentAgentCalls);
     }
 
     [Fact]
@@ -480,6 +504,7 @@ public sealed class TaskExecutorTests
         public Func<ProcessRequest, bool> CommandSucceeds { get; init; } = _ => true;
         public string CommandFailureOutput { get; init; } = "boom";
         public Exception? WorktreeFailure { get; init; }
+        public Exception? AgentThrows { get; init; }
         public string? ConfigurationBaseRef { get; private set; }
         public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
         public string? PreferredAgent { get; init; }
@@ -572,6 +597,7 @@ public sealed class TaskExecutorTests
             public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
             {
                 harness.RecordAgentInvocation(name);
+                if (harness.AgentThrows is not null) throw harness.AgentThrows;
                 return Task.FromResult(harness.AgentResult);
             }
         }
