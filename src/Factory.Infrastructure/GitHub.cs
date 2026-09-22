@@ -149,6 +149,20 @@ public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
         return result.Succeeded ? new PushResult(true, null) : new PushResult(false, result.StandardError.Trim());
     }
 
+    public async Task<PullRequestResult?> FindExistingPullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "list", "--repo", $"{owner}/{name}", "--head", branchName, "--state", "open", "--json", "number,url", "--limit", "1"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!result.Succeeded) return new PullRequestResult(false, null, null, result.StandardError.Trim());
+
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var items = document.RootElement;
+        if (items.GetArrayLength() == 0) return null;
+        var first = items[0];
+        return new PullRequestResult(true, first.GetProperty("number").GetInt32(), first.GetProperty("url").GetString(), null);
+    }
+
     public async Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken)
     {
         var result = await runner.RunAsync(new ProcessRequest("gh",

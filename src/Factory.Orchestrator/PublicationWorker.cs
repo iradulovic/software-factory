@@ -19,7 +19,14 @@ public sealed class PublicationWorker(DatabaseMigrator migrator, ITaskStore task
         {
             try
             {
-                var request = await tasks.ClaimNextPublicationAsync(options.Value.WorkerId, stoppingToken);
+                // Recovers the one interruption a reclaimed publication attempt cannot fix by itself: the pull
+                // request was created and recorded successfully, but the worker crashed before the task itself
+                // finished transitioning out of ReadyForPublish.
+                var reconciled = await tasks.ReconcilePublishedTasksAsync(stoppingToken);
+                if (reconciled > 0)
+                    logger.LogInformation("Reconciled {Count} task(s) whose pull request already existed but had not completed its status transition", reconciled);
+
+                var request = await tasks.ClaimNextPublicationAsync(options.Value.WorkerId, TimeSpan.FromSeconds(options.Value.PublicationLeaseSeconds), stoppingToken);
                 if (request is null) { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken); continue; }
                 await executor.ExecuteAsync(request, stoppingToken);
             }

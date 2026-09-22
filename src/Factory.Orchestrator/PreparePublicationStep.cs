@@ -29,6 +29,10 @@ public sealed class PreparePublicationStep(ITaskStore tasks, IWorktreeInspector 
         }
 
         await tasks.SetChangeSummaryAsync(context.RunId, summary, cancellationToken);
+        // Recorded on the task itself, not just the run, so publication — which may happen long after this run
+        // closed, and possibly be retried after a crash — can independently verify the worktree it is about to
+        // push still matches exactly what was validated here.
+        await tasks.SetValidatedHeadCommitAsync(context.Task.Id, summary.HeadCommit, cancellationToken);
         context.ChangeSummary = summary;
         var output = $"{summary.FilesChanged.Count} file(s) changed, +{summary.LinesAdded} -{summary.LinesRemoved}";
         await tasks.CompleteStepAsync(stepId, ExecutionStatus.Succeeded, null, output, cancellationToken);

@@ -10,6 +10,11 @@ public sealed class FactoryOptions
     public int PollingIntervalSeconds { get; set; } = 10;
     public int TaskLeaseSeconds { get; set; } = 600;
     public int LeaseHeartbeatSeconds { get; set; } = 120;
+
+    /// <summary>How long a claimed publication attempt (push + pull-request creation, a much shorter-lived unit of
+    /// work than implementing a task) may run before <see cref="ITaskStore.ClaimNextPublicationAsync"/> treats it
+    /// as abandoned and reclaims it.</summary>
+    public int PublicationLeaseSeconds { get; set; } = 300;
     public string WorkerId { get; set; } = $"{Environment.MachineName}-{Environment.ProcessId}";
 
     /// <summary>Base URL of the dashboard, used to link back to a task from the GitHub comments the orchestrator posts.</summary>

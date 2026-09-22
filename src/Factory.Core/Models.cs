@@ -153,8 +153,11 @@ public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<Va
 }
 
 /// <summary>Everything <see cref="IGitHubPublisher"/> needs to push a task's committed branch and open a draft pull request for it.</summary>
+/// <param name="ValidatedHeadCommit">The head commit the task's implementation was actually validated against, or
+/// <see langword="null"/> for a task that reached <see cref="FactoryTaskStatus.ReadyForPublish"/> before this was
+/// recorded. When set, publication refuses to push a worktree whose current HEAD no longer matches it.</param>
 public sealed record PublicationRequest(Guid Id, Guid TaskId, string BranchName, string WorktreePath, string BaseBranch,
-    long RepositoryId, string RepositoryOwner, string RepositoryName, string TaskTitle, int? IssueNumber);
+    long RepositoryId, string RepositoryOwner, string RepositoryName, string TaskTitle, int? IssueNumber, string? ValidatedHeadCommit = null);
 
 public sealed record PushResult(bool Succeeded, string? Error);
 public sealed record PullRequestResult(bool Succeeded, int? Number, string? Url, string? Error);

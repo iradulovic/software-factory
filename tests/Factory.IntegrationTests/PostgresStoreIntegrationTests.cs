@@ -231,7 +231,7 @@ public sealed class PostgresStoreIntegrationTests
 
                 var requested = await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "operator", CancellationToken.None);
                 Assert.NotNull(requested);
-                var publication = await fixture.Tasks.ClaimNextPublicationAsync("publication-worker", CancellationToken.None);
+                var publication = await fixture.Tasks.ClaimNextPublicationAsync("publication-worker", TimeSpan.FromMinutes(5), CancellationToken.None);
                 Assert.NotNull(publication);
                 Assert.Equal(fixture.TaskId, publication!.TaskId);
                 Assert.Equal("factory/1-x", publication.BranchName);
@@ -301,7 +301,7 @@ public sealed class PostgresStoreIntegrationTests
             Assert.NotNull(requested);
             Assert.Null(await tasks.RequestPublicationAsync(taskId, null, "operator", CancellationToken.None));
 
-            var claimed = await tasks.ClaimNextPublicationAsync("publication-worker", CancellationToken.None);
+            var claimed = await tasks.ClaimNextPublicationAsync("publication-worker", TimeSpan.FromMinutes(5), CancellationToken.None);
             Assert.NotNull(claimed);
             Assert.Equal(requested, claimed!.Id);
             Assert.Equal(taskId, claimed.TaskId);
@@ -311,7 +311,8 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Equal(repositoryId, claimed.RepositoryId);
             Assert.Equal("publication-tests", claimed.RepositoryOwner);
             Assert.Equal(suffix, claimed.RepositoryName);
-            Assert.Null(await tasks.ClaimNextPublicationAsync("another-worker", CancellationToken.None));
+            Assert.Null(claimed.ValidatedHeadCommit);
+            Assert.Null(await tasks.ClaimNextPublicationAsync("another-worker", TimeSpan.FromMinutes(5), CancellationToken.None));
 
             await tasks.CompletePublicationAsync(claimed.Id, "PullRequestCreated", 42, "https://github.com/publication-tests/repo/pull/42", null, CancellationToken.None);
             await tasks.TransitionAsync(taskId, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published, null, CancellationToken.None);
@@ -351,6 +352,129 @@ public sealed class PostgresStoreIntegrationTests
                 "DELETE FROM factory.github_write WHERE task_id=@taskId; DELETE FROM factory.publication WHERE task_id=@taskId; DELETE FROM factory.task WHERE id=@taskId;",
                 new { taskId });
             await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task A_stale_publishing_claim_is_reclaimed_after_its_lease_expires()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                await fixture.Connection.ExecuteAsync(
+                    "UPDATE factory.task SET status='ReadyForPublish', branch_name='factory/1-x', worktree_path='/tmp/wt/stale' WHERE id=@TaskId", new { fixture.TaskId });
+
+                var requested = await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "operator", CancellationToken.None);
+                Assert.NotNull(requested);
+
+                // A worker claimed it and is still within its lease.
+                await fixture.Connection.ExecuteAsync(
+                    "UPDATE factory.publication SET status='Publishing',claimed_by='live-worker',claimed_at=now(),lease_until=now()+interval '5 minutes' WHERE id=@id",
+                    new { id = requested });
+
+                // A live worker with time left on its own claim is never reclaimed out from under it.
+                Assert.Null(await fixture.Tasks.ClaimNextPublicationAsync("worker-b", TimeSpan.FromMinutes(5), CancellationToken.None));
+
+                await fixture.Connection.ExecuteAsync("UPDATE factory.publication SET lease_until=now()-interval '1 second' WHERE id=@id", new { id = requested });
+                var reclaimed = await fixture.Tasks.ClaimNextPublicationAsync("worker-b", TimeSpan.FromMinutes(5), CancellationToken.None);
+                Assert.NotNull(reclaimed);
+                Assert.Equal(requested, reclaimed!.Id);
+                Assert.Equal("worker-b", await fixture.Connection.ExecuteScalarAsync<string>("SELECT claimed_by FROM factory.publication WHERE id=@id", new { id = requested }));
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Validated_head_commit_is_persisted_and_returned_with_a_claimed_publication()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                await fixture.Connection.ExecuteAsync(
+                    "UPDATE factory.task SET status='ReadyForPublish', branch_name='factory/1-x', worktree_path='/tmp/wt/head' WHERE id=@TaskId", new { fixture.TaskId });
+
+                await fixture.Tasks.SetValidatedHeadCommitAsync(fixture.TaskId, "cafef00d", CancellationToken.None);
+
+                var requested = await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "operator", CancellationToken.None);
+                var claimed = await fixture.Tasks.ClaimNextPublicationAsync("publication-worker", TimeSpan.FromMinutes(5), CancellationToken.None);
+                Assert.NotNull(claimed);
+                Assert.Equal(requested, claimed!.Id);
+                Assert.Equal("cafef00d", claimed.ValidatedHeadCommit);
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Reconciliation_completes_the_task_transition_when_the_pull_request_already_exists()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                await fixture.Connection.ExecuteAsync(
+                    "UPDATE factory.task SET status='ReadyForPublish', branch_name='factory/1-x', worktree_path='/tmp/wt/reconcile' WHERE id=@TaskId", new { fixture.TaskId });
+
+                // Simulates the crash between recording a successful publication and completing the task's own
+                // transition: the publication is already done, but the task is still resting in ReadyForPublish.
+                var requested = await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "operator", CancellationToken.None);
+                var claimed = await fixture.Tasks.ClaimNextPublicationAsync("publication-worker", TimeSpan.FromMinutes(5), CancellationToken.None);
+                Assert.NotNull(claimed);
+                await fixture.Tasks.CompletePublicationAsync(claimed!.Id, "PullRequestCreated", 55, "https://github.com/lease-tests/repo/pull/55", null, CancellationToken.None);
+                Assert.Equal("ReadyForPublish", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+
+                var reconciled = await fixture.Tasks.ReconcilePublishedTasksAsync(CancellationToken.None);
+
+                Assert.True(reconciled >= 1);
+                Assert.Equal("Published", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+                Assert.Null(await fixture.Connection.ExecuteScalarAsync<string?>("SELECT claimed_by FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+
+                // Reconciling again is a no-op: the task is no longer ReadyForPublish, so it is not matched again.
+                Assert.Equal(0, await fixture.Tasks.ReconcilePublishedTasksAsync(CancellationToken.None));
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Reconciliation_leaves_a_task_untouched_while_its_publication_is_still_in_flight()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                await fixture.Connection.ExecuteAsync(
+                    "UPDATE factory.task SET status='ReadyForPublish', branch_name='factory/1-x', worktree_path='/tmp/wt/inflight' WHERE id=@TaskId", new { fixture.TaskId });
+                await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "operator", CancellationToken.None);
+
+                await fixture.Tasks.ReconcilePublishedTasksAsync(CancellationToken.None);
+
+                Assert.Equal("ReadyForPublish", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
         }
     }
 

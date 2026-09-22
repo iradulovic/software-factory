@@ -18,6 +18,8 @@ internal sealed class FakeTaskStore : ITaskStore
     public List<(Guid TaskId, Guid? RunId, string RequestedBy)> PublicationRequests { get; } = [];
     public bool NextPublicationRequestAllowed { get; set; } = true;
     public List<(Guid Id, string Status, int? PullRequestNumber, string? PullRequestUrl, string? Error)> CompletedPublications { get; } = [];
+    public int ReconciledPublishedTasks { get; set; }
+    public List<(Guid TaskId, string HeadCommit)> ValidatedHeadCommits { get; } = [];
     public List<(Guid TaskId, string Kind, string Detail, bool Succeeded, string? Error)> GitHubWrites { get; } = [];
     public List<PublishedTaskRef> PublishedTasks { get; } = [];
     public PreviousAttemptSummary? PreviousAttempt { get; set; }
@@ -101,11 +103,19 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.FromResult(NextPublicationRequestAllowed ? Guid.NewGuid() : (Guid?)null);
     }
 
-    public Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, CancellationToken cancellationToken) => Task.FromResult<PublicationRequest?>(null);
+    public Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken) => Task.FromResult<PublicationRequest?>(null);
 
     public Task CompletePublicationAsync(Guid publicationId, string status, int? pullRequestNumber, string? pullRequestUrl, string? error, CancellationToken cancellationToken)
     {
         CompletedPublications.Add((publicationId, status, pullRequestNumber, pullRequestUrl, error));
+        return Task.CompletedTask;
+    }
+
+    public Task<int> ReconcilePublishedTasksAsync(CancellationToken cancellationToken) => Task.FromResult(ReconciledPublishedTasks);
+
+    public Task SetValidatedHeadCommitAsync(Guid taskId, string headCommit, CancellationToken cancellationToken)
+    {
+        ValidatedHeadCommits.Add((taskId, headCommit));
         return Task.CompletedTask;
     }
 

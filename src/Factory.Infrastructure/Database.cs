@@ -394,19 +394,28 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return await c.ExecuteScalarAsync<Guid?>(new CommandDefinition(sql, new { id = Guid.NewGuid(), taskId, runId, requestedBy }, cancellationToken: cancellationToken));
     }
 
-    public async Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, CancellationToken cancellationToken)
+    public async Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken)
     {
+        // A 'Publishing' row whose lease has expired means the worker that claimed it crashed before recording
+        // completion (push, pull-request creation, and completing the publication record are all idempotent under
+        // retry, so reclaiming it here is always safe); a freshly claimed row gets its own lease so a still-live
+        // worker's own in-flight attempt is never reclaimed out from under it.
         const string claimSql = """
-            UPDATE factory.publication SET status='Publishing',claimed_by=@workerId,claimed_at=now()
-            WHERE id = (SELECT id FROM factory.publication WHERE status='Requested' ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1)
+            UPDATE factory.publication SET status='Publishing',claimed_by=@workerId,claimed_at=now(),lease_until=now()+@lease
+            WHERE id = (
+              SELECT id FROM factory.publication
+              WHERE status='Requested' OR (status='Publishing' AND lease_until < now())
+              ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1
+            )
             RETURNING id,task_id AS "TaskId"
             """;
         await using var c = Connection();
-        var claimed = await c.QuerySingleOrDefaultAsync<PublicationClaimRow>(new CommandDefinition(claimSql, new { workerId }, cancellationToken: cancellationToken));
+        var claimed = await c.QuerySingleOrDefaultAsync<PublicationClaimRow>(new CommandDefinition(claimSql, new { workerId, lease }, cancellationToken: cancellationToken));
         if (claimed is null) return null;
 
         const string detailSql = """
             SELECT t.branch_name AS "BranchName",t.worktree_path AS "WorktreePath",t.base_branch AS "BaseBranch",
+              t.validated_head_commit AS "ValidatedHeadCommit",
               r.id AS "RepositoryId",r.owner AS "RepositoryOwner",r.name AS "RepositoryName",
               t.title AS "TaskTitle",i.issue_number AS "IssueNumber"
             FROM factory.task t
@@ -418,17 +427,54 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         if (details.BranchName is null || details.WorktreePath is null)
             throw new InvalidOperationException($"Task {claimed.TaskId} has no recorded worktree; it cannot be published.");
         return new PublicationRequest(claimed.Id, claimed.TaskId, details.BranchName, details.WorktreePath, details.BaseBranch,
-            details.RepositoryId, details.RepositoryOwner, details.RepositoryName, details.TaskTitle, details.IssueNumber);
+            details.RepositoryId, details.RepositoryOwner, details.RepositoryName, details.TaskTitle, details.IssueNumber, details.ValidatedHeadCommit);
     }
 
     public async Task CompletePublicationAsync(Guid publicationId, string status, int? pullRequestNumber, string? pullRequestUrl, string? error, CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE factory.publication SET status=@status,pull_request_number=@pullRequestNumber,pull_request_url=@pullRequestUrl,error=@error,completed_at=now()
+            UPDATE factory.publication SET status=@status,pull_request_number=@pullRequestNumber,pull_request_url=@pullRequestUrl,error=@error,completed_at=now(),lease_until=NULL
             WHERE id=@publicationId
             """;
         await using var c = Connection();
         await c.ExecuteAsync(new CommandDefinition(sql, new { publicationId, status, pullRequestNumber, pullRequestUrl, error }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<int> ReconcilePublishedTasksAsync(CancellationToken cancellationToken)
+    {
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published);
+        // A task can be stuck resting in ReadyForPublish even though its publication already succeeded, if the
+        // worker crashed between recording that success (CompletePublicationAsync) and making this transition.
+        // Finding it this way, from the publication's own recorded outcome, needs no separate flag on the task.
+        const string sql = """
+            WITH latest AS (
+              SELECT DISTINCT ON (task_id) task_id, status
+              FROM factory.publication
+              ORDER BY task_id, requested_at DESC
+            ), stuck AS (
+              SELECT t.id FROM factory.task t
+              JOIN latest l ON l.task_id = t.id
+              WHERE t.status = 'ReadyForPublish' AND l.status = 'PullRequestCreated'
+            ), updated AS (
+              UPDATE factory.task t SET status='Published',claimed_by=NULL,claimed_at=NULL,lease_until=NULL
+              FROM stuck s WHERE t.id = s.id
+              RETURNING t.id
+            ), logged AS (
+              INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+              SELECT id,'ReadyForPublish','Published',
+                'Recovered: the pull request was already recorded but the task transition had not completed.','orchestrator'
+              FROM updated
+            )
+            SELECT count(*)::int FROM updated
+            """;
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+    }
+
+    public async Task SetValidatedHeadCommitAsync(Guid taskId, string headCommit, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET validated_head_commit=@headCommit WHERE id=@taskId", new { taskId, headCommit }, cancellationToken: cancellationToken));
     }
 
     public async Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken)
@@ -618,6 +664,7 @@ internal sealed class PublicationDetailsRow
     public string? BranchName { get; init; }
     public string? WorktreePath { get; init; }
     public string BaseBranch { get; init; } = "";
+    public string? ValidatedHeadCommit { get; init; }
     public long RepositoryId { get; init; }
     public string RepositoryOwner { get; init; } = "";
     public string RepositoryName { get; init; } = "";
