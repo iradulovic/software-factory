@@ -30,6 +30,11 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
 
 ## In progress
 
+- [ ] **SF-612 — Bound the outstanding human-review backlog**
+  - Dependencies: SF-607, SF-610, SF-611.
+  - Scope: add a configurable limit on outstanding `ReadyForPublish` and open draft/published review work. Apply it before dispatching another implementation; existing publication and reconciliation must continue so the limit cannot deadlock the queue.
+  - Acceptance: reaching the limit pauses new implementation with a visible reason; merging or explicitly resolving review work frees capacity. Test state changes and restart without double-counting a task as both ready and published.
+
 ## Next up
 
 The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
@@ -44,12 +49,7 @@ SF-607 is complete; see **Completed** below. SF-608 is blocked; see **Blocked** 
 
 ### Priority 2 — Give the operator trustworthy control
 
-SF-609, SF-610, and SF-611 are complete; see **Completed** below.
-
-- [ ] **SF-612 — Bound the outstanding human-review backlog**
-  - Dependencies: SF-607, SF-610, SF-611.
-  - Scope: add a configurable limit on outstanding `ReadyForPublish` and open draft/published review work. Apply it before dispatching another implementation; existing publication and reconciliation must continue so the limit cannot deadlock the queue.
-  - Acceptance: reaching the limit pauses new implementation with a visible reason; merging or explicitly resolving review work frees capacity. Test state changes and restart without double-counting a task as both ready and published.
+SF-609, SF-610, and SF-611 are complete; see **Completed** below. SF-612 is in progress; see **In progress** above.
 
 - [ ] **SF-613 — Accept human feedback and continue existing task work**
   - Dependencies: SF-605, SF-606, SF-607, SF-609.
