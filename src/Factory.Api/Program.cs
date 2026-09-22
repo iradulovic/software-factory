@@ -19,6 +19,7 @@ const string TaskListSql = $"""
     SELECT t.id,t.title,gr.owner || '/' || gr.name AS repository,i.issue_number AS "issueNumber",t.status,t.priority,
       {TaskAgentExpr} AS agent,t.created_at AS "createdAt",t.started_at AS "startedAt",
       t.completed_at AS "completedAt",t.branch_name AS "branchName",t.worktree_path AS "worktreePath",t.failure_reason AS "failureReason",
+      t.review_minutes AS "reviewMinutes",
       CASE WHEN t.failure_reason IS NOT NULL THEN t.failure_reason
            WHEN t.status IN ('Completed','ReadyForPublish','Published') THEN 'Passed'
            WHEN t.status='Rejected' THEN 'Pull request closed without merge'
@@ -203,6 +204,24 @@ app.MapPost("/api/tasks/{id:guid}/continue", async (Guid id, ContinueRequest bod
     return await tasks.ContinueWithFeedbackAsync(id, body.Feedback, ct)
         ? Results.Accepted($"/api/tasks/{id}")
         : Results.Conflict(new { error = "Task cannot be continued from its current state." });
+});
+
+app.MapPost("/api/tasks/{id:guid}/review-time", async (Guid id, ReviewTimeRequest body, ITaskStore tasks, CancellationToken ct) =>
+{
+    if (body.Minutes < 0) return Results.BadRequest(new { error = "Minutes must not be negative." });
+    using var activity = FactoryTelemetry.Source.StartActivity("api.set_review_minutes");
+    activity?.SetTag("factory.task_id", id);
+    await tasks.SetReviewMinutesAsync(id, body.Minutes, ct);
+    return Results.NoContent();
+});
+
+// Small outcome/review-effort metrics over a rolling window (SF-617), defaulting to the last 7 days —
+// deliberately excludes lines changed and consumed quota as productivity signals, and exposes no "remaining
+// quota" figure (see OutcomeMetrics's own doc comment for why).
+app.MapGet("/api/metrics", async (int? days, ITaskStore tasks, CancellationToken ct) =>
+{
+    var since = DateTimeOffset.UtcNow.AddDays(-Math.Max(days ?? 7, 1));
+    return Results.Ok(await tasks.GetOutcomeMetricsAsync(since, ct));
 });
 
 app.MapPost("/api/tasks/{id:guid}/cancel", async (Guid id, ITaskStore tasks, CancellationToken ct) =>

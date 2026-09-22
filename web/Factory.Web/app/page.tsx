@@ -15,6 +15,15 @@ const dashboardSchema = z.object({
 });
 type Dashboard = z.infer<typeof dashboardSchema>;
 const cards = [["Active tasks","activeTasks",Activity],["Pending","pendingTasks",Clock3],["Needs operator","needsOperator",UserCheck],["Review backlog","reviewBacklog",GitPullRequest],["Completed today","completedToday",CheckCircle2],["Success rate","successRate",Gauge]] as const;
+const outcomeMetricsSchema = z.object({
+  since:z.string(),validatedReadyForReview:z.number(),mergedAccepted:z.number(),rejected:z.number(),retries:z.number(),
+  quotaWaitingEvents:z.number(),humanInterventions:z.number(),agentProcessSuccesses:z.number(),agentProcessFailures:z.number(),
+  ciSuccesses:z.number(),ciFailures:z.number(),averageReviewMinutes:z.number().nullable(),reviewedTaskCount:z.number()
+});
+const outcomeCards = [
+  ["Ready for review","validatedReadyForReview"],["Merged / accepted","mergedAccepted"],["Rejected","rejected"],["Retries","retries"],
+  ["Quota waiting","quotaWaitingEvents"],["Human interventions","humanInterventions"]
+] as const;
 
 async function postPause(path: string, reason?: string) {
   const response = await fetch(`${apiBase}${path}`, {
@@ -31,6 +40,7 @@ async function postPause(path: string, reason?: string) {
 export default function Overview() {
   const client = useQueryClient();
   const { data, error } = useQuery<Dashboard>({ queryKey:["dashboard"], queryFn:()=>getJson("/api/dashboard",dashboardSchema) });
+  const { data: outcomes } = useQuery({ queryKey:["outcome-metrics"], queryFn:()=>getJson("/api/metrics?days=7",outcomeMetricsSchema) });
   const { data: pauses } = useQuery({ queryKey:["control-pause"], queryFn:()=>getJson("/api/control/pause", z.array(pauseStateSchema)) });
   const [reason, setReason] = useState("");
   const [outcome, setOutcome] = useState<{ tone: "success" | "error"; message: string } | null>(null);
@@ -82,5 +92,6 @@ export default function Overview() {
     <div className="grid gap-5 xl:grid-cols-[1.6fr_1fr]"><section className="panel overflow-hidden"><div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3"><div><p className="text-sm font-semibold">Current work</p><p className="text-xs text-slate-500">Tasks in execution</p></div><Workflow className="size-4 text-emerald-500" /></div>{data?.active.length?<table><thead><tr><th>Task</th><th>Repository</th><th>Status</th><th>Duration</th></tr></thead><tbody>{data.active.map(t=><tr key={t.id}><td className="max-w-72 truncate font-medium">{t.title}</td><td className="text-slate-400">{t.repository}</td><td><Badge value={t.status}/></td><td><Duration seconds={t.durationSeconds}/></td></tr>)}</tbody></table>:<Empty>{data?.idleReason??"No active tasks"}</Empty>}</section>
       <section className="panel"><div className="border-b border-[var(--border)] px-4 py-3"><p className="text-sm font-semibold">Recent activity</p><p className="text-xs text-slate-500">Latest execution events</p></div><div className="divide-y divide-[var(--border)]">{data?.activity.length?data.activity.map((a,i)=><div className="flex gap-3 p-3" key={`${a.occurredAt}-${i}`}><div className="mt-1 size-2 rounded-full bg-emerald-500"/><div className="min-w-0"><p className="truncate text-xs font-medium">{a.title}</p><p className="mt-1 text-[11px] text-slate-500">{a.type} · {a.status}</p></div></div>):<Empty>No activity recorded</Empty>}</div></section></div>
     <section className="panel p-4"><div className="mb-4"><p className="text-sm font-semibold">Throughput</p><p className="text-xs text-slate-500">Completed tasks · last 7 days</p></div><div className="h-52"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data?.throughput??[]}><defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={.3}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#1c2734" vertical={false}/><XAxis dataKey="day" stroke="#526071" fontSize={11}/><YAxis allowDecimals={false} stroke="#526071" fontSize={11}/><Tooltip contentStyle={{background:"#0e1520",border:"1px solid #202a38"}}/><Area type="monotone" dataKey="completed" stroke="#10b981" fill="url(#fill)" strokeWidth={2}/></AreaChart></ResponsiveContainer></div></section>
+    <section className="panel p-4"><div className="mb-3"><p className="text-sm font-semibold">Outcomes</p><p className="text-xs text-slate-500">Since {outcomes?new Date(outcomes.since).toLocaleDateString():"—"} · excludes lines changed and consumed quota as productivity signals</p></div><div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">{outcomeCards.map(([label,key])=><div className="rounded border border-[var(--border)] p-3" key={key}><p className="text-[11px] text-slate-500">{label}</p><p className="mt-1 text-xl font-semibold tabular-nums">{outcomes?outcomes[key]:"—"}</p></div>)}</div><div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3"><div className="rounded border border-[var(--border)] p-3"><p className="text-[11px] text-slate-500">Agent process</p><p className="mt-1 text-sm tabular-nums"><span className="text-emerald-400">{outcomes?.agentProcessSuccesses??"—"} ok</span> <span className="text-red-400">{outcomes?.agentProcessFailures??"—"} failed</span></p></div><div className="rounded border border-[var(--border)] p-3"><p className="text-[11px] text-slate-500">CI</p><p className="mt-1 text-sm tabular-nums"><span className="text-emerald-400">{outcomes?.ciSuccesses??"—"} passed</span> <span className="text-red-400">{outcomes?.ciFailures??"—"} failed</span></p></div><div className="rounded border border-[var(--border)] p-3"><p className="text-[11px] text-slate-500">Review time (optional entries)</p><p className="mt-1 text-sm tabular-nums">{outcomes?.reviewedTaskCount?`${Math.round(outcomes.averageReviewMinutes??0)} min avg over ${outcomes.reviewedTaskCount}`:"No entries logged"}</p></div></div></section>
   </div>;
 }

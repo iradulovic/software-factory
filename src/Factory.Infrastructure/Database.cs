@@ -593,6 +593,40 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return row?.ToModel();
     }
 
+    public async Task<OutcomeMetrics> GetOutcomeMetricsAsync(DateTimeOffset since, CancellationToken cancellationToken)
+    {
+        // Every count is windowed by when the thing itself happened (occurred_at/started_at/synced_at/
+        // review_recorded_at), never by the task's own created_at — so a long-lived task's older history never
+        // leaks into a later window, and a task created before the window can still contribute events within it.
+        const string sql = """
+            WITH events AS (SELECT * FROM factory.task_event WHERE occurred_at >= @since)
+            SELECT
+              (SELECT count(*)::int FROM events WHERE to_status='ReadyForPublish') AS "ValidatedReadyForReview",
+              (SELECT count(*)::int FROM events WHERE to_status='Completed') AS "MergedAccepted",
+              (SELECT count(*)::int FROM events WHERE to_status='Rejected') AS "Rejected",
+              (SELECT count(*)::int FROM events WHERE to_status='Pending' AND from_status IS NOT NULL AND from_status <> 'WaitingForQuota') AS "Retries",
+              (SELECT count(*)::int FROM events WHERE to_status='WaitingForQuota') AS "QuotaWaitingEvents",
+              (SELECT count(*)::int FROM events WHERE to_status='NeedsHuman') AS "HumanInterventions",
+              (SELECT count(*)::int FROM factory.agent_run WHERE started_at >= @since AND counts_as_implementation_attempt AND status='Succeeded') AS "AgentProcessSuccesses",
+              (SELECT count(*)::int FROM factory.agent_run WHERE started_at >= @since AND counts_as_implementation_attempt AND status='Failed') AS "AgentProcessFailures",
+              (SELECT count(*)::int FROM factory.task_ci_status WHERE synced_at >= @since AND overall_status='Success') AS "CiSuccesses",
+              (SELECT count(*)::int FROM factory.task_ci_status WHERE synced_at >= @since AND overall_status='Failure') AS "CiFailures",
+              (SELECT avg(review_minutes)::float FROM factory.task WHERE review_minutes IS NOT NULL AND review_recorded_at >= @since) AS "AverageReviewMinutes",
+              (SELECT count(*)::int FROM factory.task WHERE review_minutes IS NOT NULL AND review_recorded_at >= @since) AS "ReviewedTaskCount"
+            """;
+        await using var c = Connection();
+        var row = await c.QuerySingleAsync<OutcomeMetricsRow>(new CommandDefinition(sql, new { since }, cancellationToken: cancellationToken));
+        return row.ToModel(since);
+    }
+
+    public async Task SetReviewMinutesAsync(Guid taskId, int minutes, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.task SET review_minutes=@minutes, review_recorded_at=@recordedAt WHERE id=@taskId",
+            new { taskId, minutes, recordedAt = clock.UtcNow }, cancellationToken: cancellationToken));
+    }
+
     public async Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken)
     {
         // SF-613: an explicit human continuation resets the budget — only runs since the most recent recorded
@@ -854,6 +888,25 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return await c.ExecuteScalarAsync<int>(new CommandDefinition(
             "SELECT count(*)::int FROM factory.task WHERE status IN ('ReadyForPublish','Published')", cancellationToken: cancellationToken));
     }
+}
+
+internal sealed class OutcomeMetricsRow
+{
+    public int ValidatedReadyForReview { get; init; }
+    public int MergedAccepted { get; init; }
+    public int Rejected { get; init; }
+    public int Retries { get; init; }
+    public int QuotaWaitingEvents { get; init; }
+    public int HumanInterventions { get; init; }
+    public int AgentProcessSuccesses { get; init; }
+    public int AgentProcessFailures { get; init; }
+    public int CiSuccesses { get; init; }
+    public int CiFailures { get; init; }
+    public double? AverageReviewMinutes { get; init; }
+    public int ReviewedTaskCount { get; init; }
+
+    public OutcomeMetrics ToModel(DateTimeOffset since) => new(since, ValidatedReadyForReview, MergedAccepted, Rejected, Retries,
+        QuotaWaitingEvents, HumanInterventions, AgentProcessSuccesses, AgentProcessFailures, CiSuccesses, CiFailures, AverageReviewMinutes, ReviewedTaskCount);
 }
 
 internal sealed class TaskCiStatusRow
