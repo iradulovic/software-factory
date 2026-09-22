@@ -30,6 +30,11 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
 
 ## In progress
 
+- [ ] **SF-613 — Accept human feedback and continue existing task work**
+  - Dependencies: SF-605, SF-606, SF-607, SF-609.
+  - Scope: let the operator attach corrections or manual-test failures and continue the same task with its existing changes and prior evidence. Snapshot the new instructions per attempt. Define how an explicit human continuation grants a bounded new repair allowance after an earlier budget is exhausted.
+  - Acceptance: feedback appears in the next generated context, previous attempts remain auditable, and continuation does not discard work or create a duplicate PR. Existing-PR updates are revalidated and published through the orchestrator. If a worktree was cleaned up, restore the recorded branch safely or report an actionable blocker.
+
 ## Next up
 
 The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
@@ -44,12 +49,7 @@ SF-607 is complete; see **Completed** below. SF-608 is blocked; see **Blocked** 
 
 ### Priority 2 — Give the operator trustworthy control
 
-SF-609, SF-610, SF-611, and SF-612 are complete; see **Completed** below.
-
-- [ ] **SF-613 — Accept human feedback and continue existing task work**
-  - Dependencies: SF-605, SF-606, SF-607, SF-609.
-  - Scope: let the operator attach corrections or manual-test failures and continue the same task with its existing changes and prior evidence. Snapshot the new instructions per attempt. Define how an explicit human continuation grants a bounded new repair allowance after an earlier budget is exhausted.
-  - Acceptance: feedback appears in the next generated context, previous attempts remain auditable, and continuation does not discard work or create a duplicate PR. Existing-PR updates are revalidated and published through the orchestrator. If a worktree was cleaned up, restore the recorded branch safely or report an actionable blocker.
+SF-609, SF-610, SF-611, and SF-612 are complete; see **Completed** below. SF-613 is in progress; see **In progress** above.
 
 - [ ] **SF-614 — Surface GitHub CI status for the published commit**
   - Dependencies: SF-607, SF-609.
