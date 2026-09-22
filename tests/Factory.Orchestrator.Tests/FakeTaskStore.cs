@@ -118,7 +118,10 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<PublishedTaskRef>>(PublishedTasks);
 
-    public Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(AgentRuns.Count(r => r.TaskId == taskId));
+    public Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken) =>
+        Task.FromResult(AgentRuns.Count(r => r.TaskId == taskId && r.CountsAsImplementationAttempt));
+    public Task<int> CountQuotaInterruptionsAsync(Guid taskId, CancellationToken cancellationToken) =>
+        Task.FromResult(AgentRuns.Count(r => r.TaskId == taskId && !r.CountsAsImplementationAttempt));
     public Task<PreviousAttemptSummary?> GetPreviousAttemptAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(PreviousAttempt);
     public Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken) => Task.FromResult(ExpiredQuotaTasksToResume);
 

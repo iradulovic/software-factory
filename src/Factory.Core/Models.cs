@@ -49,9 +49,14 @@ public sealed record FactoryRun(Guid Id, Guid TaskId, DateTimeOffset StartedAt, 
 public sealed record FactoryStep(Guid Id, Guid RunId, string StepType, ExecutionStatus Status, DateTimeOffset StartedAt,
     DateTimeOffset? CompletedAt, long? DurationMs, int Attempt, string? Error, string? Output);
 
+/// <param name="CountsAsImplementationAttempt">Whether this invocation counts toward the task's
+/// <see cref="RepositoryConfiguration.MaxImplementationAttempts"/> budget. A quota-interrupted invocation never
+/// got a real chance to implement anything, so it is recorded here (<c>false</c>) but excluded from that budget
+/// by <see cref="ITaskStore.CountAgentRunsAsync"/> — invocation history itself always stays complete.</param>
 public sealed record AgentRunRecord(Guid Id, Guid TaskId, Guid RunId, Guid StepId, string Agent, DateTimeOffset StartedAt,
     DateTimeOffset? CompletedAt, double? DurationSeconds, int? ExitCode, string Status, string? StandardOutput,
-    string? StandardError, bool QuotaDetected, DateTimeOffset? QuotaResetAt, int AttemptNumber, bool NeedsHuman, AgentResult? Result);
+    string? StandardError, bool QuotaDetected, DateTimeOffset? QuotaResetAt, int AttemptNumber, bool NeedsHuman, AgentResult? Result,
+    bool CountsAsImplementationAttempt = true);
 
 /// <param name="LogPath">When set, stdout and stderr are streamed to this file as the process runs, interleaved
 /// in arrival order, in addition to the bounded preview <see cref="ProcessResult"/> always returns.</param>
@@ -126,13 +131,17 @@ public static class StepLogPaths
         Path.Combine(logsDirectory, runId.ToString(), $"{stepId}.log");
 }
 
-/// <summary><see cref="Publish"/> is "manual" (a human explicitly requests publication) or "auto-draft"
-/// (the orchestrator requests it itself as soon as a run reaches <c>ReadyForPublish</c>).</summary>
+/// <param name="Publish">"manual" (a human explicitly requests publication) or "auto-draft" (the orchestrator
+/// requests it itself as soon as a run reaches <c>ReadyForPublish</c>).</param>
+/// <param name="MaxQuotaInterruptions">A separate bound on repeated quota interruptions (SF-603), so excluding
+/// them from <see cref="MaxImplementationAttempts"/> cannot let a task wait on quota forever: once a task has
+/// accumulated this many quota-interrupted invocations without a successful implementation attempt, it moves to
+/// <c>NeedsHuman</c> instead of waiting again.</param>
 public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<ValidationCommand> BuildCommands, IReadOnlyList<ValidationCommand> TestCommands,
-    int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual")
+    int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual", int MaxQuotaInterruptions = 20)
 {
     public static RepositoryConfiguration Default { get; } =
-        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual");
+        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20);
 }
 
 /// <summary>Everything <see cref="IGitHubPublisher"/> needs to push a task's committed branch and open a draft pull request for it.</summary>

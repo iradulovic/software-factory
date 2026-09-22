@@ -546,7 +546,8 @@ public sealed class PostgresStoreIntegrationTests
             Assert.False(await tasks.IsAgentAtQuotaAsync("NeverUsedAgent", CancellationToken.None));
             var quotaCheckStepId = await tasks.StartStepAsync(runId, "AgentImplementation", 2, CancellationToken.None);
             await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, runId, quotaCheckStepId, "Claude", DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow, 1, 1, "Failed", "", "rate limited", true, DateTimeOffset.UtcNow.AddHours(4), 2, false, null), CancellationToken.None);
+                DateTimeOffset.UtcNow, 1, 1, "Failed", "", "rate limited", true, DateTimeOffset.UtcNow.AddHours(4), 2, false, null,
+                CountsAsImplementationAttempt: false), CancellationToken.None);
             Assert.False(await tasks.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
 
             var checkedAt = DateTimeOffset.UtcNow;
@@ -577,7 +578,8 @@ public sealed class PostgresStoreIntegrationTests
             var quotaRunId = await tasks.StartRunAsync(quotaTaskId, "integration-worker", CancellationToken.None);
             var quotaStepId = await tasks.StartStepAsync(quotaRunId, "AgentImplementation", 1, CancellationToken.None);
             await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), quotaTaskId, quotaRunId, quotaStepId, "Codex", DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow, 1, 1, "Failed", "", "quota", true, DateTimeOffset.UtcNow.AddHours(-1), 1, false, null), CancellationToken.None);
+                DateTimeOffset.UtcNow, 1, 1, "Failed", "", "quota", true, DateTimeOffset.UtcNow.AddHours(-1), 1, false, null,
+                CountsAsImplementationAttempt: false), CancellationToken.None);
 
             Assert.Equal(1, await tasks.ResumeExpiredQuotaTasksAsync(CancellationToken.None));
             Assert.Equal("Pending", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@quotaTaskId", new { quotaTaskId }));
@@ -592,6 +594,77 @@ public sealed class PostgresStoreIntegrationTests
                 DELETE FROM factory.run WHERE task_id IN (@taskId,@quotaTaskId);
                 DELETE FROM factory.task WHERE id IN (@taskId,@quotaTaskId);
                 """, new { taskId, quotaTaskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task Quota_interruptions_are_excluded_from_the_implementation_attempt_budget_but_real_failures_are_not()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('attempt-classification-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@taskId,@repositoryId,'Attempt classification task','Implementing','main')
+                """, new { taskId, repositoryId });
+
+            var runId = await tasks.StartRunAsync(taskId, "integration-worker", CancellationToken.None);
+            var now = DateTimeOffset.UtcNow;
+
+            // Three quota interruptions in a row must not consume any of the implementation-attempt budget.
+            for (var i = 0; i < 3; i++)
+            {
+                var stepId = await tasks.StartStepAsync(runId, "AgentImplementation", i + 1, CancellationToken.None);
+                await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, runId, stepId, "Codex",
+                    now.AddMinutes(-10 + i), now.AddMinutes(-10 + i), 1, 1, "Failed", "", "quota", true, now.AddHours(5), i + 1, false, null,
+                    CountsAsImplementationAttempt: false), CancellationToken.None);
+            }
+            Assert.Equal(0, await tasks.CountAgentRunsAsync(taskId, CancellationToken.None));
+            Assert.Equal(3, await tasks.CountQuotaInterruptionsAsync(taskId, CancellationToken.None));
+            Assert.Null(await tasks.GetPreviousAttemptAsync(taskId, CancellationToken.None));
+
+            // A genuine, failed implementation attempt after those interruptions does count, and is what
+            // GetPreviousAttemptAsync reports even though the quota interruptions above are more recent overall.
+            var realStepId = await tasks.StartStepAsync(runId, "AgentImplementation", 4, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, runId, realStepId, "Codex", now.AddMinutes(-5), now.AddMinutes(-5),
+                1, 0, "Succeeded", "out", "", false, null, 4, false,
+                new AgentResult("completed", "Real attempt summary", ["dotnet test"], true, ["src/Real.cs"], [], false, null)), CancellationToken.None);
+
+            Assert.Equal(1, await tasks.CountAgentRunsAsync(taskId, CancellationToken.None));
+            Assert.Equal(3, await tasks.CountQuotaInterruptionsAsync(taskId, CancellationToken.None));
+            var previous = await tasks.GetPreviousAttemptAsync(taskId, CancellationToken.None);
+            Assert.NotNull(previous);
+            Assert.Equal("Real attempt summary", previous!.AgentSummary);
+            Assert.Contains("src/Real.cs", previous.ChangedFiles);
+
+            // A further real (non-quota) failure does consume the budget.
+            var secondRealStepId = await tasks.StartStepAsync(runId, "AgentImplementation", 5, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, runId, secondRealStepId, "Codex", now, now,
+                1, 1, "Failed", "", "compile error", false, null, 5, false, null), CancellationToken.None);
+            Assert.Equal(2, await tasks.CountAgentRunsAsync(taskId, CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.agent_run WHERE task_id=@taskId;
+                DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id=@taskId);
+                DELETE FROM factory.run WHERE task_id=@taskId;
+                DELETE FROM factory.task WHERE id=@taskId;
+                """, new { taskId });
             await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
         }
     }

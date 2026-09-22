@@ -26,8 +26,19 @@ public sealed class RepositoryConfigurationReaderTests
         Assert.Equal("auto-draft", configuration.Publish);
     }
 
+    [Fact]
+    public void Max_quota_interruptions_is_read_and_defaulted()
+    {
+        var configured = RepositoryConfigurationReader.Parse("""{"maxQuotaInterruptions":5}""", "origin/main");
+        var defaulted = RepositoryConfigurationReader.Parse("{}", "origin/main");
+
+        Assert.Equal(5, configured.MaxQuotaInterruptions);
+        Assert.Equal(RepositoryConfiguration.Default.MaxQuotaInterruptions, defaulted.MaxQuotaInterruptions);
+    }
+
     [Theory]
     [InlineData("""{"maxImplementationAttempts":0}""")]
+    [InlineData("""{"maxQuotaInterruptions":0}""")]
     [InlineData("""{"testCommands":["dotnet test",""]}""")]
     [InlineData("""{"testCommands":[[]]}""")]
     [InlineData("""{"testCommands":[[""]]}""")]
