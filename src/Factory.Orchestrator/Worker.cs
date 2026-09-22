@@ -5,8 +5,12 @@ using Microsoft.Extensions.Options;
 namespace Factory.Orchestrator;
 
 public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExecutor executor, LeaseMonitor leases,
-    IOptions<FactoryOptions> options, ILogger<Worker> logger) : BackgroundService
+    IEnumerable<IAgentRunner> agents, IOptions<FactoryOptions> options, ILogger<Worker> logger) : BackgroundService
 {
+    // The configured runners never change over the process lifetime, so their names are captured once rather
+    // than re-derived from the DI-resolved sequence on every poll iteration.
+    private readonly IReadOnlyList<string> _configuredAgents = agents.Select(a => a.Name).ToList();
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await migrator.MigrateAsync(stoppingToken);
@@ -15,8 +19,8 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExec
             try
             {
                 await tasks.RecordHeartbeatAsync(options.Value.WorkerId, Environment.MachineName, null, stoppingToken);
-                var resumed = await tasks.ResumeExpiredQuotaTasksAsync(stoppingToken);
-                if (resumed > 0) logger.LogInformation("Resumed {Count} task(s) whose quota cooldown has passed", resumed);
+                var resumed = await tasks.ResumeExpiredQuotaTasksAsync(_configuredAgents, stoppingToken);
+                if (resumed > 0) logger.LogInformation("Resumed {Count} task(s) now that a configured provider is available", resumed);
 
                 var task = await tasks.ClaimNextAsync(options.Value.WorkerId, leases.LeaseDuration, stoppingToken);
                 if (task is null) { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken); continue; }

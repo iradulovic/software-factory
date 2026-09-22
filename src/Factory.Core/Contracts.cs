@@ -61,9 +61,13 @@ public interface ITaskStore
     /// there has not been one yet.</summary>
     Task<PreviousAttemptSummary?> GetPreviousAttemptAsync(Guid taskId, CancellationToken cancellationToken);
 
-    /// <summary>Moves every task whose recorded quota reset time has passed from <see cref="FactoryTaskStatus.WaitingForQuota"/>
-    /// back to <see cref="FactoryTaskStatus.Pending"/>, and returns how many were resumed.</summary>
-    Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken);
+    /// <summary>Resumes the single highest-priority <see cref="FactoryTaskStatus.WaitingForQuota"/> task back to
+    /// <see cref="FactoryTaskStatus.Pending"/>, but only if at least one of <paramref name="configuredAgents"/> is
+    /// not currently at quota (per <see cref="RecordAgentQuotaStatusAsync"/>) — scheduled from provider
+    /// availability, never a waiting task's own invocation history, so a task that was never actually invoked
+    /// (every provider was already at quota on its first attempt) is never stuck forever. Resumes at most one
+    /// task per call, deliberately: see the implementation for why. Returns how many were resumed (0 or 1).</summary>
+    Task<int> ResumeExpiredQuotaTasksAsync(IReadOnlyList<string> configuredAgents, CancellationToken cancellationToken);
 
     /// <summary>Whether the named agent currently has a recorded quota status whose reset time has not yet
     /// passed. Backed by <see cref="RecordAgentQuotaStatusAsync"/>, independent of any particular task's run.</summary>
