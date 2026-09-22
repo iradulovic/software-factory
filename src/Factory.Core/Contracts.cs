@@ -147,6 +147,16 @@ public interface ITaskStore
     /// GitHub sync worker to observe and resolve to <see cref="FactoryTaskStatus.Completed"/> or <see cref="FactoryTaskStatus.Rejected"/>.</summary>
     Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken);
 
+    /// <summary>Persists (upserts) the most recently synchronized CI status for a task's published pull
+    /// request (SF-614) — always fully overwritten with what was just fetched, never merged with a previous
+    /// poll's, so a stale status can never be presented alongside a newer head commit than the one it actually
+    /// describes.</summary>
+    Task SetCiStatusAsync(Guid taskId, string overallStatus, string? headCommit, IReadOnlyList<PullRequestCheck> checks, string? error, CancellationToken cancellationToken);
+
+    /// <summary>The most recently synchronized CI status for a task, or <see langword="null"/> if it has never
+    /// been synchronized (never published, or not yet polled).</summary>
+    Task<TaskCiStatus?> GetCiStatusAsync(Guid taskId, CancellationToken cancellationToken);
+
     /// <summary>How many invocations count toward this task's <see cref="RepositoryConfiguration.MaxImplementationAttempts"/>
     /// budget — a quota-interrupted invocation (see <see cref="AgentRunRecord.CountsAsImplementationAttempt"/>)
     /// never got a real chance to implement anything, so it is excluded here even though it is still recorded in
@@ -232,6 +242,11 @@ public interface IGitHubClient
 
     /// <summary>The current state of a pull request the factory opened, or <see langword="null"/> if it could not be read.</summary>
     Task<PullRequestState?> GetPullRequestStateAsync(string owner, string name, int number, CancellationToken cancellationToken);
+
+    /// <summary>CI check status for a pull request's current head commit (SF-614). Never throws or returns
+    /// <see langword="null"/> on a read failure — reported explicitly via <see cref="PullRequestChecksResult.Error"/>
+    /// instead, so an authentication or network failure is never silently indistinguishable from "no checks configured."</summary>
+    Task<PullRequestChecksResult> GetPullRequestChecksAsync(string owner, string name, int number, CancellationToken cancellationToken);
 }
 public interface IRepositoryCache
 {

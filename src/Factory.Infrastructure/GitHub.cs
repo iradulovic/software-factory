@@ -135,6 +135,51 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
         var merged = document.RootElement.GetProperty("merged").GetBoolean();
         return new PullRequestState(merged, string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase));
     }
+
+    public async Task<PullRequestChecksResult> GetPullRequestChecksAsync(string owner, string name, int number, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "headRefOid,statusCheckRollup"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!result.Succeeded) return new PullRequestChecksResult(false, null, [], result.StandardError.Trim());
+
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var headSha = document.RootElement.GetProperty("headRefOid").GetString();
+        var checks = document.RootElement.GetProperty("statusCheckRollup").EnumerateArray().Select(ParseCheck).ToList();
+        return new PullRequestChecksResult(true, headSha, checks, null);
+    }
+
+    // Normalizes both shapes gh's statusCheckRollup can return — a GitHub Actions check run (status/conclusion)
+    // and a legacy commit status (state) — into the same three-state Pending/Success/Failure per check, so
+    // callers never need to know which kind produced a given result.
+    private static PullRequestCheck ParseCheck(JsonElement check)
+    {
+        var typeName = check.TryGetProperty("__typename", out var t) ? t.GetString() : null;
+        if (string.Equals(typeName, "StatusContext", StringComparison.Ordinal))
+        {
+            var contextState = check.GetProperty("state").GetString() ?? "";
+            var conclusion = contextState.ToUpperInvariant() switch
+            {
+                "SUCCESS" => PullRequestCiStatus.Success,
+                "ERROR" or "FAILURE" => PullRequestCiStatus.Failure,
+                _ => PullRequestCiStatus.Pending
+            };
+            var contextUrl = check.TryGetProperty("targetUrl", out var target) ? target.GetString() : null;
+            return new PullRequestCheck(check.GetProperty("context").GetString() ?? "", conclusion, contextUrl);
+        }
+
+        var status = check.TryGetProperty("status", out var s) ? s.GetString() : null;
+        var rawConclusion = check.TryGetProperty("conclusion", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
+        var checkConclusion = !string.Equals(status, "COMPLETED", StringComparison.OrdinalIgnoreCase) ? PullRequestCiStatus.Pending
+            : (rawConclusion?.ToUpperInvariant()) switch
+            {
+                "SUCCESS" or "NEUTRAL" or "SKIPPED" => PullRequestCiStatus.Success,
+                "FAILURE" or "CANCELLED" or "TIMED_OUT" or "ACTION_REQUIRED" or "STARTUP_FAILURE" or "STALE" => PullRequestCiStatus.Failure,
+                _ => PullRequestCiStatus.Pending
+            };
+        var detailsUrl = check.TryGetProperty("detailsUrl", out var details) ? details.GetString() : null;
+        return new PullRequestCheck(check.GetProperty("name").GetString() ?? "", checkConclusion, detailsUrl);
+    }
 }
 
 /// <summary>

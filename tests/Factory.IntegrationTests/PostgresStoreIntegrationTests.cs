@@ -1395,6 +1395,71 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Ci_status_is_fully_overwritten_on_each_sync_so_a_stale_head_commit_never_survives_alongside_a_newer_one()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('ci-status-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@taskId,@repositoryId,'Published task','Published','main')", new { taskId, repositoryId });
+
+            Assert.Null(await tasks.GetCiStatusAsync(taskId, CancellationToken.None));
+
+            var firstChecks = new List<PullRequestCheck> { new("Backend build and tests", PullRequestCiStatus.Pending, "https://example.invalid/1") };
+            await tasks.SetCiStatusAsync(taskId, PullRequestCiStatus.Pending, "commit-1", firstChecks, null, CancellationToken.None);
+            var afterFirst = await tasks.GetCiStatusAsync(taskId, CancellationToken.None);
+            Assert.NotNull(afterFirst);
+            Assert.Equal("commit-1", afterFirst!.HeadCommit);
+            Assert.Equal(PullRequestCiStatus.Pending, afterFirst.OverallStatus);
+            var firstCheck = Assert.Single(afterFirst.Checks);
+            Assert.Equal("Backend build and tests", firstCheck.Name);
+
+            // A later poll observes a new commit (e.g. an SF-613 continuation republished) with different checks —
+            // this must fully replace the previous poll's result, never merge with or sit alongside it.
+            var secondChecks = new List<PullRequestCheck>
+            {
+                new("Backend build and tests", PullRequestCiStatus.Success, "https://example.invalid/1"),
+                new("Frontend lint", PullRequestCiStatus.Success, "https://example.invalid/2")
+            };
+            await tasks.SetCiStatusAsync(taskId, PullRequestCiStatus.Success, "commit-2", secondChecks, null, CancellationToken.None);
+            var afterSecond = await tasks.GetCiStatusAsync(taskId, CancellationToken.None);
+            Assert.NotNull(afterSecond);
+            Assert.Equal("commit-2", afterSecond!.HeadCommit);
+            Assert.Equal(PullRequestCiStatus.Success, afterSecond.OverallStatus);
+            Assert.Equal(2, afterSecond.Checks.Count);
+
+            // A read failure (authentication, network) is recorded explicitly, not silently dropped or confused
+            // with "no checks configured."
+            await tasks.SetCiStatusAsync(taskId, PullRequestCiStatus.Unavailable, null, [], "gh: authentication required", CancellationToken.None);
+            var afterFailure = await tasks.GetCiStatusAsync(taskId, CancellationToken.None);
+            Assert.NotNull(afterFailure);
+            Assert.Equal(PullRequestCiStatus.Unavailable, afterFailure!.OverallStatus);
+            Assert.Null(afterFailure.HeadCommit);
+            Assert.Empty(afterFailure.Checks);
+            Assert.Contains("authentication required", afterFailure.Error);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_ci_status WHERE task_id=@taskId", new { taskId });
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id=@taskId", new { taskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Quota_interruptions_are_excluded_from_the_implementation_attempt_budget_but_real_failures_are_not()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

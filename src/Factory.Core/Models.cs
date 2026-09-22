@@ -197,6 +197,38 @@ public sealed record PullRequestState(bool Merged, bool Closed);
 /// <see cref="IGitHubClient"/> to look up its pull request's current state.</summary>
 public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, string RepositoryName, int PullRequestNumber);
 
+/// <summary>One CI check's outcome (SF-614), normalized from either a GitHub Actions check run or a legacy
+/// commit status into the same shape. <see cref="Conclusion"/> is one of <see cref="PullRequestCiStatus.Pending"/>,
+/// <see cref="PullRequestCiStatus.Success"/>, or <see cref="PullRequestCiStatus.Failure"/>.</summary>
+public sealed record PullRequestCheck(string Name, string Conclusion, string? Url);
+
+/// <summary>CI check status for a pull request, fetched together with the exact commit GitHub reports as its
+/// current head (SF-614) — so a check result can never be attributed to a different, possibly stale, commit
+/// than the one it actually ran against. <see cref="Succeeded"/> false means the check data itself could not
+/// be read (authentication, network, missing permissions) — reported via <see cref="Error"/> explicitly, never
+/// conflated with "no checks configured" (an empty, successful <see cref="Checks"/> list).</summary>
+public sealed record PullRequestChecksResult(bool Succeeded, string? HeadSha, IReadOnlyList<PullRequestCheck> Checks, string? Error);
+
+/// <summary>The most recently synchronized CI status for a task's published pull request (SF-614) — always
+/// fully overwritten by the latest poll, never merged with a previous one, so a status can never survive
+/// alongside a newer head commit than the one it was actually fetched for.</summary>
+public sealed record TaskCiStatus(Guid TaskId, string OverallStatus, string? HeadCommit, IReadOnlyList<PullRequestCheck> Checks, string? Error, DateTimeOffset SyncedAt);
+
+/// <summary>Derives one overall status from a <see cref="PullRequestChecksResult"/> (SF-614) — pure and
+/// independently testable, the single place this decision is made so the sync worker and the API/dashboard can
+/// never disagree about what a given set of checks means.</summary>
+public static class PullRequestCiStatus
+{
+    public const string Pending = "Pending", Success = "Success", Failure = "Failure", NoChecks = "NoChecks", Unavailable = "Unavailable";
+
+    public static string Overall(PullRequestChecksResult result) =>
+        !result.Succeeded ? Unavailable
+        : result.Checks.Count == 0 ? NoChecks
+        : result.Checks.Any(c => c.Conclusion == Failure) ? Failure
+        : result.Checks.Any(c => c.Conclusion == Pending) ? Pending
+        : Success;
+}
+
 /// <summary>A resting task with a recorded worktree, identified well enough for <see cref="WorktreeCleanupPolicy"/>
 /// to decide whether to remove it and for <see cref="IWorktreeManager"/> to remove it.</summary>
 public sealed record WorktreeCleanupCandidate(Guid TaskId, FactoryTaskStatus Status, string WorktreePath, string RepositoryOwner, string RepositoryName);

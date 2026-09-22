@@ -565,6 +565,34 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return (await c.QueryAsync<PublishedTaskRef>(new CommandDefinition(sql, cancellationToken: cancellationToken))).AsList();
     }
 
+    public async Task SetCiStatusAsync(Guid taskId, string overallStatus, string? headCommit, IReadOnlyList<PullRequestCheck> checks, string? error, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO factory.task_ci_status(task_id,head_commit,overall_status,checks_json,error,synced_at)
+            VALUES(@taskId,@headCommit,@overallStatus,@checksJson,@error,@syncedAt)
+            ON CONFLICT(task_id) DO UPDATE SET
+              head_commit=excluded.head_commit, overall_status=excluded.overall_status,
+              checks_json=excluded.checks_json, error=excluded.error, synced_at=excluded.synced_at
+            """;
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, new
+        {
+            taskId, headCommit, overallStatus, checksJson = JsonSerializer.Serialize(checks), error, syncedAt = clock.UtcNow
+        }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<TaskCiStatus?> GetCiStatusAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT task_id AS "TaskId", overall_status AS "OverallStatus", head_commit AS "HeadCommit",
+              checks_json AS "ChecksJson", error AS "Error", synced_at AS "SyncedAt"
+            FROM factory.task_ci_status WHERE task_id=@taskId
+            """;
+        await using var c = Connection();
+        var row = await c.QuerySingleOrDefaultAsync<TaskCiStatusRow>(new CommandDefinition(sql, new { taskId }, cancellationToken: cancellationToken));
+        return row?.ToModel();
+    }
+
     public async Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken)
     {
         // SF-613: an explicit human continuation resets the budget — only runs since the most recent recorded
@@ -826,6 +854,19 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return await c.ExecuteScalarAsync<int>(new CommandDefinition(
             "SELECT count(*)::int FROM factory.task WHERE status IN ('ReadyForPublish','Published')", cancellationToken: cancellationToken));
     }
+}
+
+internal sealed class TaskCiStatusRow
+{
+    public Guid TaskId { get; init; }
+    public string OverallStatus { get; init; } = "";
+    public string? HeadCommit { get; init; }
+    public string ChecksJson { get; init; } = "[]";
+    public string? Error { get; init; }
+    public DateTime SyncedAt { get; init; }
+
+    public TaskCiStatus ToModel() => new(TaskId, OverallStatus, HeadCommit,
+        JsonSerializer.Deserialize<List<PullRequestCheck>>(ChecksJson) ?? [], Error, new DateTimeOffset(DateTime.SpecifyKind(SyncedAt, DateTimeKind.Utc)));
 }
 
 internal sealed class TaskFeedbackRow

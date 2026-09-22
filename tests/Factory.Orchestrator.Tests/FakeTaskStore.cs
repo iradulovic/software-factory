@@ -178,6 +178,15 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<PublishedTaskRef>>(PublishedTasks);
 
+    public List<(Guid TaskId, string OverallStatus, string? HeadCommit, IReadOnlyList<PullRequestCheck> Checks, string? Error)> CiStatusesSet { get; } = [];
+    public Task SetCiStatusAsync(Guid taskId, string overallStatus, string? headCommit, IReadOnlyList<PullRequestCheck> checks, string? error, CancellationToken cancellationToken)
+    {
+        CiStatusesSet.Add((taskId, overallStatus, headCommit, checks, error));
+        return Task.CompletedTask;
+    }
+    public TaskCiStatus? CiStatus { get; set; }
+    public Task<TaskCiStatus?> GetCiStatusAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(CiStatus);
+
     public Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken) =>
         Task.FromResult(AgentRuns.Count(r => r.TaskId == taskId && r.CountsAsImplementationAttempt));
     public Task<int> CountQuotaInterruptionsAsync(Guid taskId, CancellationToken cancellationToken) =>
