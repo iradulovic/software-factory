@@ -231,6 +231,50 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed],
             FactoryTaskStatus.Cancelled, false, "Cancelled by operator", cancellationToken);
 
+    private static readonly IReadOnlyCollection<FactoryTaskStatus> ContinuableStatuses =
+    [
+        FactoryTaskStatus.Failed, FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Rejected,
+        FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published
+    ];
+
+    public async Task<bool> ContinueWithFeedbackAsync(Guid taskId, string feedback, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (currentText is null) return false;
+        var current = Enum.Parse<FactoryTaskStatus>(currentText);
+        if (!ContinuableStatuses.Contains(current)) return false;
+        TaskStateMachine.EnsureCanTransition(current, FactoryTaskStatus.Pending);
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_feedback(id,task_id,body,created_by) VALUES(@id,@taskId,@feedback,'operator')",
+            new { id = Guid.NewGuid(), taskId, feedback }, transaction, cancellationToken: cancellationToken));
+        // The existing branch/worktree are deliberately left untouched — the whole point is to keep working on
+        // the same changes, not start over, so a later publish updates the same pull request instead of a new one.
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId",
+            new { taskId }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,@current,'Pending','Continued with operator feedback','human')",
+            new { taskId, current = current.ToString() }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<IReadOnlyList<TaskFeedback>> GetFeedbackAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id AS "Id",task_id AS "TaskId",body AS "Body",created_at AS "CreatedAt",created_by AS "CreatedBy"
+            FROM factory.task_feedback WHERE task_id=@taskId ORDER BY created_at
+            """;
+        await using var c = Connection();
+        var rows = await c.QueryAsync<TaskFeedbackRow>(new CommandDefinition(sql, new { taskId }, cancellationToken: cancellationToken));
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
     public async Task<bool> CancelPendingForIssueAsync(long issueId, string reason, CancellationToken cancellationToken)
     {
         TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled);
@@ -523,9 +567,16 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 
     public async Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken)
     {
+        // SF-613: an explicit human continuation resets the budget — only runs since the most recent recorded
+        // feedback count, so the fresh allowance it grants is bounded (MaxImplementationAttempts again), never
+        // unlimited. With no feedback ever recorded, this counts the task's whole history, unchanged from before.
+        const string sql = """
+            SELECT count(*)::int FROM factory.agent_run
+            WHERE task_id=@taskId AND counts_as_implementation_attempt
+              AND started_at > COALESCE((SELECT max(created_at) FROM factory.task_feedback WHERE task_id=@taskId), '-infinity'::timestamptz)
+            """;
         await using var c = Connection();
-        return await c.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT count(*)::int FROM factory.agent_run WHERE task_id=@taskId AND counts_as_implementation_attempt", new { taskId }, cancellationToken: cancellationToken));
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { taskId }, cancellationToken: cancellationToken));
     }
 
     public async Task<int> CountQuotaInterruptionsAsync(Guid taskId, CancellationToken cancellationToken)
@@ -775,6 +826,17 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return await c.ExecuteScalarAsync<int>(new CommandDefinition(
             "SELECT count(*)::int FROM factory.task WHERE status IN ('ReadyForPublish','Published')", cancellationToken: cancellationToken));
     }
+}
+
+internal sealed class TaskFeedbackRow
+{
+    public Guid Id { get; init; }
+    public Guid TaskId { get; init; }
+    public string Body { get; init; } = "";
+    public DateTime CreatedAt { get; init; }
+    public string CreatedBy { get; init; } = "";
+
+    public TaskFeedback ToModel() => new(Id, TaskId, Body, new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)), CreatedBy);
 }
 
 internal sealed class TaskDependencyRow

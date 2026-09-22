@@ -132,6 +132,18 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task Attempt_context_carries_the_most_recent_operator_feedback()
+    {
+        var harness = new Harness();
+        var feedback = new TaskFeedback(Guid.NewGuid(), harness.ClaimedTask.Id, "Quote CSV fields containing commas.", DateTimeOffset.UtcNow, "operator");
+        harness.Store.Feedback = [feedback];
+
+        await harness.ExecuteAsync();
+
+        Assert.Same(feedback, harness.WrittenAttempt!.Feedback);
+    }
+
+    [Fact]
     public async Task Exceeding_the_attempt_limit_fails_before_invoking_the_agent_again()
     {
         var harness = new Harness { Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 1, 1, true) };

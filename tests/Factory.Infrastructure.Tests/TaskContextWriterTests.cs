@@ -58,6 +58,30 @@ public sealed class TaskContextWriterTests
     }
 
     [Fact]
+    public async Task Generated_task_file_surfaces_the_most_recent_operator_feedback()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-context-");
+        try
+        {
+            var feedback = new TaskFeedback(Guid.NewGuid(), Task.Id, "The CSV export must quote fields containing commas.", DateTimeOffset.UtcNow, "operator");
+            await new TaskContextWriter().WriteAsync(root.FullName, Repository, null, Task,
+                new AttemptContext(1, 2, null, feedback), CancellationToken.None);
+            var content = await File.ReadAllTextAsync(Path.Combine(root.FullName, ".factory", "task.md"));
+
+            Assert.Contains("## Operator feedback", content);
+            Assert.Contains("The CSV export must quote fields containing commas.", content);
+        }
+        finally { root.Delete(true); }
+    }
+
+    [Fact]
+    public async Task Generated_task_file_omits_the_feedback_section_when_none_was_given()
+    {
+        var content = await WriteAndReadAsync();
+        Assert.DoesNotContain("## Operator feedback", content);
+    }
+
+    [Fact]
     public async Task Stale_result_from_an_earlier_attempt_is_deleted_before_writing_the_new_context()
     {
         var root = Directory.CreateTempSubdirectory("factory-context-");

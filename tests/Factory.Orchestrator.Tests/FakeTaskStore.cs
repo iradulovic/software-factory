@@ -35,6 +35,15 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken) => Task.FromResult(false);
     public Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(false);
     public Task<bool> CancelAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(false);
+    public List<string> FeedbackRecorded { get; } = [];
+    public bool NextContinueWithFeedbackAllowed { get; set; } = true;
+    public Task<bool> ContinueWithFeedbackAsync(Guid taskId, string feedback, CancellationToken cancellationToken)
+    {
+        if (NextContinueWithFeedbackAllowed) FeedbackRecorded.Add(feedback);
+        return Task.FromResult(NextContinueWithFeedbackAllowed);
+    }
+    public IReadOnlyList<TaskFeedback> Feedback { get; set; } = [];
+    public Task<IReadOnlyList<TaskFeedback>> GetFeedbackAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(Feedback);
     public Task<bool> CancelPendingForIssueAsync(long issueId, string reason, CancellationToken cancellationToken) => Task.FromResult(false);
 
     public List<(string WorkerId, string Host, Guid? CurrentTaskId)> Heartbeats { get; } = [];

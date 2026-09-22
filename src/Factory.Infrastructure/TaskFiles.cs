@@ -106,6 +106,7 @@ public sealed class TaskContextWriter : ITaskContextWriter
 
             This is attempt {attempt.Number} of {attempt.MaxAttempts}.
 
+            {DescribeFeedback(attempt.Feedback)}
             {DescribePreviousAttempt(attempt.Previous)}
             {CompletionContract}
             """;
@@ -149,6 +150,20 @@ public sealed class TaskContextWriter : ITaskContextWriter
         }
         ```
         """;
+
+    private static string DescribeFeedback(TaskFeedback? feedback)
+    {
+        if (feedback is null) return "";
+        return $"""
+            ## Operator feedback
+
+            A human reviewed this task's work and provided the following instructions. Address this directly —
+            it takes priority over any conflicting earlier assumption.
+
+            {feedback.Body}
+
+            """;
+    }
 
     private static string DescribePreviousAttempt(PreviousAttemptSummary? previous)
     {

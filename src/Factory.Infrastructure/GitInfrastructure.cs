@@ -121,10 +121,32 @@ public sealed partial class GitWorktreeManager(IRepositoryCache cache, IProcessR
                 throw new InvalidOperationException("Recorded worktree is missing or is not a Git worktree.");
             return location;
         }
+
         Directory.CreateDirectory(Path.GetDirectoryName(location.Path)!);
-        var result = await runner.RunAsync(new ProcessRequest("git", ["worktree", "add", location.Path, "-b", location.BranchName, $"origin/{task.BaseBranch}"], cachePath, Timeout: TimeSpan.FromMinutes(5)), cancellationToken);
-        if (!result.Succeeded) throw new InvalidOperationException($"Worktree creation failed: {result.StandardError}");
+        // SF-613: worktree cleanup (WorktreeCleanupExecutor) clears both recorded fields before removing the
+        // directory, but never deletes the branch itself from the cache — so a task resumed after cleanup (an
+        // operator continuation, or a plain retry) must restore that still-existing branch with its commits
+        // intact, rather than blindly creating a new one from the base and silently orphaning previously pushed
+        // work (and any already-open pull request) on a branch nothing points at anymore.
+        var branchExists = await BranchExistsAsync(cachePath, location.BranchName, cancellationToken);
+        var arguments = branchExists
+            ? new[] { "worktree", "add", location.Path, location.BranchName }
+            : new[] { "worktree", "add", location.Path, "-b", location.BranchName, $"origin/{task.BaseBranch}" };
+        var result = await runner.RunAsync(new ProcessRequest("git", arguments, cachePath, Timeout: TimeSpan.FromMinutes(5)), cancellationToken);
+        if (!result.Succeeded)
+        {
+            var reason = branchExists
+                ? $"Restoring the previously cleaned-up branch '{location.BranchName}' failed: {result.StandardError.Trim()}"
+                : $"Worktree creation failed: {result.StandardError.Trim()}";
+            throw new InvalidOperationException(reason);
+        }
         return location;
+    }
+
+    private async Task<bool> BranchExistsAsync(string cachePath, string branchName, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("git", ["show-ref", "--verify", "--quiet", $"refs/heads/{branchName}"], cachePath, Timeout: TimeSpan.FromSeconds(30)), cancellationToken);
+        return result.Succeeded;
     }
 
     public async Task RemoveAsync(string owner, string name, string worktreePath, CancellationToken cancellationToken)

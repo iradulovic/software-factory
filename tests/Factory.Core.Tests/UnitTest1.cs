@@ -12,6 +12,8 @@ public sealed class TaskStateMachineTests
     [InlineData(Factory.Core.FactoryTaskStatus.Published, Factory.Core.FactoryTaskStatus.Completed)]
     [InlineData(Factory.Core.FactoryTaskStatus.Published, Factory.Core.FactoryTaskStatus.Rejected)]
     [InlineData(Factory.Core.FactoryTaskStatus.Rejected, Factory.Core.FactoryTaskStatus.Pending)]
+    [InlineData(Factory.Core.FactoryTaskStatus.ReadyForPublish, Factory.Core.FactoryTaskStatus.Pending)]
+    [InlineData(Factory.Core.FactoryTaskStatus.Published, Factory.Core.FactoryTaskStatus.Pending)]
     public void Allows_expected_lifecycle_transitions(Factory.Core.FactoryTaskStatus from, Factory.Core.FactoryTaskStatus to) =>
         Assert.True(Factory.Core.TaskStateMachine.CanTransition(from, to));
 

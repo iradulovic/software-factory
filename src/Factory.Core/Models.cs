@@ -18,6 +18,11 @@ public enum AddDependencyOutcome { Added, AlreadyExists, WouldCreateCycle, TaskN
 /// are read alongside the edge so the operator can see what is blocking a task without a second lookup.</summary>
 public sealed record TaskDependency(Guid TaskId, Guid DependsOnTaskId, string DependsOnTitle, FactoryTaskStatus DependsOnStatus);
 
+/// <summary>One piece of operator feedback recorded against a task (SF-613) — a correction or a manual-test
+/// failure attached when the operator continues a resting task rather than accepting it as-is. Every feedback
+/// row stays permanently, so prior instructions remain auditable even once superseded by a later one.</summary>
+public sealed record TaskFeedback(Guid Id, Guid TaskId, string Body, DateTimeOffset CreatedAt, string CreatedBy);
+
 public sealed record FactoryTask(
     Guid Id,
     long RepositoryId,
@@ -197,8 +202,10 @@ public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, strin
 public sealed record WorktreeCleanupCandidate(Guid TaskId, FactoryTaskStatus Status, string WorktreePath, string RepositoryOwner, string RepositoryName);
 
 /// <summary>Where a task sits in its bounded implementation-attempt budget, for both enforcement and for
-/// telling the agent which attempt this is.</summary>
-public sealed record AttemptContext(int Number, int MaxAttempts, PreviousAttemptSummary? Previous);
+/// telling the agent which attempt this is. <paramref name="Feedback"/> is the most recent operator feedback
+/// recorded for this task (SF-613), if any — surfaced so an explicit correction or manual-test failure the
+/// operator attached actually reaches the next generated context, not just the prior attempt's own evidence.</summary>
+public sealed record AttemptContext(int Number, int MaxAttempts, PreviousAttemptSummary? Previous, TaskFeedback? Feedback = null);
 
 /// <summary>The prior implementation attempt's outcome, fed back into <c>.factory/task.md</c> so a repeat
 /// attempt learns from what went wrong instead of reproducing it.</summary>

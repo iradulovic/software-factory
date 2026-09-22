@@ -23,6 +23,23 @@ public interface ITaskStore
     Task TransitionAsync(Guid taskId, FactoryTaskStatus expected, FactoryTaskStatus next, string? failureReason, CancellationToken cancellationToken);
     Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken);
     Task<bool> CancelAsync(Guid taskId, CancellationToken cancellationToken);
+
+    /// <summary>Records operator feedback (a correction, or a manual-test failure) and, atomically with that
+    /// record, returns the task to <see cref="FactoryTaskStatus.Pending"/> for a fresh implementation attempt
+    /// that incorporates it (SF-613) — from any resting state a human might reasonably act on (<see cref="FactoryTaskStatus.Failed"/>,
+    /// <see cref="FactoryTaskStatus.WaitingForQuota"/>, <see cref="FactoryTaskStatus.NeedsHuman"/>, <see cref="FactoryTaskStatus.Rejected"/>,
+    /// <see cref="FactoryTaskStatus.ReadyForPublish"/>, or <see cref="FactoryTaskStatus.Published"/>), never mid-execution.
+    /// The existing worktree and branch are reused unchanged, so a subsequent publish updates the same pull
+    /// request instead of creating a duplicate one. Every <c>agent_run</c> recorded before this call is excluded
+    /// from the next implementation-attempt budget check (see <see cref="CountAgentRunsAsync"/>), so this always
+    /// grants a bounded, fresh <see cref="RepositoryConfiguration.MaxImplementationAttempts"/> allowance rather
+    /// than either staying permanently exhausted or granting unlimited retries. Returns <see langword="false"/>
+    /// if the task does not currently rest in one of the allowed statuses.</summary>
+    Task<bool> ContinueWithFeedbackAsync(Guid taskId, string feedback, CancellationToken cancellationToken);
+
+    /// <summary>Every piece of operator feedback recorded for a task, oldest first — permanent and auditable,
+    /// even once a later continuation supersedes it (SF-613).</summary>
+    Task<IReadOnlyList<TaskFeedback>> GetFeedbackAsync(Guid taskId, CancellationToken cancellationToken);
     Task SetWorkspaceAsync(Guid taskId, string branchName, string worktreePath, CancellationToken cancellationToken);
     Task<Guid> StartRunAsync(Guid taskId, string workerId, CancellationToken cancellationToken);
     Task<Guid> StartStepAsync(Guid runId, string stepType, int attempt, CancellationToken cancellationToken);
@@ -131,8 +148,12 @@ public interface ITaskStore
     Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken);
 
     /// <summary>How many invocations count toward this task's <see cref="RepositoryConfiguration.MaxImplementationAttempts"/>
-    /// budget, across every run — a quota-interrupted invocation (see <see cref="AgentRunRecord.CountsAsImplementationAttempt"/>)
-    /// never got a real chance to implement anything, so it is excluded here even though it is still recorded in full.</summary>
+    /// budget — a quota-interrupted invocation (see <see cref="AgentRunRecord.CountsAsImplementationAttempt"/>)
+    /// never got a real chance to implement anything, so it is excluded here even though it is still recorded in
+    /// full. Only counts runs since the task's most recent <see cref="ContinueWithFeedbackAsync"/> call, if any
+    /// (SF-613) — an explicit human continuation always grants a bounded, fresh budget rather than either
+    /// staying permanently exhausted or granting unlimited retries; with no recorded feedback, this counts
+    /// every run across the task's whole history, exactly as before SF-613.</summary>
     Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken);
 
     /// <summary>How many quota-interrupted invocations this task has accumulated, across every run — the separate

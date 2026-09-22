@@ -57,6 +57,42 @@ public sealed class GitRepositoryCacheTests
     }
 
     [Fact]
+    public async Task Worktree_cleanup_leaves_the_branch_intact_and_a_later_create_restores_it_instead_of_starting_fresh()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-git-");
+        try
+        {
+            var git = new TestGit(root.FullName);
+            var upstream = await git.CreateUpstreamAsync("first");
+            var options = Options.Create(new FactoryOptions { RootDirectory = Path.Combine(root.FullName, "factory") });
+            var repository = new GitHubRepository(1, "acme", "billing", upstream, "main", true);
+            var cache = new RepositoryCache(git.Runner, options);
+            var manager = new GitWorktreeManager(cache, git.Runner, options);
+            // The task object has no recorded WorktreePath/BranchName, matching what ClearWorkspaceIfStatusUnchangedAsync
+            // leaves behind after cleanup — the same nulled state a task starts from before it has ever run too.
+            var task = NewTask("Restore after cleanup", 7);
+
+            var first = await manager.CreateAsync(repository, task, CancellationToken.None);
+            await File.WriteAllTextAsync(Path.Combine(first.Path, "Feature.cs"), "class Feature {}");
+            await git.RunAsync(first.Path, "add", "Feature.cs");
+            await git.RunAsync(first.Path, "commit", "--quiet", "-m", "in-progress work");
+            var committedSha = await git.RunAsync(first.Path, "rev-parse", "HEAD");
+
+            // Mirrors WorktreeCleanupExecutor: removes the worktree directory but never deletes the branch itself.
+            var cachePath = await cache.PrepareAsync(repository, CancellationToken.None);
+            await git.RunAsync(cachePath, "worktree", "remove", "--force", first.Path);
+            Assert.False(Directory.Exists(first.Path));
+
+            var restored = await manager.CreateAsync(repository, task, CancellationToken.None);
+
+            Assert.Equal(first, restored);
+            // The prior commit survived — this is a restore of the existing branch, not a fresh one from base.
+            Assert.Equal(committedSha, await git.RunAsync(restored.Path, "rev-parse", "HEAD"));
+        }
+        finally { TestGit.DeleteRecursively(root); }
+    }
+
+    [Fact]
     public async Task Factory_directory_is_excluded_and_inspector_reports_only_real_changes()
     {
         var root = Directory.CreateTempSubdirectory("factory-git-");
