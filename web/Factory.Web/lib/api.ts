@@ -4,7 +4,7 @@ export const taskSchema = z.object({
   id: z.string(), title: z.string(), repository: z.string(), issueNumber: z.number().nullable(), status: z.string(),
   agent: z.string(), createdAt: z.string(), startedAt: z.string().nullable(), completedAt: z.string().nullable(),
   durationSeconds: z.number(), result: z.string().nullable(), branchName: z.string().nullable().optional(), worktreePath: z.string().nullable().optional(), failureReason: z.string().nullable().optional(),
-  priority: z.number()
+  priority: z.number(), reviewMinutes: z.number().nullable().optional()
 });
 export type FactoryTask = z.infer<typeof taskSchema>;
 export const taskDependencySchema = z.object({

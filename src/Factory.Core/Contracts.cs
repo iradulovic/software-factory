@@ -157,6 +157,15 @@ public interface ITaskStore
     /// been synchronized (never published, or not yet polled).</summary>
     Task<TaskCiStatus?> GetCiStatusAsync(Guid taskId, CancellationToken cancellationToken);
 
+    /// <summary>Small outcome/review-effort metrics computed directly from <c>task_event</c>, <c>agent_run</c>,
+    /// <c>task_ci_status</c>, and any recorded review time, since <paramref name="since"/> (SF-617). See
+    /// <see cref="OutcomeMetrics"/> for exact per-field definitions.</summary>
+    Task<OutcomeMetrics> GetOutcomeMetricsAsync(DateTimeOffset since, CancellationToken cancellationToken);
+
+    /// <summary>Records how many minutes a human spent reviewing a task — optional, operator-entered, never
+    /// inferred (SF-617). Overwrites any previously recorded value and its timestamp.</summary>
+    Task SetReviewMinutesAsync(Guid taskId, int minutes, CancellationToken cancellationToken);
+
     /// <summary>How many invocations count toward this task's <see cref="RepositoryConfiguration.MaxImplementationAttempts"/>
     /// budget — a quota-interrupted invocation (see <see cref="AgentRunRecord.CountsAsImplementationAttempt"/>)
     /// never got a real chance to implement anything, so it is excluded here even though it is still recorded in

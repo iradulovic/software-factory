@@ -187,6 +187,11 @@ internal sealed class FakeTaskStore : ITaskStore
     public TaskCiStatus? CiStatus { get; set; }
     public Task<TaskCiStatus?> GetCiStatusAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(CiStatus);
 
+    public OutcomeMetrics? OutcomeMetrics { get; set; }
+    public Task<OutcomeMetrics> GetOutcomeMetricsAsync(DateTimeOffset since, CancellationToken cancellationToken) => Task.FromResult(OutcomeMetrics!);
+    public List<(Guid TaskId, int Minutes)> ReviewMinutesSet { get; } = [];
+    public Task SetReviewMinutesAsync(Guid taskId, int minutes, CancellationToken cancellationToken) { ReviewMinutesSet.Add((taskId, minutes)); return Task.CompletedTask; }
+
     public Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken) =>
         Task.FromResult(AgentRuns.Count(r => r.TaskId == taskId && r.CountsAsImplementationAttempt));
     public Task<int> CountQuotaInterruptionsAsync(Guid taskId, CancellationToken cancellationToken) =>

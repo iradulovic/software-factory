@@ -1460,6 +1460,108 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Outcome_metrics_attribute_a_representative_history_correctly_including_fallback_and_rejected_work_and_respect_the_window()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('outcome-metrics-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var eventsTaskId = Guid.NewGuid();
+        var ciSuccessId = Guid.NewGuid();
+        var ciFailureId = Guid.NewGuid();
+        var ciOldId = Guid.NewGuid();
+        var reviewId1 = Guid.NewGuid();
+        var reviewId2 = Guid.NewGuid();
+        var reviewOldId = Guid.NewGuid();
+        var allTaskIds = new[] { eventsTaskId, ciSuccessId, ciFailureId, ciOldId, reviewId1, reviewId2, reviewOldId };
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch)
+                SELECT unnest(@ids),@repositoryId,'Outcome metrics task','Pending','main'
+                """, new { ids = allTaskIds, repositoryId });
+
+            var since = DateTimeOffset.UtcNow.AddDays(-7);
+            var inWindow = DateTimeOffset.UtcNow.AddDays(-1);
+            var outsideWindow = DateTimeOffset.UtcNow.AddDays(-30);
+
+            // Representative task_event history: fallback (quota wait then resume, excluded from Retries),
+            // a human intervention followed by a genuine retry, and both merged and rejected outcomes — plus
+            // one event well outside the window, to prove it is never counted.
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor,occurred_at) VALUES
+                  (@eventsTaskId,'Validating','ReadyForPublish','validated','orchestrator',@inWindow),
+                  (@eventsTaskId,'Published','Completed',NULL,'orchestrator',@inWindow),
+                  (@eventsTaskId,'Published','Rejected','closed without merge','orchestrator',@inWindow),
+                  (@eventsTaskId,'Failed','Pending','Retried by operator','human',@inWindow),
+                  (@eventsTaskId,'WaitingForQuota','Pending',NULL,'orchestrator',@inWindow),
+                  (@eventsTaskId,'Implementing','WaitingForQuota',NULL,'orchestrator',@inWindow),
+                  (@eventsTaskId,'Planning','NeedsHuman','ambiguous requirement','orchestrator',@inWindow),
+                  (@eventsTaskId,'Validating','ReadyForPublish','validated (stale)','orchestrator',@outsideWindow)
+                """, new { eventsTaskId, inWindow, outsideWindow });
+
+            var runId = await tasks.StartRunAsync(eventsTaskId, "integration-worker", CancellationToken.None);
+            var succeededStepId = await tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), eventsTaskId, runId, succeededStepId, "Codex", inWindow, inWindow, 1, 0, "Succeeded", "", "", false, null, 1, false, null), CancellationToken.None);
+            var failedStepId = await tasks.StartStepAsync(runId, "AgentImplementation", 2, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), eventsTaskId, runId, failedStepId, "Codex", inWindow, inWindow, 1, 1, "Failed", "", "boom", false, null, 2, false, null), CancellationToken.None);
+            var quotaStepId = await tasks.StartStepAsync(runId, "AgentImplementation", 3, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), eventsTaskId, runId, quotaStepId, "Codex", inWindow, inWindow, 1, 1, "Failed", "", "rate limited", true, null, 3, false, null, CountsAsImplementationAttempt: false), CancellationToken.None);
+            var oldStepId = await tasks.StartStepAsync(runId, "AgentImplementation", 4, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), eventsTaskId, runId, oldStepId, "Codex", outsideWindow, outsideWindow, 1, 0, "Succeeded", "", "", false, null, 4, false, null), CancellationToken.None);
+
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task_ci_status(task_id,head_commit,overall_status,checks_json,error,synced_at) VALUES
+                  (@ciSuccessId,'c1','Success','[]',NULL,@inWindow),
+                  (@ciFailureId,'c2','Failure','[]',NULL,@inWindow),
+                  (@ciOldId,'c3','Success','[]',NULL,@outsideWindow)
+                """, new { ciSuccessId, ciFailureId, ciOldId, inWindow, outsideWindow });
+
+            await tasks.SetReviewMinutesAsync(reviewId1, 30, CancellationToken.None);
+            await tasks.SetReviewMinutesAsync(reviewId2, 50, CancellationToken.None);
+            // Backdate this one outside the window directly, since SetReviewMinutesAsync always stamps "now".
+            await connection.ExecuteAsync("UPDATE factory.task SET review_minutes=99,review_recorded_at=@outsideWindow WHERE id=@reviewOldId", new { reviewOldId, outsideWindow });
+
+            var metrics = await tasks.GetOutcomeMetricsAsync(since, CancellationToken.None);
+
+            Assert.Equal(1, metrics.ValidatedReadyForReview); // the stale, outside-window one is excluded
+            Assert.Equal(1, metrics.MergedAccepted);
+            Assert.Equal(1, metrics.Rejected);
+            Assert.Equal(1, metrics.Retries); // only the Failed->Pending one; WaitingForQuota->Pending is excluded
+            Assert.Equal(1, metrics.QuotaWaitingEvents);
+            Assert.Equal(1, metrics.HumanInterventions);
+            Assert.Equal(1, metrics.AgentProcessSuccesses); // the outside-window success is excluded
+            Assert.Equal(1, metrics.AgentProcessFailures); // the quota-interrupted failure never counts as either
+            Assert.Equal(1, metrics.CiSuccesses); // the outside-window success is excluded
+            Assert.Equal(1, metrics.CiFailures);
+            Assert.Equal(2, metrics.ReviewedTaskCount); // the outside-window entry is excluded
+            Assert.Equal(40, metrics.AverageReviewMinutes);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_ci_status WHERE task_id=ANY(@allTaskIds)", new { allTaskIds });
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.task_event WHERE task_id=ANY(@allTaskIds);
+                DELETE FROM factory.agent_run WHERE task_id=ANY(@allTaskIds);
+                DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id=ANY(@allTaskIds));
+                DELETE FROM factory.run WHERE task_id=ANY(@allTaskIds);
+                DELETE FROM factory.task WHERE id=ANY(@allTaskIds);
+                """, new { allTaskIds });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Quota_interruptions_are_excluded_from_the_implementation_attempt_budget_but_real_failures_are_not()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

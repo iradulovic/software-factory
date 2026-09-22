@@ -229,6 +229,30 @@ public static class PullRequestCiStatus
         : Success;
 }
 
+/// <summary>Small, attribution-explicit outcome and review-effort metrics over a rolling window since
+/// <paramref name="Since"/> (SF-617). Deliberately excludes lines changed and consumed quota as productivity
+/// signals, and exposes no "remaining quota" figure — no real provider evidence exists at the granularity a
+/// report like this needs (subscription CLIs report detected/reset-time, never a numeric remaining budget), so
+/// it is omitted entirely rather than approximated. <paramref name="Retries"/> counts every re-entry into
+/// <see cref="FactoryTaskStatus.Pending"/> from a non-null prior status other than <see cref="FactoryTaskStatus.WaitingForQuota"/>
+/// (an automatic repair reschedule, an operator Retry, a resolved <see cref="FactoryTaskStatus.NeedsHuman"/>, or
+/// an SF-613 continuation) — a quota resume is counted separately, under <paramref name="QuotaWaitingEvents"/>,
+/// since resuming stalled work is not the same signal as retrying failed work.</summary>
+public sealed record OutcomeMetrics(
+    DateTimeOffset Since,
+    int ValidatedReadyForReview,
+    int MergedAccepted,
+    int Rejected,
+    int Retries,
+    int QuotaWaitingEvents,
+    int HumanInterventions,
+    int AgentProcessSuccesses,
+    int AgentProcessFailures,
+    int CiSuccesses,
+    int CiFailures,
+    double? AverageReviewMinutes,
+    int ReviewedTaskCount);
+
 /// <summary>A resting task with a recorded worktree, identified well enough for <see cref="WorktreeCleanupPolicy"/>
 /// to decide whether to remove it and for <see cref="IWorktreeManager"/> to remove it.</summary>
 public sealed record WorktreeCleanupCandidate(Guid TaskId, FactoryTaskStatus Status, string WorktreePath, string RepositoryOwner, string RepositoryName);
