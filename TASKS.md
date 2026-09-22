@@ -30,6 +30,11 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
 
 ## In progress
 
+- [ ] **SF-617 — Measure useful outcomes and human review effort**
+  - Dependencies: SF-609, SF-613, SF-614.
+  - Scope: keep metrics small: validated changes ready for review, merged/accepted changes, retries, quota waiting, human interventions, and optional review-time entry. Distinguish agent/process success, local validation, CI success, and merge outcome. Expose remaining quota only when supported by real provider evidence.
+  - Acceptance: metric definitions and attribution are documented and tested against representative histories, including fallback and rejected work. Reports can assess accepted changes per week and review burden without treating lines changed or consumed quota as productivity.
+
 ## Next up
 
 The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
@@ -58,10 +63,7 @@ SF-609 through SF-614 are complete; see **Completed** below.
   - Scope: document and provide a simple backup/restore procedure for PostgreSQL, repository caches/unpushed branches, and dirty worktrees. Use a consistent paused/quiescent procedure and preserve the mapping from database tasks to local Git state. GitHub alone is not a backup of these assets.
   - Acceptance: restore a disposable backup into a separate location and verify task history, an unpushed commit, and uncommitted work. Define retention, backup destination configuration, and credential handling; recovery must not start dispatch automatically against an unverified restore.
 
-- [ ] **SF-617 — Measure useful outcomes and human review effort**
-  - Dependencies: SF-609, SF-613, SF-614.
-  - Scope: keep metrics small: validated changes ready for review, merged/accepted changes, retries, quota waiting, human interventions, and optional review-time entry. Distinguish agent/process success, local validation, CI success, and merge outcome. Expose remaining quota only when supported by real provider evidence.
-  - Acceptance: metric definitions and attribution are documented and tested against representative histories, including fallback and rejected work. Reports can assess accepted changes per week and review burden without treating lines changed or consumed quota as productivity.
+SF-617 is in progress; see **In progress** above. SF-615 and SF-616 both depend on SF-608, which is blocked (see **Blocked** below) — not eligible until it unblocks.
 
 - [ ] **SF-618 — Demonstrate the unattended three-issue milestone**
   - Dependencies: SF-608, SF-609, SF-610, SF-611, SF-612, SF-613, SF-614, SF-615, SF-616, SF-617.
