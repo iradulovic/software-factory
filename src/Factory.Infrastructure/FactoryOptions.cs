@@ -15,6 +15,15 @@ public sealed class FactoryOptions
     /// work than implementing a task) may run before <see cref="ITaskStore.ClaimNextPublicationAsync"/> treats it
     /// as abandoned and reclaims it.</summary>
     public int PublicationLeaseSeconds { get; set; } = 300;
+
+    /// <summary>Caps outstanding review work — tasks resting in <see cref="FactoryTaskStatus.ReadyForPublish"/>
+    /// or <see cref="FactoryTaskStatus.Published"/> at once — so unattended implementation can never outrun the
+    /// operator's own review capacity (SF-612). Checked by <see cref="ITaskStore.ClaimNextAsync"/> against a
+    /// brand-new <see cref="FactoryTaskStatus.Pending"/> claim only; an already-executing task's lease recovery,
+    /// and publication/reconciliation of existing review work (which frees this count back up), are unaffected.
+    /// Zero or negative disables the limit.</summary>
+    public int MaxOutstandingReviewWork { get; set; } = 5;
+
     public string WorkerId { get; set; } = $"{Environment.MachineName}-{Environment.ProcessId}";
 
     /// <summary>Base URL of the dashboard, used to link back to a task from the GitHub comments the orchestrator posts.</summary>
