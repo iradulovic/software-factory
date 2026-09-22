@@ -30,10 +30,18 @@ public sealed class FactoryOptions
 /// addition here, never a new class.</summary>
 public sealed class AgentProfilesOptions
 {
-    public List<AgentProfile> Profiles { get; set; } =
+    /// <summary>The single "Codex" profile used when no <c>Agents:Profiles</c> configuration section is present
+    /// at all. Deliberately not <see cref="Profiles"/>'s own default value: <c>ConfigurationBinder.Get{T}</c>
+    /// binds a configured <c>List{T}</c> section by appending to whatever the target list already contains
+    /// rather than replacing it, so if <see cref="Profiles"/> started non-empty, an explicitly configured
+    /// "Agents:Profiles" section (even one that looks identical to this default) would end up bound alongside
+    /// it instead of in place of it — registering every configured agent twice.</summary>
+    public static readonly IReadOnlyList<AgentProfile> DefaultProfiles =
     [
         new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5)
     ];
+
+    public List<AgentProfile> Profiles { get; set; } = [];
 }
 
 public sealed class GitHubSyncOptions

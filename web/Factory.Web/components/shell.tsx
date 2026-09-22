@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { z } from "zod";
 import { Activity, Boxes, CircleGauge, ListTodo, MessageSquareText } from "lucide-react";
-import { getJson, workerSchema, type Worker } from "@/lib/api";
+import { agentStatusSchema, getJson, workerSchema, type Worker } from "@/lib/api";
 
 const navigation = [
   ["Overview", "/", CircleGauge], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo],
@@ -18,7 +18,19 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <nav className="space-y-1 p-3">{navigation.map(([label, href, Icon]) => <Link className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-slate-400 transition hover:bg-white/5 hover:text-slate-100" href={href} key={label}><Icon className="size-4" />{label}</Link>)}</nav>
       <div className="absolute inset-x-3 bottom-4 rounded-lg border border-[var(--border)] bg-black/20 p-3"><WorkerStatus worker={data?.[0]} /></div>
     </aside>
-    <div className="lg:pl-60"><header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-[var(--border)] bg-[color:var(--background)/.85] px-5 backdrop-blur"><div><p className="text-xs uppercase tracking-[.16em] text-slate-500">Operations</p><p className="text-sm font-medium">Development orchestration</p></div><div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-slate-400">Codex · available</div></header><main className="p-4 md:p-6">{children}</main></div>
+    <div className="lg:pl-60"><header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-[var(--border)] bg-[color:var(--background)/.85] px-5 backdrop-blur"><div><p className="text-xs uppercase tracking-[.16em] text-slate-500">Operations</p><p className="text-sm font-medium">Development orchestration</p></div><AgentStatusPill /></header><main className="p-4 md:p-6">{children}</main></div>
+  </div>;
+}
+
+const agentDotTones: Record<string, string> = { Verified: "bg-emerald-500", Busy: "bg-sky-500", Unavailable: "bg-red-500" };
+
+function AgentStatusPill() {
+  const { data } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)) });
+  if (!data?.length) return <div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-slate-500">No agents configured</div>;
+  return <div className="flex items-center gap-3 rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-slate-400">
+    {data.map(a => <span className="flex items-center gap-1.5" key={a.agent} title={`${a.agent}: ${a.state}${a.error ? ` — ${a.error}` : ""}`}>
+      <span className={`size-1.5 rounded-full ${agentDotTones[a.state] ?? "bg-amber-500"}`} />{a.agent}
+    </span>)}
   </div>;
 }
 

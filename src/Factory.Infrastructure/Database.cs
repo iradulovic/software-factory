@@ -102,7 +102,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               FROM candidate c WHERE c.recovered AND r.task_id=c.id AND r.status='Running'
             ), claimed AS (
               UPDATE factory.task t SET status='Claimed',claimed_by=@workerId,claimed_at=now(),lease_until=now()+@lease,
-                started_at=COALESCE(started_at,now()),failure_reason=NULL
+                started_at=COALESCE(started_at,now()),failure_reason=NULL,current_agent=NULL
               FROM candidate c WHERE t.id=c.id
               RETURNING t.id,
                 t.repository_id AS "RepositoryId",
@@ -195,7 +195,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         var releaseOwnership = TaskStateMachine.ExecutingStatuses.Contains(next) ? "" : ", claimed_by=NULL, claimed_at=NULL, lease_until=NULL";
         var sql = $"""
             WITH updated AS (
-              UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion}{releaseOwnership} WHERE id=@taskId AND status=@expected
+              UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion}{releaseOwnership}, current_agent=NULL WHERE id=@taskId AND status=@expected
               RETURNING id
             ), logged AS (
               INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
@@ -475,6 +475,12 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         await using var c = Connection();
         await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET validated_head_commit=@headCommit WHERE id=@taskId", new { taskId, headCommit }, cancellationToken: cancellationToken));
+    }
+
+    public async Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET current_agent=@agentName WHERE id=@taskId", new { taskId, agentName }, cancellationToken: cancellationToken));
     }
 
     public async Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken)

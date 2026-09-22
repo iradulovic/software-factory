@@ -6,6 +6,10 @@ export function Badge({ value }: { value: string }) {
   const tone = /Completed|Succeeded|Ready/.test(value) ? "green" : /Failed|Cancelled|Rejected/.test(value) ? "red" : /Pending|Waiting/.test(value) ? "amber" : "blue";
   return <span className={`badge ${tone}`}>{value.replace(/([a-z])([A-Z])/g, "$1 $2")}</span>;
 }
+const agentStateTones: Record<string, string> = { Unavailable: "red", Unknown: "amber", QuotaBlocked: "amber", Installed: "amber", Busy: "blue", Verified: "green" };
+export function AgentStateBadge({ state }: { state: string }) {
+  return <span className={`badge ${agentStateTones[state] ?? "blue"}`}>{state.replace(/([a-z])([A-Z])/g, "$1 $2")}</span>;
+}
 export function Duration({ seconds }: { seconds?: number | null }) {
   if (seconds == null) return <span className="text-slate-600">—</span>;
   const minutes = Math.floor(seconds / 60); const remainder = Math.round(seconds % 60);

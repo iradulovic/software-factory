@@ -14,6 +14,23 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
         var agent = await selector.SelectAsync(context.Task.PreferredAgent, cancellationToken);
         if (agent is null) return PipelineStepResult.WaitingForQuota("All configured agents are at quota.");
 
+        // Persisted from the moment the agent is actually selected — before it runs, not only once it finishes —
+        // so a task currently mid-invocation is correctly attributed to the agent really running it, including
+        // after a fallback away from the task's own PreferredAgent. Always cleared once this invocation is done,
+        // whichever way it ends, so "busy" never outlives the actual invocation.
+        await tasks.SetCurrentAgentAsync(context.Task.Id, agent.Name, cancellationToken);
+        try
+        {
+            return await RunAsync(context, agent, cancellationToken);
+        }
+        finally
+        {
+            await tasks.SetCurrentAgentAsync(context.Task.Id, null, cancellationToken);
+        }
+    }
+
+    private async Task<PipelineStepResult> RunAsync(PipelineContext context, IAgentRunner agent, CancellationToken cancellationToken)
+    {
         var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", context.AttemptNumber, cancellationToken);
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
         var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath), cancellationToken);

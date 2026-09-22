@@ -6,9 +6,18 @@ using Microsoft.Extensions.Options;
 using Npgsql;
 using Serilog;
 
-const string TaskListSql = """
+// The agent actually attributable to a task: whoever is invoking it right now (current_agent, set for the
+// duration of a live invocation, including after a fallback away from the task's own preference), else whoever
+// last actually ran it (the most recent factory.agent_run row), else the task's own preference for one that
+// hasn't run yet, else the configuration default. Never just the preferred agent, which a fallback can disagree
+// with (SF-609).
+const string TaskAgentExpr = """
+    COALESCE(t.current_agent,(SELECT ar.agent FROM factory.agent_run ar WHERE ar.task_id=t.id ORDER BY ar.started_at DESC LIMIT 1),t.preferred_agent,'Codex')
+    """;
+
+const string TaskListSql = $"""
     SELECT t.id,t.title,gr.owner || '/' || gr.name AS repository,i.issue_number AS "issueNumber",t.status,
-      COALESCE(t.preferred_agent,'Codex') AS agent,t.created_at AS "createdAt",t.started_at AS "startedAt",
+      {TaskAgentExpr} AS agent,t.created_at AS "createdAt",t.started_at AS "startedAt",
       t.completed_at AS "completedAt",t.branch_name AS "branchName",t.worktree_path AS "worktreePath",t.failure_reason AS "failureReason",
       CASE WHEN t.failure_reason IS NOT NULL THEN t.failure_reason
            WHEN t.status IN ('Completed','ReadyForPublish','Published') THEN 'Passed'
@@ -18,13 +27,14 @@ const string TaskListSql = """
     FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id LEFT JOIN github.issue i ON i.id=t.github_issue_id
     """;
 
+// "Busy" (ActiveTask) is read from current_agent, the live selected-at-invocation-start signal (SF-609) — never
+// the task's preferred agent, which a fallback run can disagree with.
 const string AgentStatsSql = """
     SELECT
-      (SELECT t.title FROM factory.task t WHERE COALESCE(t.preferred_agent,'Codex')=@agent AND t.status IN ('Claimed','Preparing','Implementing','Validating','Reviewing') ORDER BY t.started_at DESC LIMIT 1) AS "ActiveTask",
+      (SELECT t.title FROM factory.task t WHERE t.current_agent=@agent ORDER BY t.started_at DESC LIMIT 1) AS "ActiveTask",
       (SELECT count(*) FROM factory.agent_run WHERE agent=@agent AND started_at >= CURRENT_DATE) AS "RunsToday",
       (SELECT count(*) FROM factory.agent_run WHERE agent=@agent AND status='Succeeded') AS "SuccessfulRuns",
-      (SELECT started_at FROM factory.agent_run WHERE agent=@agent AND quota_detected=true ORDER BY started_at DESC LIMIT 1) AS "QuotaDetectedAt",
-      (SELECT quota_reset_at FROM factory.agent_run WHERE agent=@agent AND quota_detected=true ORDER BY started_at DESC LIMIT 1) AS "QuotaResetAt"
+      (SELECT started_at FROM factory.agent_run WHERE agent=@agent AND quota_detected=true ORDER BY started_at DESC LIMIT 1) AS "QuotaDetectedAt"
     """;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -53,29 +63,38 @@ app.MapGet("/", () => Results.Ok(new
 }));
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
-app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, CancellationToken ct) =>
+app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
-    var metrics = await c.QuerySingleAsync(new CommandDefinition("""
+    var metrics = await c.QuerySingleAsync<DashboardMetricsRow>(new CommandDefinition("""
         SELECT
-          count(*) FILTER (WHERE status IN ('Claimed','Preparing','Implementing','Validating','Reviewing')) AS "activeTasks",
-          count(*) FILTER (WHERE status='Pending') AS "pendingTasks",
-          count(*) FILTER (WHERE status='Completed' AND completed_at >= CURRENT_DATE) AS "completedToday",
-          COALESCE(round(100.0 * count(*) FILTER (WHERE status='Completed') / NULLIF(count(*) FILTER (WHERE status IN ('Completed','Failed','Rejected')),0),1),0) AS "successRate"
+          count(*) FILTER (WHERE status IN ('Claimed','Preparing','Implementing','Validating','Reviewing')) AS "ActiveTasks",
+          count(*) FILTER (WHERE status='Pending') AS "PendingTasks",
+          count(*) FILTER (WHERE status='Completed' AND completed_at >= CURRENT_DATE) AS "CompletedToday",
+          count(*) FILTER (WHERE status='NeedsHuman') AS "NeedsOperator",
+          COALESCE(round(100.0 * count(*) FILTER (WHERE status='Completed') / NULLIF(count(*) FILTER (WHERE status IN ('Completed','Failed','Rejected')),0),1),0) AS "SuccessRate"
         FROM factory.task
         """, cancellationToken: ct));
     var active = await c.QueryAsync(new CommandDefinition(TaskListSql + " WHERE t.status IN ('Claimed','Preparing','Implementing','Validating','Reviewing') ORDER BY t.started_at DESC LIMIT 8", cancellationToken: ct));
     var activity = await c.QueryAsync(new CommandDefinition("SELECT s.step_type AS type,s.status,s.completed_at AS \"occurredAt\",t.title FROM factory.step s JOIN factory.run r ON r.id=s.run_id JOIN factory.task t ON t.id=r.task_id WHERE s.completed_at IS NOT NULL ORDER BY s.completed_at DESC LIMIT 12", cancellationToken: ct));
     var throughput = await c.QueryAsync(new CommandDefinition("SELECT d::date AS day,count(t.id) AS completed FROM generate_series(CURRENT_DATE-6,CURRENT_DATE,'1 day') d LEFT JOIN factory.task t ON t.completed_at::date=d::date GROUP BY d ORDER BY d", cancellationToken: ct));
-    var agentStatus = new List<AgentStatus>();
-    foreach (var checker in availabilityCheckers)
-    {
-        var availability = await checker.CheckAsync(ct);
-        var stats = await c.QuerySingleAsync<AgentStatsRow>(new CommandDefinition(AgentStatsSql, new { agent = checker.Agent }, cancellationToken: ct));
-        agentStatus.Add(new AgentStatus(availability.Agent, availability.Available, availability.Version, availability.Error,
-            stats.ActiveTask, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, stats.QuotaResetAt));
-    }
-    return Results.Ok(new { metrics, active, activity, throughput, agentStatus });
+    var agentStatus = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct);
+
+    // "Why is nothing running right now" — answered from the same evidence already gathered above, so the
+    // operator never has to cross-reference the pending count against the agent table by hand.
+    string? idleReason = metrics.ActiveTasks > 0 ? null
+        : metrics.PendingTasks == 0 ? "No pending tasks queued."
+        : agentStatus.Count > 0 && agentStatus.All(a => a.State is "QuotaBlocked" or "Unavailable" or "Unknown")
+            ? "No configured agent is currently available to claim work."
+        : "Waiting to claim the next pending task.";
+
+    return Results.Ok(new { metrics, active, activity, throughput, agentStatus, idleReason });
+});
+
+app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    return Results.Ok(await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct));
 });
 
 app.MapGet("/api/tasks", async (string? status, string? repository, string? agent, string? q, string? sort, string? direction, int? page, int? pageSize, NpgsqlDataSource db, CancellationToken ct) =>
@@ -84,8 +103,8 @@ app.MapGet("/api/tasks", async (string? status, string? repository, string? agen
     var filters = new List<string>();
     if (!string.IsNullOrWhiteSpace(status)) filters.Add("t.status=@status");
     if (!string.IsNullOrWhiteSpace(repository)) filters.Add("(gr.owner || '/' || gr.name)=@repository");
-    if (!string.IsNullOrWhiteSpace(agent)) filters.Add("COALESCE(t.preferred_agent,'Codex')=@agent");
-    if (!string.IsNullOrWhiteSpace(q)) filters.Add("(t.title ILIKE '%' || @q || '%' OR (gr.owner || '/' || gr.name) ILIKE '%' || @q || '%' OR COALESCE(t.preferred_agent,'Codex') ILIKE '%' || @q || '%' OR i.issue_number::text ILIKE '%' || @q || '%')");
+    if (!string.IsNullOrWhiteSpace(agent)) filters.Add($"{TaskAgentExpr}=@agent");
+    if (!string.IsNullOrWhiteSpace(q)) filters.Add($"(t.title ILIKE '%' || @q || '%' OR (gr.owner || '/' || gr.name) ILIKE '%' || @q || '%' OR {TaskAgentExpr} ILIKE '%' || @q || '%' OR i.issue_number::text ILIKE '%' || @q || '%')");
     var where = filters.Count == 0 ? "" : " WHERE " + string.Join(" AND ", filters);
     var query = TaskListQuery.Normalize(page, pageSize, sort, direction);
     var countSql = "SELECT count(*) FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id LEFT JOIN github.issue i ON i.id=t.github_issue_id" + where;
@@ -194,8 +213,8 @@ app.MapGet("/api/issues/{id:long}", async (long id, NpgsqlDataSource db, Cancell
         """, new { id }, cancellationToken: ct));
     if (issue is null) return Results.NotFound();
     var comments = await c.QueryAsync(new CommandDefinition("SELECT github_comment_id AS \"githubCommentId\",author,body,created_at AS \"createdAt\",updated_at AS \"updatedAt\" FROM github.issue_comment WHERE issue_id=@id ORDER BY created_at,id", new { id }, cancellationToken: ct));
-    var tasks = await c.QueryAsync(new CommandDefinition("""
-        SELECT t.id,t.title,t.status,COALESCE(t.preferred_agent,'Codex') AS agent,t.created_at AS "createdAt",t.started_at AS "startedAt",t.completed_at AS "completedAt",
+    var tasks = await c.QueryAsync(new CommandDefinition($"""
+        SELECT t.id,t.title,t.status,{TaskAgentExpr} AS agent,t.created_at AS "createdAt",t.started_at AS "startedAt",t.completed_at AS "completedAt",
           t.failure_reason AS "failureReason",t.branch_name AS "branchName"
         FROM factory.task t WHERE t.github_issue_id=@id ORDER BY t.created_at DESC,t.id
         """, new { id }, cancellationToken: ct));
@@ -354,5 +373,39 @@ static Func<NpgsqlDataSource, CancellationToken, Task<IResult>> Query(string sql
     await using var c = await db.OpenConnectionAsync(ct);
     return Results.Ok(await c.QueryAsync(new CommandDefinition(sql, cancellationToken: ct)));
 };
+
+// Shared by /api/dashboard and /api/agents/status so the header's compact status pill and the full Overview
+// panel can never disagree about an agent's state.
+static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct)
+{
+    var agentStatus = new List<AgentStatus>();
+    foreach (var checker in availabilityCheckers)
+    {
+        bool succeeded, errored;
+        string? version, error;
+        try
+        {
+            var availability = await checker.CheckAsync(ct);
+            (succeeded, errored, version, error) = (availability.Available, false, availability.Version, availability.Error);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The check itself failed unexpectedly — a genuinely unknown state, never silently reported as
+            // available or unavailable, and never allowed to fail this whole endpoint over one broken agent.
+            (succeeded, errored, version, error) = (false, true, null, ex.Message);
+        }
+
+        var stats = await c.QuerySingleAsync<AgentStatsRow>(new CommandDefinition(AgentStatsSql, new { agent = checker.Agent }, cancellationToken: ct));
+        var isAtQuota = await tasks.IsAgentAtQuotaAsync(checker.Agent, ct);
+        var quotaStatus = await tasks.GetAgentQuotaStatusAsync(checker.Agent, ct);
+        var state = AgentOperationalStateResolver.Resolve(succeeded, errored, isAtQuota, stats.ActiveTask is not null, stats.SuccessfulRuns > 0);
+        var (quotaResetAt, quotaWindow, quotaResetKind) = isAtQuota && quotaStatus is not null
+            ? (quotaStatus.ResetAt, quotaStatus.Window.ToString(), quotaStatus.ResetKind.ToString())
+            : (null, null, null);
+        agentStatus.Add(new AgentStatus(checker.Agent, state.ToString(), version, error,
+            stats.ActiveTask, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, quotaResetAt, quotaWindow, quotaResetKind));
+    }
+    return agentStatus;
+}
 
 public partial class Program;

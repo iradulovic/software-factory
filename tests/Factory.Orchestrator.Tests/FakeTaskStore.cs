@@ -119,6 +119,13 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.CompletedTask;
     }
 
+    public List<string?> CurrentAgentCalls { get; } = [];
+    public Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken)
+    {
+        CurrentAgentCalls.Add(agentName);
+        return Task.CompletedTask;
+    }
+
     public Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken)
     {
         GitHubWrites.Add((taskId, kind, detail, succeeded, error));
