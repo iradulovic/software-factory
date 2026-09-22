@@ -99,6 +99,14 @@ public sealed record AgentQuotaStatus(string Agent, bool Detected, QuotaWindow W
 public sealed record AgentResult(string Status, string Summary, IReadOnlyList<string> TestsRun, bool TestsPassed,
     IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason);
 
+/// <summary>The single source of truth for <c>.factory/result.json</c>'s accepted <see cref="AgentResult.Status"/>
+/// values (SF-605): both <c>AgentResultReader</c>'s validation and the completion contract generated into
+/// <c>.factory/task.md</c> read this same list, so the two can never silently disagree.</summary>
+public static class AgentResultContract
+{
+    public static readonly IReadOnlyList<string> Statuses = ["completed", "failed", "blocked", "needs-human"];
+}
+
 /// <summary>An executable and its already-split arguments, never a shell command line. This is the only shape
 /// validation steps ever invoke: ".factory/config.json" build/test commands opt into a literal shell explicitly
 /// (see <see cref="ValidationCommandJsonConverter"/>), and even then it is just this same shape with the shell

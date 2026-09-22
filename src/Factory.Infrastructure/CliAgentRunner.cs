@@ -11,7 +11,8 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
 {
     private const string Prompt = """
         Implement the task described in .factory/task.md. Read and obey AGENTS.md. Inspect the existing architecture before making changes.
-        Make only necessary changes and run relevant build and test commands. Do not create branches or worktrees, push, or create pull requests.
+        Make only necessary changes and run relevant build and test commands. Commit every intended change on this branch before finishing —
+        uncommitted work cannot be validated or published. Do not create branches or worktrees, push, or create pull requests.
         When complete, write .factory/result.json matching the contract in .factory/task.md.
         """;
 

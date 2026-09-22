@@ -5,7 +5,7 @@ namespace Factory.Infrastructure;
 
 public sealed class AgentResultReader : IAgentResultReader
 {
-    private static readonly HashSet<string> Statuses = ["completed", "blocked", "needs-human", "failed"];
+    private static readonly HashSet<string> Statuses = new(AgentResultContract.Statuses);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken)
