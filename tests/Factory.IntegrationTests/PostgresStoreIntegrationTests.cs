@@ -571,29 +571,126 @@ public sealed class PostgresStoreIntegrationTests
                 null, checkedAt.AddMinutes(1), null), CancellationToken.None);
             Assert.False(await tasks.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
 
-            // A quota-detected attempt whose reset time has already passed is auto-resumed to Pending.
+            // SF-604 regression: a task that goes straight to WaitingForQuota with no prior invocation at all
+            // (every configured agent was already at quota on its very first attempt) still resumes once a
+            // configured provider becomes available — resumption is scheduled from provider availability, never
+            // the waiting task's own invocation history (which here does not exist).
             await connection.ExecuteAsync("""
                 INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@quotaTaskId,@repositoryId,'Quota task','WaitingForQuota','main')
                 """, new { quotaTaskId, repositoryId });
-            var quotaRunId = await tasks.StartRunAsync(quotaTaskId, "integration-worker", CancellationToken.None);
-            var quotaStepId = await tasks.StartStepAsync(quotaRunId, "AgentImplementation", 1, CancellationToken.None);
-            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), quotaTaskId, quotaRunId, quotaStepId, "Codex", DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow, 1, 1, "Failed", "", "quota", true, DateTimeOffset.UtcNow.AddHours(-1), 1, false, null,
-                CountsAsImplementationAttempt: false), CancellationToken.None);
+            Assert.Equal(0, await tasks.CountAgentRunsAsync(quotaTaskId, CancellationToken.None));
 
-            Assert.Equal(1, await tasks.ResumeExpiredQuotaTasksAsync(CancellationToken.None));
+            await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus("Codex", true, QuotaWindow.ShortTerm, QuotaResetKind.Estimated,
+                DateTimeOffset.UtcNow.AddHours(4), DateTimeOffset.UtcNow, "quota"), CancellationToken.None);
+            Assert.Equal(0, await tasks.ResumeExpiredQuotaTasksAsync(["Codex"], CancellationToken.None));
+            Assert.Equal("WaitingForQuota", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@quotaTaskId", new { quotaTaskId }));
+
+            // Codex's reset time passing makes it available again.
+            await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus("Codex", true, QuotaWindow.ShortTerm, QuotaResetKind.Estimated,
+                DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow, "quota"), CancellationToken.None);
+            Assert.Equal(1, await tasks.ResumeExpiredQuotaTasksAsync(["Codex"], CancellationToken.None));
             Assert.Equal("Pending", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@quotaTaskId", new { quotaTaskId }));
-            Assert.Equal(0, await tasks.ResumeExpiredQuotaTasksAsync(CancellationToken.None));
+            Assert.Equal(0, await tasks.ResumeExpiredQuotaTasksAsync(["Codex"], CancellationToken.None));
         }
         finally
         {
-            await connection.ExecuteAsync("DELETE FROM factory.agent_availability WHERE agent='Claude'");
+            await connection.ExecuteAsync("DELETE FROM factory.agent_availability WHERE agent IN ('Claude','Codex')");
             await connection.ExecuteAsync("""
                 DELETE FROM factory.agent_run WHERE task_id IN (@taskId,@quotaTaskId);
                 DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id IN (@taskId,@quotaTaskId));
                 DELETE FROM factory.run WHERE task_id IN (@taskId,@quotaTaskId);
                 DELETE FROM factory.task WHERE id IN (@taskId,@quotaTaskId);
                 """, new { taskId, quotaTaskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task A_task_waits_out_two_blocked_providers_and_resumes_the_moment_either_becomes_available()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('two-provider-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@taskId,@repositoryId,'Two-provider task','WaitingForQuota','main')
+                """, new { taskId, repositoryId });
+
+            var now = DateTimeOffset.UtcNow;
+            await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus("Codex", true, QuotaWindow.ShortTerm, QuotaResetKind.Estimated, now.AddHours(5), now, "quota"), CancellationToken.None);
+            await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus("Claude", true, QuotaWindow.ShortTerm, QuotaResetKind.Estimated, now.AddHours(5), now, "rate limited"), CancellationToken.None);
+
+            // Both configured providers are blocked: nothing resumes.
+            Assert.Equal(0, await tasks.ResumeExpiredQuotaTasksAsync(["Codex", "Claude"], CancellationToken.None));
+            Assert.Equal("WaitingForQuota", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId }));
+
+            // Claude becomes available; the task resumes even though Codex (its history-adjacent provider) is still blocked.
+            await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus("Claude", false, QuotaWindow.None, QuotaResetKind.None, null, now, null), CancellationToken.None);
+            Assert.Equal(1, await tasks.ResumeExpiredQuotaTasksAsync(["Codex", "Claude"], CancellationToken.None));
+            Assert.Equal("Pending", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId }));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.agent_availability WHERE agent IN ('Codex','Claude')");
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id=@taskId", new { taskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task Concurrent_resume_calls_never_resume_the_same_waiting_task_twice()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('concurrent-resume-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskAId = Guid.NewGuid();
+        var taskBId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch,priority)
+                VALUES(@taskAId,@repositoryId,'Concurrent A','WaitingForQuota','main',2),
+                      (@taskBId,@repositoryId,'Concurrent B','WaitingForQuota','main',1)
+                """, new { taskAId, taskBId, repositoryId });
+            // No agent_availability row at all: a never-invoked provider is treated as available, so both
+            // tasks are immediately eligible — this exercises SKIP LOCKED actually mattering under concurrency.
+
+            var results = await Task.WhenAll(
+                tasks.ResumeExpiredQuotaTasksAsync(["Codex"], CancellationToken.None),
+                tasks.ResumeExpiredQuotaTasksAsync(["Codex"], CancellationToken.None));
+
+            Assert.Equal(2, results.Sum());
+            var statuses = (await connection.QueryAsync<string>("SELECT status FROM factory.task WHERE id IN (@taskAId,@taskBId)", new { taskAId, taskBId })).ToList();
+            Assert.All(statuses, s => Assert.Equal("Pending", s));
+            Assert.Equal(0, await tasks.ResumeExpiredQuotaTasksAsync(["Codex"], CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@taskAId,@taskBId)", new { taskAId, taskBId });
             await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
         }
     }

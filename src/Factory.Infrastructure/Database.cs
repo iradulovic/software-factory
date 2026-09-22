@@ -495,28 +495,43 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return new PreviousAttemptSummary(row.AgentSummary, validationOutput, changedFiles, row.LinesAdded, row.LinesRemoved);
     }
 
-    public async Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken)
+    public async Task<int> ResumeExpiredQuotaTasksAsync(IReadOnlyList<string> configuredAgents, CancellationToken cancellationToken)
     {
+        // Resumption is scheduled from provider availability (factory.agent_availability), never a waiting
+        // task's own invocation history: a task that never got invoked at all (every configured agent was
+        // already at quota on its first attempt) has no history to key off, and a task that last used a
+        // now-still-blocked provider must still resume the moment any other configured provider frees up.
+        //
+        // Only the single highest-priority candidate is resumed per call (LIMIT 1), deliberately mirroring
+        // ClaimNextAsync's own one-at-a-time claiming: bulk-flipping every waiting task to Pending the instant
+        // one provider frees up would let every task behind the first redo repository preparation and worktree
+        // setup for nothing the moment that provider's allowance runs out again, before they even get a real
+        // attempt. Worker calls this once per poll-loop iteration, so genuine capacity still drains the queue
+        // promptly; it just never resumes further than what current availability can actually justify.
         const string sql = """
-            WITH candidates AS (
-              SELECT t.id FROM factory.task t
-              JOIN LATERAL (
-                SELECT quota_reset_at FROM factory.agent_run WHERE task_id=t.id ORDER BY started_at DESC LIMIT 1
-              ) ar ON true
-              WHERE t.status='WaitingForQuota' AND ar.quota_reset_at IS NOT NULL AND ar.quota_reset_at <= now()
-              FOR UPDATE OF t SKIP LOCKED
+            WITH available AS (
+              SELECT EXISTS (
+                SELECT 1 FROM unnest(@configuredAgents) AS agent(name)
+                WHERE NOT COALESCE(
+                  (SELECT detected AND reset_at > now() FROM factory.agent_availability aa WHERE aa.agent = agent.name), false)
+              ) AS any_available
+            ), candidate AS (
+              SELECT t.id FROM factory.task t, available
+              WHERE t.status='WaitingForQuota' AND available.any_available
+              ORDER BY t.priority DESC, t.created_at
+              FOR UPDATE OF t SKIP LOCKED LIMIT 1
             ), updated AS (
               UPDATE factory.task SET status='Pending', claimed_by=NULL, claimed_at=NULL, lease_until=NULL
-              WHERE id IN (SELECT id FROM candidates)
+              WHERE id IN (SELECT id FROM candidate)
               RETURNING id
             ), logged AS (
               INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
-              SELECT id,'WaitingForQuota','Pending','Quota reset time passed; resumed automatically.','orchestrator' FROM updated
+              SELECT id,'WaitingForQuota','Pending','A configured provider became available; resumed automatically.','orchestrator' FROM updated
             )
             SELECT count(*)::int FROM updated
             """;
         await using var c = Connection();
-        return await c.ExecuteScalarAsync<int>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { configuredAgents }, cancellationToken: cancellationToken));
     }
 
     public async Task<bool> IsAgentAtQuotaAsync(string agent, CancellationToken cancellationToken)

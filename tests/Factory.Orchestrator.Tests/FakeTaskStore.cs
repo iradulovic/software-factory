@@ -123,7 +123,12 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<int> CountQuotaInterruptionsAsync(Guid taskId, CancellationToken cancellationToken) =>
         Task.FromResult(AgentRuns.Count(r => r.TaskId == taskId && !r.CountsAsImplementationAttempt));
     public Task<PreviousAttemptSummary?> GetPreviousAttemptAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(PreviousAttempt);
-    public Task<int> ResumeExpiredQuotaTasksAsync(CancellationToken cancellationToken) => Task.FromResult(ExpiredQuotaTasksToResume);
+    public List<IReadOnlyList<string>> ResumeExpiredQuotaTasksCalls { get; } = [];
+    public Task<int> ResumeExpiredQuotaTasksAsync(IReadOnlyList<string> configuredAgents, CancellationToken cancellationToken)
+    {
+        ResumeExpiredQuotaTasksCalls.Add(configuredAgents);
+        return Task.FromResult(ExpiredQuotaTasksToResume);
+    }
 
     public HashSet<string> AgentsAtQuota { get; } = [];
     public Task<bool> IsAgentAtQuotaAsync(string agent, CancellationToken cancellationToken) => Task.FromResult(AgentsAtQuota.Contains(agent));
