@@ -130,6 +130,52 @@ public sealed class GhCliTests
     }
 
     [Fact]
+    public async Task GetPullRequestChecksAsync_parses_the_head_commit_and_normalizes_check_runs_and_status_contexts()
+    {
+        var runner = new RecordingRunner(0, """
+            {
+              "headRefOid": "abc123def",
+              "statusCheckRollup": [
+                {"__typename":"CheckRun","name":"Backend build and tests","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.invalid/1"},
+                {"__typename":"CheckRun","name":"Frontend lint","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://example.invalid/2"},
+                {"__typename":"CheckRun","name":"Slow job","status":"IN_PROGRESS","conclusion":null,"detailsUrl":"https://example.invalid/3"},
+                {"__typename":"StatusContext","context":"legacy-ci","state":"SUCCESS","targetUrl":"https://example.invalid/4"},
+                {"__typename":"StatusContext","context":"legacy-pending","state":"PENDING","targetUrl":null}
+              ]
+            }
+            """, "");
+        var client = new GhCliClient(runner);
+
+        var result = await client.GetPullRequestChecksAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Null(result.Error);
+        Assert.Equal("abc123def", result.HeadSha);
+        Assert.Equal(5, result.Checks.Count);
+        Assert.Equal(PullRequestCiStatus.Success, result.Checks.Single(c => c.Name == "Backend build and tests").Conclusion);
+        Assert.Equal(PullRequestCiStatus.Failure, result.Checks.Single(c => c.Name == "Frontend lint").Conclusion);
+        Assert.Equal(PullRequestCiStatus.Pending, result.Checks.Single(c => c.Name == "Slow job").Conclusion);
+        Assert.Equal(PullRequestCiStatus.Success, result.Checks.Single(c => c.Name == "legacy-ci").Conclusion);
+        Assert.Equal(PullRequestCiStatus.Pending, result.Checks.Single(c => c.Name == "legacy-pending").Conclusion);
+        Assert.Equal("https://example.invalid/2", result.Checks.Single(c => c.Name == "Frontend lint").Url);
+        Assert.Equal(new[] { "pr", "view", "17", "--repo", "acme/billing", "--json", "headRefOid,statusCheckRollup" }, runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task GetPullRequestChecksAsync_reports_the_error_explicitly_when_gh_fails_rather_than_returning_null()
+    {
+        var runner = new RecordingRunner(1, "", "gh: authentication required");
+        var client = new GhCliClient(runner);
+
+        var result = await client.GetPullRequestChecksAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Null(result.HeadSha);
+        Assert.Empty(result.Checks);
+        Assert.Contains("authentication required", result.Error);
+    }
+
+    [Fact]
     public async Task CommentOnIssueAsync_runs_gh_issue_comment()
     {
         var runner = new RecordingRunner(0, "", "");

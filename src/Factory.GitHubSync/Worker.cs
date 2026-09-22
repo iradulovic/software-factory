@@ -80,11 +80,27 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                     await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.Completed, null, cancellationToken);
                 else if (state.Closed)
                     await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.Rejected, "Pull request closed without merge.", cancellationToken);
+                else
+                    // Still open: synchronize CI status for exactly the commit GitHub reports as this PR's
+                    // current head (SF-614) — fetched together in one call, so a check result can never be
+                    // attributed to an older, since-superseded head (e.g. after an SF-613 continuation republished).
+                    await SyncCiStatusAsync(published, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 logger.LogError(ex, "Failed to resolve pull request outcome for task {TaskId}", published.TaskId);
             }
         }
+    }
+
+    /// <summary>Fetches and persists CI status for one still-open published pull request. A read failure
+    /// (authentication, network, missing permissions) is recorded explicitly as <see cref="PullRequestCiStatus.Unavailable"/>
+    /// with its error text, never silently skipped or conflated with "no checks configured."</summary>
+    private async Task SyncCiStatusAsync(PublishedTaskRef published, CancellationToken cancellationToken)
+    {
+        using var activity = FactoryTelemetry.Source.StartActivity("github.sync_ci_status");
+        activity?.SetTag("factory.task_id", published.TaskId);
+        var result = await client.GetPullRequestChecksAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
+        await tasks.SetCiStatusAsync(published.TaskId, PullRequestCiStatus.Overall(result), result.HeadSha, result.Checks, result.Error, cancellationToken);
     }
 }
