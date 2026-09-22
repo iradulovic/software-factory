@@ -22,6 +22,12 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExec
                 var resumed = await tasks.ResumeExpiredQuotaTasksAsync(_configuredAgents, stoppingToken);
                 if (resumed > 0) logger.LogInformation("Resumed {Count} task(s) now that a configured provider is available", resumed);
 
+                // A prerequisite that will never merge (Rejected/Cancelled/Failed) must never leave its
+                // dependent silently queued forever, nor silently released to run anyway — moved to NeedsHuman
+                // for an explicit operator decision instead.
+                var blocked = await tasks.BlockDependentsOnFailedPrerequisitesAsync(stoppingToken);
+                if (blocked > 0) logger.LogInformation("Moved {Count} task(s) to NeedsHuman: a prerequisite ended without merging", blocked);
+
                 // Pausing stops new dispatch only, checked right here before claiming — never mid-task, so a task
                 // already claimed and executing always finishes undisturbed. Publication (PublicationWorker) is
                 // a separate, independently polling worker and is deliberately untouched by this: pushing and

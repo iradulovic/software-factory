@@ -5,7 +5,10 @@ public static class TaskStateMachine
     private static readonly IReadOnlyDictionary<FactoryTaskStatus, HashSet<FactoryTaskStatus>> Allowed =
         new Dictionary<FactoryTaskStatus, HashSet<FactoryTaskStatus>>
         {
-            [FactoryTaskStatus.Pending] = [FactoryTaskStatus.Claimed, FactoryTaskStatus.Cancelled],
+            // Pending -> NeedsHuman (SF-611): a queued task whose prerequisite ends at Rejected/Cancelled/Failed
+            // must never silently stay queued forever behind a dependency that will never resolve, nor be
+            // silently released to run anyway — it needs an explicit operator decision instead.
+            [FactoryTaskStatus.Pending] = [FactoryTaskStatus.Claimed, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Claimed] = [FactoryTaskStatus.Preparing, FactoryTaskStatus.Pending, FactoryTaskStatus.Failed, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Preparing] = [FactoryTaskStatus.Planning, FactoryTaskStatus.Implementing, FactoryTaskStatus.Failed, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Planning] = [FactoryTaskStatus.Implementing, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed, FactoryTaskStatus.Cancelled],

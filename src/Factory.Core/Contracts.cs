@@ -86,6 +86,34 @@ public interface ITaskStore
     /// longer in effect.</summary>
     Task SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor, CancellationToken cancellationToken);
 
+    /// <summary>Sets a task's claim-ordering priority (SF-611): among every eligible task, <see cref="ClaimNextAsync"/>
+    /// always claims the highest priority first (ties broken by creation order). Never restricted by status — a
+    /// task not yet eligible to claim can still be reprioritized ahead of time.</summary>
+    Task SetPriorityAsync(Guid taskId, int priority, CancellationToken cancellationToken);
+
+    /// <summary>Records that <paramref name="taskId"/> must wait for <paramref name="dependsOnTaskId"/> to reach
+    /// <see cref="FactoryTaskStatus.Completed"/> before it becomes claimable (SF-611). Rejects a self-dependency,
+    /// a dependency on a nonexistent task, and any edge that would close a cycle with an existing dependency
+    /// chain — checked transitively, not just the direct edge. Adding an edge that already exists is idempotent.</summary>
+    Task<AddDependencyOutcome> AddDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken);
+
+    /// <summary>Removes one dependency edge, if present — the operator's way to unblock a task whose prerequisite
+    /// was wrong, already handled another way, or no longer applies. A no-op if the edge does not exist.</summary>
+    Task RemoveDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken);
+
+    /// <summary>Every prerequisite <paramref name="taskId"/> currently depends on, with each prerequisite's own
+    /// title and status, so the operator can see exactly what is blocking a task without a second lookup.</summary>
+    Task<IReadOnlyList<TaskDependency>> GetDependenciesAsync(Guid taskId, CancellationToken cancellationToken);
+
+    /// <summary>Moves a <see cref="FactoryTaskStatus.Pending"/> task to <see cref="FactoryTaskStatus.NeedsHuman"/>
+    /// the moment any of its prerequisites ends at <see cref="FactoryTaskStatus.Rejected"/>,
+    /// <see cref="FactoryTaskStatus.Cancelled"/>, or <see cref="FactoryTaskStatus.Failed"/> — a prerequisite that
+    /// will never merge must never silently strand its dependent in the queue forever, nor silently release it to
+    /// run against a base that will never actually contain the prerequisite's changes; it requires an explicit
+    /// operator decision (retry the prerequisite, remove the dependency, or cancel the dependent) instead. Called
+    /// once per poll cycle; returns how many tasks were moved.</summary>
+    Task<int> BlockDependentsOnFailedPrerequisitesAsync(CancellationToken cancellationToken);
+
     /// <summary>Records one attempt to write to GitHub (a comment or a state-label change) as append-only operational
     /// state, regardless of whether it succeeded.</summary>
     Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken);

@@ -16,6 +16,7 @@ const columns = [
   column.accessor("title",{header:"Task",cell:i=><Link className="font-medium hover:text-emerald-400" href={`/tasks/${i.row.original.id}`}>{i.getValue()}</Link>}),
   column.accessor("repository",{header:"Repository"}), column.accessor("issueNumber",{header:"Issue",cell:i=>i.getValue()?`#${i.getValue()}`:"—"}),
   column.accessor("status",{header:"Status",cell:i=><Badge value={i.getValue()}/>}), column.accessor("agent",{header:"Agent"}),
+  column.accessor("priority",{header:"Priority",cell:i=>i.getValue()?<span className="tabular-nums">{i.getValue()}</span>:<span className="text-slate-600">—</span>}),
   column.accessor("createdAt",{header:"Created",cell:i=>new Date(i.getValue()).toLocaleString()}),
   column.accessor("startedAt",{header:"Started",cell:i=>i.getValue()?new Date(i.getValue()!).toLocaleString():"—"}),
   column.accessor("result",{header:"Result",cell:i=><span className="block max-w-56 truncate" title={i.getValue()??undefined}>{i.getValue()??"—"}</span>}),

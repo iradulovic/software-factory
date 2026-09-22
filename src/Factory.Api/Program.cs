@@ -16,7 +16,7 @@ const string TaskAgentExpr = """
     """;
 
 const string TaskListSql = $"""
-    SELECT t.id,t.title,gr.owner || '/' || gr.name AS repository,i.issue_number AS "issueNumber",t.status,
+    SELECT t.id,t.title,gr.owner || '/' || gr.name AS repository,i.issue_number AS "issueNumber",t.status,t.priority,
       {TaskAgentExpr} AS agent,t.created_at AS "createdAt",t.started_at AS "startedAt",
       t.completed_at AS "completedAt",t.branch_name AS "branchName",t.worktree_path AS "worktreePath",t.failure_reason AS "failureReason",
       CASE WHEN t.failure_reason IS NOT NULL THEN t.failure_reason
@@ -145,13 +145,14 @@ app.MapGet("/api/tasks", async (string? status, string? repository, string? agen
     return Results.Ok(new { items, total, page = normalizedPage, pageSize = query.Size });
 });
 
-app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, CancellationToken ct) =>
+app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskStore tasks, CancellationToken ct) =>
 {
     using var activity = FactoryTelemetry.Source.StartActivity("api.get_task");
     activity?.SetTag("factory.task_id", id);
     await using var c = await db.OpenConnectionAsync(ct);
     var task = await c.QuerySingleOrDefaultAsync(new CommandDefinition(TaskListSql + " WHERE t.id=@id", new { id }, cancellationToken: ct));
     if (task is null) return Results.NotFound();
+    var dependencies = await tasks.GetDependenciesAsync(id, ct);
     var issue = await c.QuerySingleOrDefaultAsync(new CommandDefinition("SELECT i.issue_number AS \"issueNumber\",i.title,i.body,i.state,i.author,i.created_at AS \"createdAt\",array_agg(l.name) FILTER (WHERE l.name IS NOT NULL) AS labels FROM github.issue i LEFT JOIN github.issue_label l ON l.issue_id=i.id JOIN factory.task t ON t.github_issue_id=i.id WHERE t.id=@id GROUP BY i.id", new { id }, cancellationToken: ct));
     var comments = await c.QueryAsync(new CommandDefinition("SELECT c.github_comment_id AS \"githubCommentId\",c.author,c.body,c.created_at AS \"createdAt\",c.updated_at AS \"updatedAt\" FROM github.issue_comment c JOIN factory.task t ON t.github_issue_id=c.issue_id WHERE t.id=@id ORDER BY c.created_at", new { id }, cancellationToken: ct));
     var runs = await c.QueryAsync(new CommandDefinition("""
@@ -173,7 +174,8 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancella
           pull_request_number AS "pullRequestNumber",pull_request_url AS "pullRequestUrl",error
         FROM factory.publication WHERE task_id=@id ORDER BY requested_at DESC
         """, new { id }, cancellationToken: ct));
-    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications });
+    var dependencyDtos = dependencies.Select(d => new { d.TaskId, d.DependsOnTaskId, d.DependsOnTitle, DependsOnStatus = d.DependsOnStatus.ToString() });
+    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos });
 });
 
 app.MapPost("/api/tasks/{id:guid}/retry", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
@@ -188,6 +190,37 @@ app.MapPost("/api/tasks/{id:guid}/cancel", async (Guid id, ITaskStore tasks, Can
     using var activity = FactoryTelemetry.Source.StartActivity("api.cancel_task");
     activity?.SetTag("factory.task_id", id);
     return await tasks.CancelAsync(id, ct) ? Results.NoContent() : Results.Conflict(new { error = "Task cannot be cancelled." });
+});
+
+app.MapPost("/api/tasks/{id:guid}/priority", async (Guid id, PriorityRequest body, ITaskStore tasks, CancellationToken ct) =>
+{
+    using var activity = FactoryTelemetry.Source.StartActivity("api.set_task_priority");
+    activity?.SetTag("factory.task_id", id);
+    await tasks.SetPriorityAsync(id, body.Priority, ct);
+    return Results.NoContent();
+});
+
+app.MapPost("/api/tasks/{id:guid}/dependencies", async (Guid id, DependencyRequest body, ITaskStore tasks, CancellationToken ct) =>
+{
+    using var activity = FactoryTelemetry.Source.StartActivity("api.add_task_dependency");
+    activity?.SetTag("factory.task_id", id);
+    var outcome = await tasks.AddDependencyAsync(id, body.DependsOnTaskId, ct);
+    return outcome switch
+    {
+        AddDependencyOutcome.Added or AddDependencyOutcome.AlreadyExists => Results.NoContent(),
+        AddDependencyOutcome.WouldCreateCycle => Results.Conflict(new { error = "Adding this dependency would create a cycle." }),
+        AddDependencyOutcome.SelfDependency => Results.Conflict(new { error = "A task cannot depend on itself." }),
+        AddDependencyOutcome.TaskNotFound => Results.NotFound(new { error = "One of these tasks does not exist." }),
+        _ => Results.Problem()
+    };
+});
+
+app.MapDelete("/api/tasks/{id:guid}/dependencies/{dependsOnId:guid}", async (Guid id, Guid dependsOnId, ITaskStore tasks, CancellationToken ct) =>
+{
+    using var activity = FactoryTelemetry.Source.StartActivity("api.remove_task_dependency");
+    activity?.SetTag("factory.task_id", id);
+    await tasks.RemoveDependencyAsync(id, dependsOnId, ct);
+    return Results.NoContent();
 });
 
 app.MapPost("/api/tasks/{id:guid}/publish", async (Guid id, ITaskStore tasks, NpgsqlDataSource db, CancellationToken ct) =>

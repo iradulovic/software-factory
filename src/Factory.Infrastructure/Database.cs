@@ -87,7 +87,12 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             WITH candidate AS (
               SELECT id,status AS old_status,status <> 'Pending' AS recovered
               FROM factory.task
-              WHERE status='Pending'
+              WHERE (status='Pending' AND NOT EXISTS (
+                  -- SF-611: a task with an unmerged prerequisite is never claimable, however high its priority —
+                  -- only an already-executing recovery (below) skips this, since that task already started.
+                  SELECT 1 FROM factory.task_dependency td JOIN factory.task dep ON dep.id=td.depends_on_task_id
+                  WHERE td.task_id=factory.task.id AND dep.status <> 'Completed'
+                ))
                 OR (status = ANY(@executingStatuses) AND lease_until < now())
               ORDER BY priority DESC, created_at FOR UPDATE SKIP LOCKED LIMIT 1
             ), failed_steps AS (
@@ -670,6 +675,100 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await using var c = Connection();
         await c.ExecuteAsync(new CommandDefinition(sql, new { scope, paused, reason, actor }, cancellationToken: cancellationToken));
     }
+
+    public async Task SetPriorityAsync(Guid taskId, int priority, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET priority=@priority WHERE id=@taskId", new { taskId, priority }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<AddDependencyOutcome> AddDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
+    {
+        if (taskId == dependsOnTaskId) return AddDependencyOutcome.SelfDependency;
+
+        await using var c = Connection();
+        var existing = (await c.QueryAsync<Guid>(new CommandDefinition(
+            "SELECT id FROM factory.task WHERE id = ANY(@ids)", new { ids = new[] { taskId, dependsOnTaskId } }, cancellationToken: cancellationToken))).ToHashSet();
+        if (!existing.Contains(taskId) || !existing.Contains(dependsOnTaskId)) return AddDependencyOutcome.TaskNotFound;
+
+        // A cycle would close if dependsOnTaskId can already (transitively) reach taskId through existing edges —
+        // i.e. dependsOnTaskId already depends, directly or indirectly, on taskId — checked before inserting,
+        // not just against the direct edge, since a longer chain is just as real a cycle as a direct one.
+        const string cycleSql = """
+            WITH RECURSIVE reachable(id) AS (
+              SELECT depends_on_task_id FROM factory.task_dependency WHERE task_id=@dependsOnTaskId
+              UNION
+              SELECT td.depends_on_task_id FROM factory.task_dependency td JOIN reachable r ON td.task_id=r.id
+            )
+            SELECT EXISTS(SELECT 1 FROM reachable WHERE id=@taskId)
+            """;
+        var wouldCycle = await c.ExecuteScalarAsync<bool>(new CommandDefinition(cycleSql, new { taskId, dependsOnTaskId }, cancellationToken: cancellationToken));
+        if (wouldCycle) return AddDependencyOutcome.WouldCreateCycle;
+
+        const string insertSql = "INSERT INTO factory.task_dependency(task_id,depends_on_task_id) VALUES(@taskId,@dependsOnTaskId) ON CONFLICT DO NOTHING RETURNING task_id";
+        var inserted = await c.ExecuteScalarAsync<Guid?>(new CommandDefinition(insertSql, new { taskId, dependsOnTaskId }, cancellationToken: cancellationToken));
+        return inserted is null ? AddDependencyOutcome.AlreadyExists : AddDependencyOutcome.Added;
+    }
+
+    public async Task RemoveDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM factory.task_dependency WHERE task_id=@taskId AND depends_on_task_id=@dependsOnTaskId", new { taskId, dependsOnTaskId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<IReadOnlyList<TaskDependency>> GetDependenciesAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT td.task_id AS "TaskId",td.depends_on_task_id AS "DependsOnTaskId",dep.title AS "DependsOnTitle",dep.status AS "DependsOnStatus"
+            FROM factory.task_dependency td JOIN factory.task dep ON dep.id=td.depends_on_task_id
+            WHERE td.task_id=@taskId
+            ORDER BY td.created_at
+            """;
+        await using var c = Connection();
+        var rows = await c.QueryAsync<TaskDependencyRow>(new CommandDefinition(sql, new { taskId }, cancellationToken: cancellationToken));
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task<int> BlockDependentsOnFailedPrerequisitesAsync(CancellationToken cancellationToken)
+    {
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Pending, FactoryTaskStatus.NeedsHuman);
+        // A prerequisite that ends at Rejected/Cancelled/Failed will never merge, so its dependent must never be
+        // silently left queued forever behind it, nor silently released to run against a base that will never
+        // actually contain the prerequisite's changes — it moves to NeedsHuman with an explicit reason instead,
+        // for the operator to retry the prerequisite, remove the dependency, or cancel the dependent.
+        const string sql = """
+            WITH blocked AS (
+              SELECT DISTINCT ON (td.task_id) td.task_id, dep.title AS blocking_title, dep.status AS blocking_status
+              FROM factory.task_dependency td
+              JOIN factory.task dep ON dep.id = td.depends_on_task_id
+              JOIN factory.task t ON t.id = td.task_id
+              WHERE t.status = 'Pending' AND dep.status IN ('Rejected','Cancelled','Failed')
+              ORDER BY td.task_id, td.created_at
+            ), updated AS (
+              UPDATE factory.task t SET status='NeedsHuman',
+                failure_reason='Blocked: prerequisite "' || b.blocking_title || '" ended at ' || b.blocking_status || ' without merging.'
+              FROM blocked b WHERE t.id = b.task_id
+              RETURNING t.id, t.failure_reason
+            ), logged AS (
+              INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+              SELECT id,'Pending','NeedsHuman',failure_reason,'orchestrator' FROM updated
+            )
+            SELECT count(*)::int FROM updated
+            """;
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+    }
+}
+
+internal sealed class TaskDependencyRow
+{
+    public Guid TaskId { get; init; }
+    public Guid DependsOnTaskId { get; init; }
+    public string DependsOnTitle { get; init; } = "";
+    public string DependsOnStatus { get; init; } = "";
+
+    public TaskDependency ToModel() => new(TaskId, DependsOnTaskId, DependsOnTitle, Enum.Parse<FactoryTaskStatus>(DependsOnStatus));
 }
 
 internal sealed class DispatchPauseRow

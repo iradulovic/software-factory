@@ -126,6 +126,36 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.CompletedTask;
     }
 
+    public List<(Guid TaskId, int Priority)> PrioritiesSet { get; } = [];
+    public Task SetPriorityAsync(Guid taskId, int priority, CancellationToken cancellationToken)
+    {
+        PrioritiesSet.Add((taskId, priority));
+        return Task.CompletedTask;
+    }
+
+    public List<(Guid TaskId, Guid DependsOnTaskId)> DependenciesAdded { get; } = [];
+    public AddDependencyOutcome NextAddDependencyOutcome { get; set; } = AddDependencyOutcome.Added;
+    public Task<AddDependencyOutcome> AddDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
+    {
+        DependenciesAdded.Add((taskId, dependsOnTaskId));
+        return Task.FromResult(NextAddDependencyOutcome);
+    }
+
+    public List<(Guid TaskId, Guid DependsOnTaskId)> DependenciesRemoved { get; } = [];
+    public Task RemoveDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
+    {
+        DependenciesRemoved.Add((taskId, dependsOnTaskId));
+        return Task.CompletedTask;
+    }
+
+    public List<TaskDependency> Dependencies { get; set; } = [];
+    public Task<IReadOnlyList<TaskDependency>> GetDependenciesAsync(Guid taskId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<TaskDependency>>(Dependencies.Where(d => d.TaskId == taskId).ToList());
+
+    public int TasksToBlockOnFailedPrerequisites { get; set; }
+    public Task<int> BlockDependentsOnFailedPrerequisitesAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(TasksToBlockOnFailedPrerequisites);
+
     public Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken)
     {
         GitHubWrites.Add((taskId, kind, detail, succeeded, error));
