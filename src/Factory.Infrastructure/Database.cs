@@ -320,16 +320,18 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         const string sql = """
             INSERT INTO factory.agent_run(
               id,task_id,run_id,step_id,agent,started_at,completed_at,duration_seconds,exit_code,status,stdout,stderr,
-              quota_detected,quota_reset_at,attempt_number,needs_human,result_json,result_summary,tests_run,tests_passed,files_changed,risks,human_reason)
+              quota_detected,quota_reset_at,attempt_number,needs_human,counts_as_implementation_attempt,
+              result_json,result_summary,tests_run,tests_passed,files_changed,risks,human_reason)
             VALUES(
               @Id,@TaskId,@RunId,@StepId,@Agent,@StartedAt,@CompletedAt,@DurationSeconds,@ExitCode,@Status,@StandardOutput,@StandardError,
-              @QuotaDetected,@QuotaResetAt,@AttemptNumber,@NeedsHuman,CAST(@ResultJson AS jsonb),@ResultSummary,CAST(@TestsRun AS jsonb),@TestsPassed,
+              @QuotaDetected,@QuotaResetAt,@AttemptNumber,@NeedsHuman,@CountsAsImplementationAttempt,
+              CAST(@ResultJson AS jsonb),@ResultSummary,CAST(@TestsRun AS jsonb),@TestsPassed,
               CAST(@FilesChanged AS jsonb),CAST(@Risks AS jsonb),@HumanReason)
             """;
         var parameters = new
         {
             r.Id, r.TaskId, r.RunId, r.StepId, r.Agent, r.StartedAt, r.CompletedAt, r.DurationSeconds, r.ExitCode, r.Status,
-            r.StandardOutput, r.StandardError, r.QuotaDetected, r.QuotaResetAt, r.AttemptNumber, r.NeedsHuman,
+            r.StandardOutput, r.StandardError, r.QuotaDetected, r.QuotaResetAt, r.AttemptNumber, r.NeedsHuman, r.CountsAsImplementationAttempt,
             ResultJson = r.Result is null ? null : JsonSerializer.Serialize(r.Result, JsonOptions),
             ResultSummary = r.Result?.Summary,
             TestsRun = r.Result is null ? null : JsonSerializer.Serialize(r.Result.TestsRun, JsonOptions),
@@ -456,17 +458,27 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public async Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken)
     {
         await using var c = Connection();
-        return await c.ExecuteScalarAsync<int>(new CommandDefinition("SELECT count(*)::int FROM factory.agent_run WHERE task_id=@taskId", new { taskId }, cancellationToken: cancellationToken));
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT count(*)::int FROM factory.agent_run WHERE task_id=@taskId AND counts_as_implementation_attempt", new { taskId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<int> CountQuotaInterruptionsAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT count(*)::int FROM factory.agent_run WHERE task_id=@taskId AND NOT counts_as_implementation_attempt", new { taskId }, cancellationToken: cancellationToken));
     }
 
     public async Task<PreviousAttemptSummary?> GetPreviousAttemptAsync(Guid taskId, CancellationToken cancellationToken)
     {
+        // Skips quota-interrupted rows: the agent's context should always reflect the last real implementation
+        // attempt, never a content-free quota blip that happens to be more recent.
         const string sql = """
             SELECT ar.result_summary AS "AgentSummary", ar.files_changed::text AS "FilesChangedJson",
               r.files_changed AS "RunFilesChanged", COALESCE(r.lines_added,0) AS "LinesAdded", COALESCE(r.lines_removed,0) AS "LinesRemoved", ar.run_id AS "RunId"
             FROM factory.agent_run ar
             JOIN factory.run r ON r.id = ar.run_id
-            WHERE ar.task_id=@taskId
+            WHERE ar.task_id=@taskId AND ar.counts_as_implementation_attempt
             ORDER BY ar.started_at DESC
             LIMIT 1
             """;

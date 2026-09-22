@@ -17,10 +17,13 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
         var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", context.AttemptNumber, cancellationToken);
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
         var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath), cancellationToken);
+        // A quota-interrupted invocation never got a real chance to implement anything, so it is excluded from
+        // the implementation-attempt budget (CountAgentRunsAsync) even though it stays recorded here in full.
         await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), context.Task.Id, context.RunId, stepId, agent.Name, result.Process.StartedAt,
             result.Process.CompletedAt, result.Process.Duration.TotalSeconds, result.Process.ExitCode,
             result.Process.Succeeded ? "Succeeded" : "Failed", result.Process.StandardOutput, result.Process.StandardError,
-            result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result), cancellationToken);
+            result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result,
+            CountsAsImplementationAttempt: !result.QuotaDetected), cancellationToken);
 
         // Quota status is persisted independently of this task's run: every invocation updates it, whether or not
         // quota was detected, so a status that cleared is reflected immediately for AgentSelector rather than only
@@ -31,6 +34,17 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
         if (result.QuotaDetected)
         {
             await tasks.CompleteStepAsync(stepId, ExecutionStatus.Failed, $"{agent.Name} quota reached", result.Process.StandardError, cancellationToken);
+
+            // Excluding quota interruptions from the implementation-attempt budget must never let a task wait on
+            // quota forever: a separate, explicitly bounded count of quota interruptions stops it with an
+            // actionable reason once that bound is reached, instead of waiting again.
+            var interruptions = await tasks.CountQuotaInterruptionsAsync(context.Task.Id, cancellationToken);
+            var maxInterruptions = context.Configuration!.MaxQuotaInterruptions;
+            if (interruptions >= maxInterruptions)
+            {
+                return PipelineStepResult.NeedsHuman(
+                    $"Quota interruption limit ({maxInterruptions}) reached without a successful implementation attempt; a human must intervene.");
+            }
             return PipelineStepResult.WaitingForQuota($"{agent.Name} quota reached");
         }
         if (!result.Process.Succeeded)

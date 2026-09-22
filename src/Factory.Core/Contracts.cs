@@ -47,8 +47,15 @@ public interface ITaskStore
     /// GitHub sync worker to observe and resolve to <see cref="FactoryTaskStatus.Completed"/> or <see cref="FactoryTaskStatus.Rejected"/>.</summary>
     Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken);
 
-    /// <summary>How many times the agent has already been invoked to implement this task, across every run.</summary>
+    /// <summary>How many invocations count toward this task's <see cref="RepositoryConfiguration.MaxImplementationAttempts"/>
+    /// budget, across every run — a quota-interrupted invocation (see <see cref="AgentRunRecord.CountsAsImplementationAttempt"/>)
+    /// never got a real chance to implement anything, so it is excluded here even though it is still recorded in full.</summary>
     Task<int> CountAgentRunsAsync(Guid taskId, CancellationToken cancellationToken);
+
+    /// <summary>How many quota-interrupted invocations this task has accumulated, across every run — the separate
+    /// bound (<see cref="RepositoryConfiguration.MaxQuotaInterruptions"/>) that keeps excluding them from the
+    /// implementation-attempt budget from letting a task wait on quota forever.</summary>
+    Task<int> CountQuotaInterruptionsAsync(Guid taskId, CancellationToken cancellationToken);
 
     /// <summary>The most recent implementation attempt's outcome for this task, or <see langword="null"/> if
     /// there has not been one yet.</summary>

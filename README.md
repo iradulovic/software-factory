@@ -83,7 +83,8 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
   "maxImplementationAttempts": 2,
   "maxReviewAttempts": 1,
   "requireHumanMerge": true,
-  "publish": "manual"
+  "publish": "manual",
+  "maxQuotaInterruptions": 20
 }
 ```
 
@@ -104,6 +105,8 @@ Shell operators (`&&`, `|`, redirection, ...) are never available implicitly. A 
 `publish` is `"manual"` (default: a human must click Publish on a `ReadyForPublish` task) or `"auto-draft"` (the orchestrator requests publication itself as soon as a task reaches `ReadyForPublish`). Publishing pushes the task's own branch and opens a draft pull request; it never merges.
 
 `maxImplementationAttempts` is enforced: once the agent has been invoked that many times for a task, the next attempt fails immediately, before invoking the agent again, with a reason explicit that this is terminal rather than one more transient failure to retry. Every attempt after the first receives the previous attempt's agent summary, validation output, and changed files in `.factory/task.md`, so a repeat run can fix the actual problem instead of repeating the same failing approach.
+
+A quota-interrupted invocation never got a real chance to implement anything, so it does not count toward `maxImplementationAttempts`, and the "previous attempt" context above always reflects the last invocation that actually tried, never a quota blip. Excluding quota interruptions from that budget is bounded separately by `maxQuotaInterruptions`: once a task has accumulated that many quota-interrupted invocations without a successful attempt, it moves to `NeedsHuman` instead of waiting again, so a persistently blocked provider cannot make a task wait forever.
 
 ## 3. Build, test, and migrate
 

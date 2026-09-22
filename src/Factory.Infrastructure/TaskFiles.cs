@@ -36,10 +36,13 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
             file?.MaxImplementationAttempts ?? defaults.MaxImplementationAttempts,
             file?.MaxReviewAttempts ?? defaults.MaxReviewAttempts,
             file?.RequireHumanMerge ?? defaults.RequireHumanMerge,
-            string.IsNullOrWhiteSpace(file?.Publish) ? defaults.Publish : file.Publish.Trim());
+            string.IsNullOrWhiteSpace(file?.Publish) ? defaults.Publish : file.Publish.Trim(),
+            file?.MaxQuotaInterruptions ?? defaults.MaxQuotaInterruptions);
 
         if (configuration.MaxImplementationAttempts < 1 || configuration.MaxReviewAttempts < 0)
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxImplementationAttempts must be at least 1 and maxReviewAttempts must not be negative.");
+        if (configuration.MaxQuotaInterruptions < 1)
+            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxQuotaInterruptions must be at least 1.");
         if (configuration.BuildCommands.Any(c => string.IsNullOrWhiteSpace(c.Executable)) || configuration.TestCommands.Any(c => string.IsNullOrWhiteSpace(c.Executable)))
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: build and test commands must not be empty.");
         if (configuration.Publish is not ("manual" or "auto-draft"))
@@ -57,6 +60,7 @@ internal sealed class RepositoryConfigurationFile
     public int? MaxReviewAttempts { get; init; }
     public bool? RequireHumanMerge { get; init; }
     public string? Publish { get; init; }
+    public int? MaxQuotaInterruptions { get; init; }
 }
 
 public sealed class TaskContextWriter : ITaskContextWriter

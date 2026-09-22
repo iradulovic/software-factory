@@ -245,6 +245,60 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task Quota_detection_records_the_invocation_as_not_counting_toward_the_implementation_budget()
+    {
+        var harness = new Harness { AgentResult = new AgentRunResult(Harness.Process(), null, null, QuotaDetected: true) };
+
+        await harness.ExecuteAsync();
+
+        var agentRun = Assert.Single(harness.Store.AgentRuns);
+        Assert.False(agentRun.CountsAsImplementationAttempt);
+    }
+
+    [Fact]
+    public async Task Repeated_quota_interruptions_do_not_exhaust_the_implementation_attempt_budget()
+    {
+        var harness = new Harness { Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 1, 1, true) };
+        for (var i = 0; i < 5; i++)
+            harness.Store.AgentRuns.Add(Harness.PriorAgentRun(harness.ClaimedTask.Id) with { CountsAsImplementationAttempt = false });
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+        Assert.Equal(1, harness.WrittenAttempt!.Number);
+    }
+
+    [Fact]
+    public async Task Real_failed_implementations_do_exhaust_the_implementation_attempt_budget()
+    {
+        var harness = new Harness { Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 1, 1, true) };
+        harness.Store.AgentRuns.Add(Harness.PriorAgentRun(harness.ClaimedTask.Id));
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
+        Assert.Equal(FactoryTaskStatus.Preparing, harness.Store.Transitions[^1].From);
+        Assert.Contains("Implementation attempt limit (1) reached", harness.Store.Transitions[^1].Reason);
+    }
+
+    [Fact]
+    public async Task Quota_interruption_limit_reached_moves_the_task_to_needs_human_instead_of_waiting_again()
+    {
+        var harness = new Harness
+        {
+            Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 2, 1, true, MaxQuotaInterruptions: 2),
+            AgentResult = new AgentRunResult(Harness.Process(), null, null, QuotaDetected: true)
+        };
+        harness.Store.AgentRuns.Add(Harness.PriorAgentRun(harness.ClaimedTask.Id) with { CountsAsImplementationAttempt = false });
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.NeedsHuman, harness.Store.Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.NeedsHuman,
+            "Quota interruption limit (2) reached without a successful implementation attempt; a human must intervene.");
+    }
+
+    [Fact]
     public async Task Quota_detection_persists_agent_quota_status_independent_of_the_task_run()
     {
         var resetAt = DateTimeOffset.UtcNow.AddHours(5);
