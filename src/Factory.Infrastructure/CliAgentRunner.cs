@@ -24,9 +24,7 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
             : new ProcessRequest(profile.Executable, profile.Arguments, request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), StandardInput: Prompt, LogPath: request.LogPath);
         var process = await processRunner.RunAsync(invocation, cancellationToken);
         var (result, error) = await resultReader.ReadAsync(request.WorkingDirectory, cancellationToken);
-        var combined = process.StandardOutput + "\n" + process.StandardError;
-        var quota = profile.QuotaSignatures.Any(signature => combined.Contains(signature, StringComparison.OrdinalIgnoreCase));
-        var quotaResetAt = quota ? clock.UtcNow + TimeSpan.FromHours(profile.QuotaCooldownHours) : (DateTimeOffset?)null;
-        return new AgentRunResult(process, result, error, quota, quotaResetAt);
+        var quota = QuotaClassifier.Classify(profile, process, clock.UtcNow);
+        return new AgentRunResult(process, result, error, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail);
     }
 }

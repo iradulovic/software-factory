@@ -73,9 +73,23 @@ public sealed record ProcessResult(
 }
 
 public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null);
-public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, string? ValidationError, bool QuotaDetected, DateTimeOffset? QuotaResetAt = null);
+
+/// <param name="Window">The classified reset window a detected quota signal falls into; <see cref="QuotaWindow.None"/>
+/// when <paramref name="QuotaDetected"/> is <see langword="false"/>. See <see cref="QuotaClassifier"/>.</param>
+/// <param name="ResetKind">How confidently <paramref name="QuotaResetAt"/> is known.</param>
+/// <param name="QuotaDetail">The short, configured signature string that triggered detection, if any — never the
+/// full process output, which is preserved separately.</param>
+public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, string? ValidationError, bool QuotaDetected,
+    DateTimeOffset? QuotaResetAt = null, QuotaWindow Window = QuotaWindow.None, QuotaResetKind ResetKind = QuotaResetKind.None, string? QuotaDetail = null);
 
 public sealed record AgentAvailability(string Agent, bool Available, string? Version, string? Error);
+
+/// <summary>An agent's current quota status, persisted independently of any particular task or run — the state
+/// <see cref="ITaskStore.IsAgentAtQuotaAsync"/> actually consults. Updated after every invocation of the agent,
+/// whether or not quota was detected, so a status that cleared is reflected immediately rather than only by
+/// scanning task-run history.</summary>
+public sealed record AgentQuotaStatus(string Agent, bool Detected, QuotaWindow Window, QuotaResetKind ResetKind,
+    DateTimeOffset? ResetAt, DateTimeOffset CheckedAt, string? Detail);
 
 public sealed record AgentResult(string Status, string Summary, IReadOnlyList<string> TestsRun, bool TestsPassed,
     IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason);
@@ -157,6 +171,16 @@ public sealed record PreviousAttemptSummary(
 /// one is a configuration change, never a new class. <see cref="PromptDelivery"/> is <c>"stdin"</c> (the prompt is
 /// piped to the process) or <c>"argument"</c> (the prompt is appended to <see cref="Arguments"/>).
 /// </summary>
+/// <param name="QuotaSignatures">Signatures identifying a short-cooldown quota exhaustion (<see cref="QuotaWindow.ShortTerm"/>).</param>
+/// <param name="WeeklyQuotaSignatures">Signatures identifying a longer, weekly-scale exhaustion (<see cref="QuotaWindow.Weekly"/>),
+/// checked before <paramref name="QuotaSignatures"/> so a CLI that reports both kinds is classified correctly.
+/// <see langword="null"/> or empty if this CLI is not known to report one.</param>
+/// <param name="WeeklyQuotaCooldownHours">The bounded backoff used for a weekly signal with no parseable explicit
+/// reset (an estimate, never presented as a value the CLI reported).</param>
+/// <param name="QuotaResetPattern">An optional regular expression, with a named capture group <c>value</c>, that
+/// extracts a structured reset expression (an absolute timestamp, or a relative duration like "5h" or "2 days")
+/// from a matched signature's surrounding text. Left <see langword="null"/>, quota resets are always estimated
+/// from <see cref="QuotaCooldownHours"/>/<paramref name="WeeklyQuotaCooldownHours"/> rather than parsed.</param>
 public sealed record AgentProfile(
     string Name,
     string Executable,
@@ -166,4 +190,7 @@ public sealed record AgentProfile(
     IReadOnlyList<string> QuotaSignatures,
     IReadOnlyList<string> VersionArguments,
     int AvailabilityTimeoutSeconds,
-    int QuotaCooldownHours);
+    int QuotaCooldownHours,
+    IReadOnlyList<string>? WeeklyQuotaSignatures = null,
+    int WeeklyQuotaCooldownHours = 168,
+    string? QuotaResetPattern = null);

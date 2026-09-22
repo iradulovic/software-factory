@@ -125,5 +125,10 @@ internal sealed class FakeTaskStore : ITaskStore
     public HashSet<string> AgentsAtQuota { get; } = [];
     public Task<bool> IsAgentAtQuotaAsync(string agent, CancellationToken cancellationToken) => Task.FromResult(AgentsAtQuota.Contains(agent));
 
+    public List<AgentQuotaStatus> RecordedQuotaStatuses { get; } = [];
+    public Task RecordAgentQuotaStatusAsync(AgentQuotaStatus status, CancellationToken cancellationToken) { RecordedQuotaStatuses.Add(status); return Task.CompletedTask; }
+    public Task<AgentQuotaStatus?> GetAgentQuotaStatusAsync(string agent, CancellationToken cancellationToken) =>
+        Task.FromResult(RecordedQuotaStatuses.LastOrDefault(s => s.Agent == agent));
+
     public StepRecord Step(string stepType) => Steps.Values.Single(s => s.StepType == stepType);
 }

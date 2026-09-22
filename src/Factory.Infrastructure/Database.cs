@@ -510,15 +510,57 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public async Task<bool> IsAgentAtQuotaAsync(string agent, CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT COALESCE(quota_detected AND quota_reset_at > now(), false)
-            FROM factory.agent_run
+            SELECT COALESCE(detected AND reset_at > now(), false)
+            FROM factory.agent_availability
             WHERE agent=@agent
-            ORDER BY started_at DESC
-            LIMIT 1
             """;
         await using var c = Connection();
         return await c.ExecuteScalarAsync<bool>(new CommandDefinition(sql, new { agent }, cancellationToken: cancellationToken));
     }
+
+    public async Task RecordAgentQuotaStatusAsync(AgentQuotaStatus status, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO factory.agent_availability(agent,detected,quota_window,reset_kind,reset_at,checked_at,detail)
+            VALUES(@Agent,@Detected,@Window,@ResetKind,@ResetAt,@CheckedAt,@Detail)
+            ON CONFLICT(agent) DO UPDATE SET
+              detected=excluded.detected, quota_window=excluded.quota_window, reset_kind=excluded.reset_kind,
+              reset_at=excluded.reset_at, checked_at=excluded.checked_at, detail=excluded.detail
+            """;
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, new
+        {
+            status.Agent, status.Detected, Window = status.Window.ToString(), ResetKind = status.ResetKind.ToString(),
+            status.ResetAt, status.CheckedAt, status.Detail
+        }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<AgentQuotaStatus?> GetAgentQuotaStatusAsync(string agent, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT agent AS "Agent", detected AS "Detected", quota_window AS "Window", reset_kind AS "ResetKind",
+              reset_at AS "ResetAt", checked_at AS "CheckedAt", detail AS "Detail"
+            FROM factory.agent_availability WHERE agent=@agent
+            """;
+        await using var c = Connection();
+        var row = await c.QuerySingleOrDefaultAsync<AgentQuotaStatusRow>(new CommandDefinition(sql, new { agent }, cancellationToken: cancellationToken));
+        return row?.ToModel();
+    }
+}
+
+internal sealed class AgentQuotaStatusRow
+{
+    public string Agent { get; init; } = "";
+    public bool Detected { get; init; }
+    public string Window { get; init; } = "";
+    public string ResetKind { get; init; } = "";
+    public DateTime? ResetAt { get; init; }
+    public DateTime CheckedAt { get; init; }
+    public string? Detail { get; init; }
+
+    public AgentQuotaStatus ToModel() => new(Agent, Detected, Enum.Parse<QuotaWindow>(Window), Enum.Parse<QuotaResetKind>(ResetKind),
+        ResetAt is null ? null : new DateTimeOffset(DateTime.SpecifyKind(ResetAt.Value, DateTimeKind.Utc)),
+        new DateTimeOffset(DateTime.SpecifyKind(CheckedAt, DateTimeKind.Utc)), Detail);
 }
 
 internal sealed class PreviousAttemptRow
