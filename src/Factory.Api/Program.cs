@@ -97,6 +97,36 @@ app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentA
     return Results.Ok(await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct));
 });
 
+// Durable pause/resume (SF-610). Pausing stops new dispatch only — a task already claimed and executing always
+// finishes, and publication of already-validated work is untouched, since it consumes no agent's subscription.
+app.MapGet("/api/control/pause", async (ITaskStore tasks, CancellationToken ct) =>
+    Results.Ok(await tasks.GetAllDispatchPausesAsync(ct)));
+
+app.MapPost("/api/control/pause", async (PauseRequest? body, ITaskStore tasks, CancellationToken ct) =>
+{
+    await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, true, body?.Reason, "operator", ct);
+    return Results.NoContent();
+});
+
+app.MapPost("/api/control/resume", async (ITaskStore tasks, CancellationToken ct) =>
+{
+    await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, false, null, "operator", ct);
+    return Results.NoContent();
+});
+
+app.MapPost("/api/agents/{agent}/pause", async (string agent, PauseRequest? body, ITaskStore tasks, CancellationToken ct) =>
+{
+    if (agent == DispatchPauseScope.Global) return Results.BadRequest(new { error = "Use /api/control/pause to pause the whole factory." });
+    await tasks.SetDispatchPauseAsync(agent, true, body?.Reason, "operator", ct);
+    return Results.NoContent();
+});
+
+app.MapPost("/api/agents/{agent}/resume", async (string agent, ITaskStore tasks, CancellationToken ct) =>
+{
+    await tasks.SetDispatchPauseAsync(agent, false, null, "operator", ct);
+    return Results.NoContent();
+});
+
 app.MapGet("/api/tasks", async (string? status, string? repository, string? agent, string? q, string? sort, string? direction, int? page, int? pageSize, NpgsqlDataSource db, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
@@ -398,12 +428,14 @@ static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c,
         var stats = await c.QuerySingleAsync<AgentStatsRow>(new CommandDefinition(AgentStatsSql, new { agent = checker.Agent }, cancellationToken: ct));
         var isAtQuota = await tasks.IsAgentAtQuotaAsync(checker.Agent, ct);
         var quotaStatus = await tasks.GetAgentQuotaStatusAsync(checker.Agent, ct);
-        var state = AgentOperationalStateResolver.Resolve(succeeded, errored, isAtQuota, stats.ActiveTask is not null, stats.SuccessfulRuns > 0);
+        var pause = await tasks.GetDispatchPauseAsync(checker.Agent, ct);
+        var state = AgentOperationalStateResolver.Resolve(succeeded, errored, pause.Paused, isAtQuota, stats.ActiveTask is not null, stats.SuccessfulRuns > 0);
         var (quotaResetAt, quotaWindow, quotaResetKind) = isAtQuota && quotaStatus is not null
             ? (quotaStatus.ResetAt, quotaStatus.Window.ToString(), quotaStatus.ResetKind.ToString())
             : (null, null, null);
         agentStatus.Add(new AgentStatus(checker.Agent, state.ToString(), version, error,
-            stats.ActiveTask, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, quotaResetAt, quotaWindow, quotaResetKind));
+            stats.ActiveTask, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, quotaResetAt, quotaWindow, quotaResetKind,
+            pause.Paused ? pause.Reason : null));
     }
     return agentStatus;
 }

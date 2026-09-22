@@ -155,5 +155,28 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<AgentQuotaStatus?> GetAgentQuotaStatusAsync(string agent, CancellationToken cancellationToken) =>
         Task.FromResult(RecordedQuotaStatuses.LastOrDefault(s => s.Agent == agent));
 
+    public bool DispatchPaused { get; set; }
+    public HashSet<string> PausedAgents { get; } = [];
+    public Dictionary<string, DispatchPauseState> DispatchPauses { get; } = [];
+    public List<(string Scope, bool Paused, string? Reason, string Actor)> DispatchPauseChanges { get; } = [];
+
+    public Task<bool> IsDispatchPausedAsync(CancellationToken cancellationToken) => Task.FromResult(DispatchPaused);
+    public Task<bool> IsAgentPausedAsync(string agent, CancellationToken cancellationToken) => Task.FromResult(PausedAgents.Contains(agent));
+
+    public Task<DispatchPauseState> GetDispatchPauseAsync(string scope, CancellationToken cancellationToken) =>
+        Task.FromResult(DispatchPauses.TryGetValue(scope, out var state) ? state : DispatchPauseState.NotPaused(scope));
+
+    public Task<IReadOnlyList<DispatchPauseState>> GetAllDispatchPausesAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<DispatchPauseState>>(DispatchPauses.Values.ToList());
+
+    public Task SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor, CancellationToken cancellationToken)
+    {
+        DispatchPauseChanges.Add((scope, paused, reason, actor));
+        DispatchPauses[scope] = paused
+            ? new DispatchPauseState(scope, true, reason, DateTimeOffset.UtcNow, actor)
+            : DispatchPauseState.NotPaused(scope);
+        return Task.CompletedTask;
+    }
+
     public StepRecord Step(string stepType) => Steps.Values.Single(s => s.StepType == stepType);
 }

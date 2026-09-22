@@ -96,6 +96,22 @@ public sealed record AgentAvailability(string Agent, bool Available, string? Ver
 public sealed record AgentQuotaStatus(string Agent, bool Detected, QuotaWindow Window, QuotaResetKind ResetKind,
     DateTimeOffset? ResetAt, DateTimeOffset CheckedAt, string? Detail);
 
+/// <summary>The reserved <see cref="DispatchPauseState.Scope"/> that pauses the whole factory's new-task
+/// dispatch, as distinct from every other scope value, which is a specific agent's own name.</summary>
+public static class DispatchPauseScope
+{
+    public const string Global = "__global__";
+}
+
+/// <summary>Durable pause/resume state for one scope (<see cref="DispatchPauseScope.Global"/> or a specific
+/// agent's name), operator-initiated and independent of quota (which clears itself) and of cancellation (which
+/// stops work already in progress; pause never does — only new dispatch). <paramref name="Reason"/>,
+/// <paramref name="PausedAt"/>, and <paramref name="PausedBy"/> are only meaningful while <see cref="Paused"/>.</summary>
+public sealed record DispatchPauseState(string Scope, bool Paused, string? Reason, DateTimeOffset? PausedAt, string? PausedBy)
+{
+    public static DispatchPauseState NotPaused(string scope) => new(scope, false, null, null, null);
+}
+
 public sealed record AgentResult(string Status, string Summary, IReadOnlyList<string> TestsRun, bool TestsPassed,
     IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason);
 

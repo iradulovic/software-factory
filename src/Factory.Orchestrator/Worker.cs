@@ -22,6 +22,12 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExec
                 var resumed = await tasks.ResumeExpiredQuotaTasksAsync(_configuredAgents, stoppingToken);
                 if (resumed > 0) logger.LogInformation("Resumed {Count} task(s) now that a configured provider is available", resumed);
 
+                // Pausing stops new dispatch only, checked right here before claiming — never mid-task, so a task
+                // already claimed and executing always finishes undisturbed. Publication (PublicationWorker) is
+                // a separate, independently polling worker and is deliberately untouched by this: pushing and
+                // opening a pull request for already-validated work consumes no coding agent's subscription.
+                if (await tasks.IsDispatchPausedAsync(stoppingToken)) { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken); continue; }
+
                 var task = await tasks.ClaimNextAsync(options.Value.WorkerId, leases.LeaseDuration, stoppingToken);
                 if (task is null) { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken); continue; }
                 await ExecuteWithLeaseAsync(task, stoppingToken);

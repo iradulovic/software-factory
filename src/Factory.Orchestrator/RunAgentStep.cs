@@ -12,7 +12,7 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
     public async Task<PipelineStepResult> ExecuteAsync(PipelineContext context, CancellationToken cancellationToken)
     {
         var agent = await selector.SelectAsync(context.Task.PreferredAgent, cancellationToken);
-        if (agent is null) return PipelineStepResult.WaitingForQuota("All configured agents are at quota.");
+        if (agent is null) return PipelineStepResult.WaitingForQuota("All configured agents are paused or at quota.");
 
         // Persisted from the moment the agent is actually selected — before it runs, not only once it finishes —
         // so a task currently mid-invocation is correctly attributed to the agent really running it, including

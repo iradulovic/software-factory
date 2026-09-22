@@ -881,6 +881,101 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Dispatch_pause_state_is_durable_and_resuming_clears_the_reason()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                Assert.False(await fixture.Tasks.IsDispatchPausedAsync(CancellationToken.None));
+                Assert.False(await fixture.Tasks.IsAgentPausedAsync("Codex", CancellationToken.None));
+                var notPaused = await fixture.Tasks.GetDispatchPauseAsync(DispatchPauseScope.Global, CancellationToken.None);
+                Assert.False(notPaused.Paused);
+                Assert.Null(notPaused.Reason);
+
+                await fixture.Tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, true, "Reserving capacity for interactive use", "operator", CancellationToken.None);
+                await fixture.Tasks.SetDispatchPauseAsync("Codex", true, "Interactive debugging session", "operator", CancellationToken.None);
+
+                Assert.True(await fixture.Tasks.IsDispatchPausedAsync(CancellationToken.None));
+                Assert.True(await fixture.Tasks.IsAgentPausedAsync("Codex", CancellationToken.None));
+                Assert.False(await fixture.Tasks.IsAgentPausedAsync("Claude", CancellationToken.None));
+
+                // A fresh store instance reads the same state back — durable across a process restart, not held
+                // only in memory.
+                var restarted = new PostgresTaskStore(Options.Create(new FactoryOptions { ConnectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING")! }), new TestClock());
+                var globalPause = await restarted.GetDispatchPauseAsync(DispatchPauseScope.Global, CancellationToken.None);
+                Assert.True(globalPause.Paused);
+                Assert.Equal("Reserving capacity for interactive use", globalPause.Reason);
+                Assert.NotNull(globalPause.PausedAt);
+                Assert.Equal("operator", globalPause.PausedBy);
+
+                var all = await restarted.GetAllDispatchPausesAsync(CancellationToken.None);
+                Assert.Contains(all, p => p.Scope == DispatchPauseScope.Global && p.Paused);
+                Assert.Contains(all, p => p.Scope == "Codex" && p.Paused);
+
+                // Resuming clears the reason/actor/time along with the flag, so a later query never shows a
+                // stale reason for a pause that is no longer in effect.
+                await fixture.Tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, false, null, "operator", CancellationToken.None);
+                var resumed = await fixture.Tasks.GetDispatchPauseAsync(DispatchPauseScope.Global, CancellationToken.None);
+                Assert.False(resumed.Paused);
+                Assert.Null(resumed.Reason);
+                Assert.Null(resumed.PausedAt);
+                Assert.Null(resumed.PausedBy);
+                Assert.False(await fixture.Tasks.IsDispatchPausedAsync(CancellationToken.None));
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.dispatch_pause WHERE scope IN (@global,'Codex')", new { global = DispatchPauseScope.Global });
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Resuming_waiting_work_never_resumes_it_onto_a_paused_provider()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('pause-resume-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@taskId,@repositoryId,'Paused-provider task','WaitingForQuota','main')
+                """, new { taskId, repositoryId });
+
+            // Codex is not at quota, but the operator paused it to reserve capacity for interactive use: it must
+            // never be treated as "available" for resuming a waiting task, exactly like it never bypasses quota.
+            await tasks.SetDispatchPauseAsync("Codex", true, "Interactive debugging session", "operator", CancellationToken.None);
+            Assert.Equal(0, await tasks.ResumeExpiredQuotaTasksAsync(["Codex"], CancellationToken.None));
+            Assert.Equal("WaitingForQuota", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId }));
+
+            // Resuming Codex makes the task eligible again.
+            await tasks.SetDispatchPauseAsync("Codex", false, null, "operator", CancellationToken.None);
+            Assert.Equal(1, await tasks.ResumeExpiredQuotaTasksAsync(["Codex"], CancellationToken.None));
+            Assert.Equal("Pending", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId }));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.dispatch_pause WHERE scope='Codex'");
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id=@taskId", new { taskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Quota_interruptions_are_excluded_from_the_implementation_attempt_budget_but_real_failures_are_not()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
