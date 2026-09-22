@@ -30,6 +30,11 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
 
 ## In progress
 
+- [ ] **SF-614 — Surface GitHub CI status for the published commit**
+  - Dependencies: SF-607, SF-609.
+  - Scope: synchronize check status and links for the exact published head commit. Show pending, passed, failed, and unavailable evidence separately from local validation. Initially route failures to human review; automatic CI repair is optional follow-up work.
+  - Acceptance: stale successful checks on an older head never mark new changes green; failed checks link to diagnostics; missing checks/authentication errors remain explicit. CI visibility does not automatically merge or deploy.
+
 ## Next up
 
 The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
@@ -44,12 +49,7 @@ SF-607 is complete; see **Completed** below. SF-608 is blocked; see **Blocked** 
 
 ### Priority 2 — Give the operator trustworthy control
 
-SF-609, SF-610, SF-611, SF-612, and SF-613 are complete; see **Completed** below.
-
-- [ ] **SF-614 — Surface GitHub CI status for the published commit**
-  - Dependencies: SF-607, SF-609.
-  - Scope: synchronize check status and links for the exact published head commit. Show pending, passed, failed, and unavailable evidence separately from local validation. Initially route failures to human review; automatic CI repair is optional follow-up work.
-  - Acceptance: stale successful checks on an older head never mark new changes green; failed checks link to diagnostics; missing checks/authentication errors remain explicit. CI visibility does not automatically merge or deploy.
+SF-609, SF-610, SF-611, SF-612, and SF-613 are complete; see **Completed** below. SF-614 is in progress; see **In progress** above.
 
 ### Priority 3 — Establish sustainable desktop operation
 
