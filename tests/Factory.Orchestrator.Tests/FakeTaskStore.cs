@@ -205,6 +205,31 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.FromResult(NextIssueDependencyReconciliation);
     }
 
+    public Task<bool> CreateForTrackerItemIfEligibleAsync(long repositoryId, string baseBranch, string trackerItemId, string title, string description, CancellationToken cancellationToken) => Task.FromResult(false);
+
+    public Dictionary<(long RepositoryId, string TrackerItemId), Guid> TrackerTaskIds { get; } = [];
+    public Task<Guid?> FindTaskIdForTrackerItemAsync(long repositoryId, string trackerItemId, CancellationToken cancellationToken) =>
+        Task.FromResult(TrackerTaskIds.TryGetValue((repositoryId, trackerItemId), out var id) ? id : (Guid?)null);
+
+    public List<(Guid TaskId, IReadOnlyList<Guid> ParsedDependsOnTaskIds)> TrackerDependencyReconciliations { get; } = [];
+    public IssueDependencyReconciliation NextTrackerDependencyReconciliation { get; set; } = new([], [], []);
+    public Task<IssueDependencyReconciliation> ReconcileTrackerDependenciesAsync(Guid taskId, IReadOnlyList<Guid> parsedDependsOnTaskIds, CancellationToken cancellationToken)
+    {
+        TrackerDependencyReconciliations.Add((taskId, parsedDependsOnTaskIds));
+        return Task.FromResult(NextTrackerDependencyReconciliation);
+    }
+
+    public List<TrackerFileTask> TrackerFileTasks { get; set; } = [];
+    public Task<IReadOnlyList<TrackerFileTask>> GetTrackerFileTasksAsync(long repositoryId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<TrackerFileTask>>(TrackerFileTasks);
+
+    public List<(Guid TaskId, TrackerSection Section)> TrackerWritebackSections { get; } = [];
+    public Task SetTrackerWritebackSectionAsync(Guid taskId, TrackerSection section, CancellationToken cancellationToken)
+    {
+        TrackerWritebackSections.Add((taskId, section));
+        return Task.CompletedTask;
+    }
+
     public int TasksToBlockOnFailedPrerequisites { get; set; }
     public Task<int> BlockDependentsOnFailedPrerequisitesAsync(CancellationToken cancellationToken) =>
         Task.FromResult(TasksToBlockOnFailedPrerequisites);

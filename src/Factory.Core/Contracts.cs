@@ -303,6 +303,62 @@ public interface ITaskStore
     /// <paramref name="expectedStatus"/> — protecting against a task that resumed (e.g. a human retry) between
     /// being listed as a cleanup candidate and actually being cleaned up. Returns whether it was cleared.</summary>
     Task<bool> ClearWorkspaceIfStatusUnchangedAsync(Guid taskId, FactoryTaskStatus expectedStatus, CancellationToken cancellationToken);
+
+    /// <summary>Creates a <c>factory.task</c> row (<c>task_type='TrackerFile'</c>, no GitHub issue) for one
+    /// unchecked "Next up" item parsed from a repository's own <c>TASKS.md</c> (SF-707) — the tracker-file
+    /// analogue of <see cref="CreateForIssueIfEligibleAsync"/>. Returns <see langword="false"/>, without creating
+    /// anything, if a task already exists for this exact <paramref name="trackerItemId"/> in this repository,
+    /// regardless of that task's current status — unlike a GitHub issue, a tracker item is never recreated once
+    /// it has ever produced a task, since the file itself (not GitHub) is the durable record of whether it is
+    /// still open. Starts at <see cref="TrackerSection.NextUp"/>'s write-back baseline, since that is exactly
+    /// where the item already sits in the file at creation time — no file write is needed yet.</summary>
+    Task<bool> CreateForTrackerItemIfEligibleAsync(long repositoryId, string baseBranch, string trackerItemId, string title, string description, CancellationToken cancellationToken);
+
+    /// <summary>The factory task produced from a given repository's given tracker item id (e.g. <c>"SF-707"</c>),
+    /// or <see langword="null"/> if none exists yet — mirrors <see cref="FindTaskIdForIssueAsync"/>, used to
+    /// resolve a TASKS.md item's <c>Dependencies:</c> line into task ids (SF-707).</summary>
+    Task<Guid?> FindTaskIdForTrackerItemAsync(long repositoryId, string trackerItemId, CancellationToken cancellationToken);
+
+    /// <summary>Reconciles <paramref name="taskId"/>'s <c>source='tracker'</c> dependency edges against a tracker
+    /// item's parsed <c>Dependencies:</c> line (SF-707), mirroring <see cref="ReconcileIssueDependenciesAsync"/>
+    /// exactly (same add/remove/cycle-skip semantics, same never-touches-another-source guarantee) but tagged
+    /// with its own distinct <c>source</c> value so the two reconciliation passes can never step on each other's
+    /// edges even when a task happens to have both a GitHub issue and a tracker item (not possible today, since a
+    /// task has at most one origin, but kept independent regardless).</summary>
+    Task<IssueDependencyReconciliation> ReconcileTrackerDependenciesAsync(Guid taskId, IReadOnlyList<Guid> parsedDependsOnTaskIds, CancellationToken cancellationToken);
+
+    /// <summary>Every <c>task_type='TrackerFile'</c> task for one repository (SF-707), with enough state for
+    /// <c>Factory.GitHubSync.Worker</c> to decide whether that repository's <c>TASKS.md</c> still needs to be
+    /// updated to reflect each one's current status.</summary>
+    Task<IReadOnlyList<TrackerFileTask>> GetTrackerFileTasksAsync(long repositoryId, CancellationToken cancellationToken);
+
+    /// <summary>Records which <see cref="TrackerSection"/> a tracker-file task's TASKS.md item was last
+    /// confirmed to reflect (SF-707), so a later poll only attempts a file write when
+    /// <see cref="TrackerSectionMapper.From"/> the task's current status actually differs from this.</summary>
+    Task SetTrackerWritebackSectionAsync(Guid taskId, TrackerSection section, CancellationToken cancellationToken);
+}
+
+/// <summary>Reads and writes a repository's own <c>TASKS.md</c> tracker file directly against its base branch
+/// (SF-707) — the native, GitHub-issue-free task source for a greenfield repository whose backlog lives in a
+/// hand-written tracker file rather than GitHub issues. Both operations go through the same bare
+/// <see cref="IRepositoryCache"/> <see cref="IWorktreeManager"/> already uses, via git plumbing against that bare
+/// repository directly — no working-tree checkout is ever created or touched, so this can never collide with any
+/// task's own worktree. A write is always a plain (never forced) push, so a concurrent edit to the base branch —
+/// a human's own commit, or another factory write that landed first — is never overwritten: a rejected push is
+/// simply left for the next sync cycle, which re-reads the file fresh and retries from there.</summary>
+public interface ITrackerFileSync
+{
+    /// <summary>The repository's <c>TASKS.md</c> content as committed on <paramref name="baseBranch"/>'s current
+    /// tip, or <see langword="null"/> if the file does not exist there — a repository with no tracker file simply
+    /// has nothing for SF-707 to do.</summary>
+    Task<string?> ReadAsync(GitHubRepository repository, string baseBranch, CancellationToken cancellationToken);
+
+    /// <summary>Applies one item's transition into <paramref name="targetSection"/> (see <see cref="TasksMdWriter.Apply"/>
+    /// for exactly what changes) and pushes the result to <paramref name="baseBranch"/>. Returns
+    /// <see langword="false"/> without throwing when there is nothing to push (see <see cref="TasksMdWriter.Apply"/>)
+    /// or when the push is rejected as non-fast-forward — someone else advanced the branch first, so this attempt
+    /// is abandoned rather than retried immediately, to be picked up fresh on the next sync cycle instead.</summary>
+    Task<bool> ApplyTransitionAsync(GitHubRepository repository, string baseBranch, string trackerItemId, TrackerSection targetSection, string? note, CancellationToken cancellationToken);
 }
 
 public interface IGitHubStore

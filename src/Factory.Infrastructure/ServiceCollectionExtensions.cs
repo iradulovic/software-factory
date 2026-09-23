@@ -37,6 +37,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGitHubPublisher, GhCliPublisher>();
         services.AddSingleton<IGitHubStore, PostgresGitHubStore>();
         services.AddSingleton<ITaskStore, PostgresTaskStore>();
+        services.AddSingleton<ITrackerFileSync, TrackerFileSync>();
         services.AddSingleton<DatabaseMigrator>();
         return services;
     }

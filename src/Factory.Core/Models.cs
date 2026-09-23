@@ -31,6 +31,47 @@ public sealed record IssueDependencyReconciliation(IReadOnlyList<Guid> Added, IR
 /// SF-611's existing cross-repository dependency support.</summary>
 public sealed record IssueDependencyRef(string? Owner, string? Name, int IssueNumber);
 
+/// <summary>Which of a repository's own <c>TASKS.md</c> sections (SF-707) a tracker item currently belongs in —
+/// mirrors this repository's own documented convention (see <see cref="TasksMdParser"/>). <see cref="Other"/> is
+/// any heading outside the four recognized ones (e.g. <c>## Optional backlog</c>): never eligible for automatic
+/// task creation, and never a write-back target.</summary>
+public enum TrackerSection { InProgress, NextUp, Completed, Blocked, Other }
+
+/// <summary>One item parsed from a repository's own <c>TASKS.md</c> (SF-707) — see <see cref="TasksMdParser"/>
+/// for the exact convention. <paramref name="DependencyIds"/> is parsed only from a dedicated nested
+/// <c>- Dependencies: SF-1, SF-2.</c> line, never from free-form prose elsewhere in the item.
+/// <paramref name="StartLine"/>/<paramref name="EndLineExclusive"/> are 0-based line indices into the file as
+/// <see cref="TasksMdParser.Normalize"/> splits it, used by <see cref="TasksMdWriter"/> to relocate the item's
+/// exact original lines rather than reconstructing them from parsed fields (which would risk losing formatting
+/// <see cref="TasksMdParser"/> does not itself round-trip).</summary>
+public sealed record TrackerItem(string Id, string Title, string Description, bool Checked, TrackerSection Section,
+    IReadOnlyList<string> DependencyIds, int StartLine, int EndLineExclusive);
+
+/// <summary>One <c>task_type='TrackerFile'</c> task (SF-707), with enough state for <c>Factory.GitHubSync.Worker</c>
+/// to decide whether the repository's <c>TASKS.md</c> still needs to be updated to reflect it.
+/// <paramref name="WritebackSection"/> is the section TASKS.md was last confirmed to reflect for this task, or
+/// <see langword="null"/> if no write-back has ever succeeded for it yet.</summary>
+public sealed record TrackerFileTask(Guid TaskId, string TrackerItemId, FactoryTaskStatus Status, string? FailureReason,
+    TrackerSection? WritebackSection);
+
+/// <summary>Maps a task's live <see cref="FactoryTaskStatus"/> to the <see cref="TrackerSection"/> its TASKS.md
+/// item belongs in (SF-707) — the single place this decision is made, so task creation (which starts a task at
+/// <see cref="TrackerSection.NextUp"/>) and <c>Factory.GitHubSync.Worker</c>'s write-back reconciliation can never
+/// disagree about what a given status means for the tracker file.</summary>
+public static class TrackerSectionMapper
+{
+    public static TrackerSection From(FactoryTaskStatus status) => status switch
+    {
+        FactoryTaskStatus.Pending => TrackerSection.NextUp,
+        FactoryTaskStatus.Claimed or FactoryTaskStatus.Preparing or FactoryTaskStatus.Planning or
+            FactoryTaskStatus.Implementing or FactoryTaskStatus.Validating or FactoryTaskStatus.Reviewing or
+            FactoryTaskStatus.ReadyForPublish or FactoryTaskStatus.Published or FactoryTaskStatus.WaitingForQuota => TrackerSection.InProgress,
+        FactoryTaskStatus.Completed => TrackerSection.Completed,
+        FactoryTaskStatus.NeedsHuman or FactoryTaskStatus.Rejected or FactoryTaskStatus.Failed or FactoryTaskStatus.Cancelled => TrackerSection.Blocked,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
+    };
+}
+
 /// <summary>One piece of operator feedback recorded against a task (SF-613) — a correction or a manual-test
 /// failure attached when the operator continues a resting task rather than accepting it as-is. Every feedback
 /// row stays permanently, so prior instructions remain auditable even once superseded by a later one.</summary>
