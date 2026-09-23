@@ -30,6 +30,7 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         """;
 
     public string Name => profile.Name;
+    public string Provider => profile.EffectiveProvider;
 
     public async Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
     {

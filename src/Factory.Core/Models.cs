@@ -411,6 +411,13 @@ public sealed record PreviousAttemptSummary(
 /// <param name="SessionIdPattern">An optional regular expression, with a named capture group <c>sessionId</c>,
 /// matched against this invocation's stdout to extract the provider's own session/thread id. Only consulted when
 /// <see cref="SupportsSessionResume"/> is <see langword="true"/>.</param>
+/// <param name="Provider">The underlying subscription/CLI this profile draws from — e.g. "Codex" or "Claude"
+/// (SF-704). Defaults to <see cref="Name"/> when left unset, which is exactly today's one-profile-per-provider
+/// behavior. A model/reasoning-effort preset is configured as an additional profile with its own distinct
+/// <see cref="Name"/> (so it is selected and its per-invocation settings are recorded — <see cref="AgentRunRecord.Agent"/>
+/// — independently) but the *same* <see cref="Provider"/> as its base profile, so quota and pause state, which are
+/// always keyed by <see cref="Provider"/>, are correctly shared across every preset of one provider rather than
+/// each preset accumulating its own independent budget.</param>
 public sealed record AgentProfile(
     string Name,
     string Executable,
@@ -426,4 +433,10 @@ public sealed record AgentProfile(
     string? QuotaResetPattern = null,
     bool SupportsSessionResume = false,
     IReadOnlyList<string>? ResumeArguments = null,
-    string? SessionIdPattern = null);
+    string? SessionIdPattern = null,
+    string? Provider = null)
+{
+    /// <summary>The effective provider key for quota/pause/availability grouping — <see cref="Provider"/> if set,
+    /// otherwise <see cref="Name"/> (SF-704).</summary>
+    public string EffectiveProvider => Provider ?? Name;
+}

@@ -4,13 +4,25 @@ public interface IClock { DateTimeOffset UtcNow { get; } }
 public interface IProcessRunner { Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken); }
 public interface IAgentRunner
 {
-    /// <summary>Matches <see cref="AgentProfile.Name"/> and <see cref="FactoryTask.PreferredAgent"/>.</summary>
+    /// <summary>Matches <see cref="AgentProfile.Name"/> and <see cref="FactoryTask.PreferredAgent"/>. A preset
+    /// (SF-704) is just another configured profile with its own <see cref="Name"/> — e.g. "Codex-High" — so
+    /// selecting it and recording which settings actually ran (<see cref="AgentRunRecord.Agent"/>) reuse this
+    /// same field, no separate preset concept required.</summary>
     string Name { get; }
+
+    /// <summary>Matches <see cref="AgentProfile.Provider"/> — the underlying subscription/CLI this runner shares
+    /// with any other preset profile of the same provider (SF-704). Quota and pause state are always keyed by
+    /// this, never by <see cref="Name"/>, so presets of one provider correctly share that provider's quota
+    /// instead of each accumulating an independent budget.</summary>
+    string Provider { get; }
     Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken);
 }
 public interface IAgentAvailabilityChecker
 {
     string Agent { get; }
+
+    /// <summary>See <see cref="IAgentRunner.Provider"/>.</summary>
+    string Provider { get; }
     Task<AgentAvailability> CheckAsync(CancellationToken cancellationToken);
 }
 

@@ -9,14 +9,20 @@ namespace Factory.Orchestrator;
 /// </summary>
 public sealed class AgentSelector(IEnumerable<IAgentRunner> runners, ITaskStore tasks)
 {
+    /// <summary>Every configured agent/preset name (SF-704), for <see cref="RunAgentStep"/> to reject an unknown
+    /// <see cref="FactoryTask.PreferredAgent"/> clearly instead of silently falling back as if none were set.</summary>
+    public IReadOnlyCollection<string> KnownAgentNames { get; } = runners.Select(r => r.Name).ToList();
+
     public async Task<IAgentRunner?> SelectAsync(string? preferredAgent, CancellationToken cancellationToken)
     {
         foreach (var runner in Order(preferredAgent))
         {
             // A paused agent reserves its capacity for interactive use, exactly like being at quota from
-            // AgentSelector's point of view: skipped in favor of the next configured agent, never invoked.
-            if (await tasks.IsAgentPausedAsync(runner.Name, cancellationToken)) continue;
-            if (!await tasks.IsAgentAtQuotaAsync(runner.Name, cancellationToken)) return runner;
+            // AgentSelector's point of view: skipped in favor of the next configured agent, never invoked. Keyed
+            // by Provider, not Name, so pausing/quota on one preset (SF-704) correctly applies to every preset
+            // sharing its underlying provider rather than each accumulating independent state.
+            if (await tasks.IsAgentPausedAsync(runner.Provider, cancellationToken)) continue;
+            if (!await tasks.IsAgentAtQuotaAsync(runner.Provider, cancellationToken)) return runner;
         }
         return null;
     }

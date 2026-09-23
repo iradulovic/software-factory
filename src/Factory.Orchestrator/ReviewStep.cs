@@ -54,8 +54,9 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
 
         // Quota status is shared with implementation invocations (AgentSelector reads the same record), so a
         // review that hits quota correctly makes that agent unavailable for the task's next implementation
-        // attempt too, exactly as an implementation invocation hitting quota would.
-        await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent.Name, result.QuotaDetected, result.Window, result.ResetKind,
+        // attempt too, exactly as an implementation invocation hitting quota would. Keyed by Provider (SF-704),
+        // so a review run under one preset correctly shares quota with every other preset of that provider.
+        await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent.Provider, result.QuotaDetected, result.Window, result.ResetKind,
             result.QuotaResetAt, result.Process.CompletedAt, result.QuotaDetail), cancellationToken);
 
         if (result.QuotaDetected)

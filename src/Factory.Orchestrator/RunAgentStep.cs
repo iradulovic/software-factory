@@ -11,7 +11,17 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
 {
     public async Task<PipelineStepResult> ExecuteAsync(PipelineContext context, CancellationToken cancellationToken)
     {
-        var agent = await selector.SelectAsync(context.Task.PreferredAgent, cancellationToken);
+        // SF-704: an agent or preset name that doesn't match any configured profile is a misconfiguration, not a
+        // transient unavailability — failing clearly here beats AgentSelector silently falling back to whatever
+        // else is configured as if no preference had been set at all.
+        var preferred = context.Task.PreferredAgent;
+        if (preferred is not null && !selector.KnownAgentNames.Contains(preferred, StringComparer.OrdinalIgnoreCase))
+        {
+            return PipelineStepResult.NeedsHuman(
+                $"Preferred agent/preset '{preferred}' is not configured. Configured options: {string.Join(", ", selector.KnownAgentNames)}.");
+        }
+
+        var agent = await selector.SelectAsync(preferred, cancellationToken);
         if (agent is null) return PipelineStepResult.WaitingForQuota("All configured agents are paused or at quota.");
 
         // Persisted from the moment the agent is actually selected — before it runs, not only once it finishes —
@@ -48,8 +58,9 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
 
         // Quota status is persisted independently of this task's run: every invocation updates it, whether or not
         // quota was detected, so a status that cleared is reflected immediately for AgentSelector rather than only
-        // by re-scanning task-run history.
-        await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent.Name, result.QuotaDetected, result.Window, result.ResetKind,
+        // by re-scanning task-run history. Keyed by Provider (SF-704), matching AgentSelector's read, so every
+        // preset of one provider correctly shares this same quota record instead of each keeping its own.
+        await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent.Provider, result.QuotaDetected, result.Window, result.ResetKind,
             result.QuotaResetAt, result.Process.CompletedAt, result.QuotaDetail), cancellationToken);
 
         // Independent of this invocation's outcome, exactly like quota status above: a null session id (profile
