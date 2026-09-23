@@ -28,6 +28,18 @@ public sealed class PublicationExecutorTests
     }
 
     [Fact]
+    public async Task Resolves_the_worktree_summary_against_the_origin_tracked_base_branch()
+    {
+        // The repository cache tracks origin explicitly and never creates a local branch matching the base
+        // branch name, so resolving the bare name (e.g. "main") as a git ref fails; regression test for that.
+        var harness = new Harness();
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal("origin/main", harness.SummarizeBaseRef);
+    }
+
+    [Fact]
     public async Task Pull_request_body_omits_issue_reference_when_the_task_has_no_issue()
     {
         var harness = new Harness { IssueNumber = null };
@@ -254,6 +266,7 @@ public sealed class PublicationExecutorTests
         public string? ExistingPullRequestLookupError { get; init; }
 
         public List<string> Pushed { get; } = [];
+        public string? SummarizeBaseRef { get; private set; }
         public bool PullRequestCreateCalled { get; private set; }
         public bool FindExistingPullRequestCalled { get; private set; }
         public (string Owner, string Name, string Branch, string Base)? PullRequestTarget { get; private set; }
@@ -274,9 +287,12 @@ public sealed class PublicationExecutorTests
         {
             public Task<bool> HasChangesAsync(string worktreePath, string baseRef, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-            public Task<ChangeSummary> SummarizeAsync(string worktreePath, string baseRef, CancellationToken cancellationToken) =>
-                Task.FromResult(new ChangeSummary(harness.WorktreeIsClean, harness.WorktreeBranch ?? harness.Request.BranchName,
+            public Task<ChangeSummary> SummarizeAsync(string worktreePath, string baseRef, CancellationToken cancellationToken)
+            {
+                harness.SummarizeBaseRef = baseRef;
+                return Task.FromResult(new ChangeSummary(harness.WorktreeIsClean, harness.WorktreeBranch ?? harness.Request.BranchName,
                     "base0000", harness.WorktreeHeadCommit, ["src/Export.cs"], 10, 2));
+            }
         }
 
         private sealed class FakePublisher(Harness harness) : IGitHubPublisher
