@@ -185,17 +185,31 @@ public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<Va
 /// <param name="ValidatedHeadCommit">The head commit the task's implementation was actually validated against, or
 /// <see langword="null"/> for a task that reached <see cref="FactoryTaskStatus.ReadyForPublish"/> before this was
 /// recorded. When set, publication refuses to push a worktree whose current HEAD no longer matches it.</param>
+/// <param name="RequireHumanMerge">This task's effective merge policy (SF-709), computed once by
+/// <c>PreparePublicationStep</c>. <see langword="true"/> opens a draft pull request, exactly as before this task;
+/// <see langword="false"/> opens it ready for review instead, since no human is expected to look at it before a
+/// green CI run merges it automatically.</param>
 public sealed record PublicationRequest(Guid Id, Guid TaskId, string BranchName, string WorktreePath, string BaseBranch,
-    long RepositoryId, string RepositoryOwner, string RepositoryName, string TaskTitle, int? IssueNumber, string? ValidatedHeadCommit = null);
+    long RepositoryId, string RepositoryOwner, string RepositoryName, string TaskTitle, int? IssueNumber, string? ValidatedHeadCommit = null,
+    bool RequireHumanMerge = true);
 
 public sealed record PushResult(bool Succeeded, string? Error);
 public sealed record PullRequestResult(bool Succeeded, int? Number, string? Url, string? Error);
 public sealed record GitHubWriteResult(bool Succeeded, string? Error);
 public sealed record PullRequestState(bool Merged, bool Closed);
 
+/// <summary>The outcome of requesting <c>gh pr merge</c> (SF-709). A failure (a merge conflict, a protected-branch
+/// rejection, insufficient reviews) is reported explicitly via <see cref="Error"/> rather than thrown, so the
+/// caller can move the task to <see cref="FactoryTaskStatus.NeedsHuman"/> instead of retrying it forever.</summary>
+public sealed record MergeResult(bool Succeeded, string? Error);
+
 /// <summary>A task resting in <see cref="FactoryTaskStatus.Published"/>, identified well enough for
 /// <see cref="IGitHubClient"/> to look up its pull request's current state.</summary>
-public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, string RepositoryName, int PullRequestNumber);
+/// <param name="RequireHumanMerge">This task's own effective merge policy (SF-709), decided once by
+/// <c>PreparePublicationStep</c> before publication and never re-derived afterward. <see langword="false"/> lets
+/// <c>Factory.GitHubSync.Worker</c> request a merge itself once CI on this pull request's head commit is green;
+/// <see langword="true"/> leaves the pull request exactly as before, waiting on a human merge.</param>
+public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, string RepositoryName, int PullRequestNumber, bool RequireHumanMerge);
 
 /// <summary>One CI check's outcome (SF-614), normalized from either a GitHub Actions check run or a legacy
 /// commit status into the same shape. <see cref="Conclusion"/> is one of <see cref="PullRequestCiStatus.Pending"/>,

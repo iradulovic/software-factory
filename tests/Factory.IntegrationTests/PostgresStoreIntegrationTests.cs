@@ -419,6 +419,65 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Require_human_merge_defaults_true_and_is_persisted_and_returned_with_a_claimed_publication()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                await fixture.Connection.ExecuteAsync(
+                    "UPDATE factory.task SET status='ReadyForPublish', branch_name='factory/1-x', worktree_path='/tmp/wt/rhm' WHERE id=@TaskId", new { fixture.TaskId });
+
+                Assert.True(await fixture.Connection.ExecuteScalarAsync<bool>("SELECT require_human_merge FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+
+                await fixture.Tasks.SetRequireHumanMergeAsync(fixture.TaskId, false, CancellationToken.None);
+
+                var requested = await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "operator", CancellationToken.None);
+                var claimed = await fixture.Tasks.ClaimNextPublicationAsync("publication-worker", TimeSpan.FromMinutes(5), CancellationToken.None);
+                Assert.NotNull(claimed);
+                Assert.Equal(requested, claimed!.Id);
+                Assert.False(claimed.RequireHumanMerge);
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Published_tasks_report_their_own_effective_merge_policy()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                await fixture.Connection.ExecuteAsync(
+                    "UPDATE factory.task SET status='ReadyForPublish', branch_name='factory/1-x', worktree_path='/tmp/wt/rhm-published' WHERE id=@TaskId", new { fixture.TaskId });
+                await fixture.Tasks.SetRequireHumanMergeAsync(fixture.TaskId, false, CancellationToken.None);
+
+                var requested = await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "operator", CancellationToken.None);
+                var claimed = await fixture.Tasks.ClaimNextPublicationAsync("publication-worker", TimeSpan.FromMinutes(5), CancellationToken.None);
+                Assert.NotNull(claimed);
+                await fixture.Tasks.CompletePublicationAsync(claimed!.Id, "PullRequestCreated", 77, "https://github.com/lease-tests/repo/pull/77", null, CancellationToken.None);
+                await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published, null, CancellationToken.None);
+
+                var published = Assert.Single(await fixture.Tasks.GetPublishedTasksAsync(CancellationToken.None), p => p.TaskId == fixture.TaskId);
+                Assert.False(published.RequireHumanMerge);
+                Assert.Equal(requested, claimed.Id);
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
+        }
+    }
+
+    [Fact]
     public async Task Reconciliation_completes_the_task_transition_when_the_pull_request_already_exists()
     {
         var fixture = await LeaseFixture.CreateAsync();

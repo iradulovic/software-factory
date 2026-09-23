@@ -33,6 +33,12 @@ public sealed class PreparePublicationStep(ITaskStore tasks, IWorktreeInspector 
         // closed, and possibly be retried after a crash — can independently verify the worktree it is about to
         // push still matches exactly what was validated here.
         await tasks.SetValidatedHeadCommitAsync(context.Task.Id, summary.HeadCommit, cancellationToken);
+        // SF-709: this task's effective merge policy, decided once, here, and never re-derived afterward — the
+        // repository's own default, overridden to true (require a human) the moment its issue carries a HUMAN
+        // REVIEW marker. Persisted on the task itself so both publication (draft vs. ready-for-review) and the
+        // later GitHub-sync auto-merge decision read the exact same already-decided value.
+        var requireHumanMerge = context.Configuration!.RequireHumanMerge || HumanReviewMarker.IsPresent(context.Issue);
+        await tasks.SetRequireHumanMergeAsync(context.Task.Id, requireHumanMerge, cancellationToken);
         context.ChangeSummary = summary;
         var output = $"{summary.FilesChanged.Count} file(s) changed, +{summary.LinesAdded} -{summary.LinesRemoved}";
         await tasks.CompleteStepAsync(stepId, ExecutionStatus.Succeeded, null, output, cancellationToken);

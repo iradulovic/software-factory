@@ -19,7 +19,10 @@ public static class TaskStateMachine
             // failure found on validated-but-unpushed or already-published work — sends the task back for a
             // fresh implementation attempt on the same branch, never a plain automatic Retry.
             [FactoryTaskStatus.ReadyForPublish] = [FactoryTaskStatus.Published, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled],
-            [FactoryTaskStatus.Published] = [FactoryTaskStatus.Completed, FactoryTaskStatus.Rejected, FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled],
+            // Published -> NeedsHuman (SF-709): an automatic merge attempt that GitHub itself rejects (a
+            // conflict, a protected-branch rule, insufficient reviews) must surface as an explicit operator
+            // decision, never retry silently forever or crash the sync worker.
+            [FactoryTaskStatus.Published] = [FactoryTaskStatus.Completed, FactoryTaskStatus.Rejected, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.WaitingForQuota] = [FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.NeedsHuman] = [FactoryTaskStatus.Pending, FactoryTaskStatus.Completed, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Failed] = [FactoryTaskStatus.Pending, FactoryTaskStatus.Cancelled],

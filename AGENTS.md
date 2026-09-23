@@ -147,6 +147,8 @@ validation
 publishing decisions
 ```
 
+As of SF-709, "publishing decisions" includes merging: a task's pull request merges automatically once CI is green, unless its GitHub issue carries a `HUMAN REVIEW` marker (title, body, or a `human-review` label), in which case it still waits on a human merge exactly as every task did before SF-709. This is orchestrator-owned code deciding and acting on its own already-validated CI signal, not a coding agent — Codex/Claude remain barred from pushing, merging, or otherwise touching any branch, exactly as below.
+
 Agents own:
 
 ```text

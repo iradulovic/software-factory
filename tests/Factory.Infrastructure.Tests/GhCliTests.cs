@@ -108,11 +108,13 @@ public sealed class GhCliTests
     }
 
     [Theory]
-    [InlineData("""{"state":"MERGED","merged":true}""", true, false)]
-    [InlineData("""{"state":"CLOSED","merged":false}""", false, true)]
-    [InlineData("""{"state":"OPEN","merged":false}""", false, false)]
-    public async Task GetPullRequestStateAsync_parses_state_and_merged(string stdout, bool expectedMerged, bool expectedClosed)
+    [InlineData("""{"state":"MERGED"}""", true, false)]
+    [InlineData("""{"state":"CLOSED"}""", false, true)]
+    [InlineData("""{"state":"OPEN"}""", false, false)]
+    public async Task GetPullRequestStateAsync_parses_state(string stdout, bool expectedMerged, bool expectedClosed)
     {
+        // gh 2.98.0 rejects a separate "merged" field outright ("Unknown JSON field: merged"); "state" alone is
+        // requested and is authoritative for MERGED vs. CLOSED (without merge) vs. OPEN.
         var runner = new RecordingRunner(0, stdout, "");
         var client = new GhCliClient(runner);
 
@@ -122,7 +124,7 @@ public sealed class GhCliTests
         Assert.Equal(expectedMerged, state.Merged);
         Assert.Equal(expectedClosed, state.Closed);
         Assert.Equal("gh", runner.Request!.FileName);
-        Assert.Equal(new[] { "pr", "view", "17", "--repo", "acme/billing", "--json", "state,merged" }, runner.Request.Arguments);
+        Assert.Equal(new[] { "pr", "view", "17", "--repo", "acme/billing", "--json", "state" }, runner.Request.Arguments);
     }
 
     [Fact]
@@ -202,6 +204,56 @@ public sealed class GhCliTests
 
         Assert.False(result.Succeeded);
         Assert.Equal("not found", result.Error);
+    }
+
+    [Fact]
+    public async Task CreatePullRequestAsync_passes_draft_when_requested()
+    {
+        var runner = new RecordingRunner(0, "https://github.com/acme/billing/pull/17", "");
+        var publisher = new GhCliPublisher(runner);
+
+        var result = await publisher.CreatePullRequestAsync("acme", "billing", "factory/17-add-export", "main", "Add export", "Body", true, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Contains("--draft", runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task CreatePullRequestAsync_omits_draft_when_not_requested()
+    {
+        // SF-709: a task whose effective policy allows automatic merge opens ready for review immediately.
+        var runner = new RecordingRunner(0, "https://github.com/acme/billing/pull/17", "");
+        var publisher = new GhCliPublisher(runner);
+
+        var result = await publisher.CreatePullRequestAsync("acme", "billing", "factory/17-add-export", "main", "Add export", "Body", false, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.DoesNotContain("--draft", runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task MergePullRequestAsync_squash_merges_and_deletes_the_branch_without_auto()
+    {
+        var runner = new RecordingRunner(0, "", "");
+        var publisher = new GhCliPublisher(runner);
+
+        var result = await publisher.MergePullRequestAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(new[] { "pr", "merge", "17", "--repo", "acme/billing", "--squash", "--delete-branch" }, runner.Request!.Arguments);
+        Assert.DoesNotContain("--auto", runner.Request.Arguments);
+    }
+
+    [Fact]
+    public async Task MergePullRequestAsync_reports_the_error_explicitly_when_gh_fails()
+    {
+        var runner = new RecordingRunner(1, "", " Pull Request is not mergeable: the merge commit conflicts ");
+        var publisher = new GhCliPublisher(runner);
+
+        var result = await publisher.MergePullRequestAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("Pull Request is not mergeable: the merge commit conflicts", result.Error);
     }
 
     [Fact]

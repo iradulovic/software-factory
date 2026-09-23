@@ -473,7 +473,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 
         const string detailSql = """
             SELECT t.branch_name AS "BranchName",t.worktree_path AS "WorktreePath",t.base_branch AS "BaseBranch",
-              t.validated_head_commit AS "ValidatedHeadCommit",
+              t.validated_head_commit AS "ValidatedHeadCommit",t.require_human_merge AS "RequireHumanMerge",
               r.id AS "RepositoryId",r.owner AS "RepositoryOwner",r.name AS "RepositoryName",
               t.title AS "TaskTitle",i.issue_number AS "IssueNumber"
             FROM factory.task t
@@ -485,7 +485,8 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         if (details.BranchName is null || details.WorktreePath is null)
             throw new InvalidOperationException($"Task {claimed.TaskId} has no recorded worktree; it cannot be published.");
         return new PublicationRequest(claimed.Id, claimed.TaskId, details.BranchName, details.WorktreePath, details.BaseBranch,
-            details.RepositoryId, details.RepositoryOwner, details.RepositoryName, details.TaskTitle, details.IssueNumber, details.ValidatedHeadCommit);
+            details.RepositoryId, details.RepositoryOwner, details.RepositoryName, details.TaskTitle, details.IssueNumber, details.ValidatedHeadCommit,
+            details.RequireHumanMerge);
     }
 
     public async Task CompletePublicationAsync(Guid publicationId, string status, int? pullRequestNumber, string? pullRequestUrl, string? error, CancellationToken cancellationToken)
@@ -535,6 +536,12 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET validated_head_commit=@headCommit WHERE id=@taskId", new { taskId, headCommit }, cancellationToken: cancellationToken));
     }
 
+    public async Task SetRequireHumanMergeAsync(Guid taskId, bool requireHumanMerge, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET require_human_merge=@requireHumanMerge WHERE id=@taskId", new { taskId, requireHumanMerge }, cancellationToken: cancellationToken));
+    }
+
     public async Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken)
     {
         await using var c = Connection();
@@ -551,7 +558,8 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public async Task<IReadOnlyList<PublishedTaskRef>> GetPublishedTasksAsync(CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT t.id AS "TaskId", r.owner AS "RepositoryOwner", r.name AS "RepositoryName", p.pull_request_number AS "PullRequestNumber"
+            SELECT t.id AS "TaskId", r.owner AS "RepositoryOwner", r.name AS "RepositoryName", p.pull_request_number AS "PullRequestNumber",
+              t.require_human_merge AS "RequireHumanMerge"
             FROM factory.task t
             JOIN github.repository r ON r.id = t.repository_id
             JOIN LATERAL (
@@ -1016,4 +1024,5 @@ internal sealed class PublicationDetailsRow
     public string RepositoryName { get; init; } = "";
     public string TaskTitle { get; init; } = "";
     public int? IssueNumber { get; init; }
+    public bool RequireHumanMerge { get; init; }
 }

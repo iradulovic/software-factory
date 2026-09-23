@@ -71,6 +71,13 @@ public interface ITaskStore
     /// can refuse to push a worktree whose HEAD has since moved past what was validated.</summary>
     Task SetValidatedHeadCommitAsync(Guid taskId, string headCommit, CancellationToken cancellationToken);
 
+    /// <summary>Persists this task's effective merge policy (SF-709), computed once by <c>PreparePublicationStep</c>
+    /// from the repository's <see cref="RepositoryConfiguration.RequireHumanMerge"/> default OR'd with
+    /// <see cref="HumanReviewMarker.IsPresent"/> against the task's issue. Read back by publication (to decide a
+    /// draft vs. ready-for-review pull request) and by <c>Factory.GitHubSync.Worker</c> (to decide whether a
+    /// CI-green pull request merges itself). Never recomputed afterward — see <see cref="HumanReviewMarker"/>.</summary>
+    Task SetRequireHumanMergeAsync(Guid taskId, bool requireHumanMerge, CancellationToken cancellationToken);
+
     /// <summary>Records which agent is actually invoked for a task's current attempt, from the moment it is
     /// selected (before the process starts) until that invocation finishes (pass <see langword="null"/> to
     /// clear it) — the live signal of which provider is really running a task right now, distinct from
@@ -310,8 +317,13 @@ public interface ITaskContextWriter { Task WriteAsync(string worktreePath, GitHu
 public interface IAgentResultReader { Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken); }
 
 /// <summary>
-/// The orchestrator's only path to writing to GitHub. Never pushes to anything but the task's own factory branch,
-/// and never merges — merging remains an exclusively human action, performed on GitHub itself.
+/// The orchestrator's only path to writing to GitHub. Never pushes to anything but the task's own factory branch.
+/// Merging (SF-709) is the one exception to "never merges": <c>Factory.GitHubSync.Worker</c> — never
+/// <c>PublicationExecutor</c>, which still only ever pushes and opens a pull request — may call
+/// <see cref="MergePullRequestAsync"/> for a task whose own <see cref="PublishedTaskRef.RequireHumanMerge"/> is
+/// <see langword="false"/>, and only after independently observing CI green for that pull request's exact head
+/// commit. A task marked <c>HUMAN REVIEW</c> is never merged this way; merging it stays an exclusively human
+/// action performed on GitHub itself, exactly as every task's merge worked before SF-709.
 /// </summary>
 public interface IGitHubPublisher
 {
@@ -323,7 +335,10 @@ public interface IGitHubPublisher
     /// <see cref="PullRequestResult"/> with <c>Succeeded=false</c> means the check itself failed.</summary>
     Task<PullRequestResult?> FindExistingPullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken);
 
-    Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken);
+    /// <param name="draft">Whether to open the pull request as a draft (SF-709): <see langword="true"/> for a task
+    /// requiring human merge, exactly as every pull request was opened before SF-709; <see langword="false"/> opens
+    /// it ready for review immediately, since no human is expected to look at it before an automatic merge.</param>
+    Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, bool draft, CancellationToken cancellationToken);
 
     /// <summary>Posts a comment on the issue backing a task, so people who work in GitHub see what the factory did
     /// without opening the dashboard.</summary>
@@ -332,4 +347,10 @@ public interface IGitHubPublisher
     /// <summary>Sets the one <c>factory:*</c> state label that reflects a task's current outcome, removing whichever
     /// other state label the issue previously carried.</summary>
     Task<GitHubWriteResult> SetStateLabelAsync(string owner, string name, int issueNumber, string label, CancellationToken cancellationToken);
+
+    /// <summary>Requests GitHub merge this pull request right now (SF-709) — never <c>--auto</c>, since the caller
+    /// has already independently confirmed CI is green for its exact head commit, not merely enqueued a merge for
+    /// whenever checks eventually pass. A conflict, a protected-branch rejection, or an authentication failure
+    /// comes back as <c>Succeeded=false</c> with the real <c>gh</c> error text, never thrown.</summary>
+    Task<MergeResult> MergePullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken);
 }

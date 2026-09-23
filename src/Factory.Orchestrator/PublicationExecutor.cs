@@ -3,8 +3,11 @@ using Factory.Core;
 namespace Factory.Orchestrator;
 
 /// <summary>
-/// Executes one publication request: pushes the task's own factory branch and opens a draft pull request.
-/// Never pushes anything but that branch, never targets the repository's base branch directly, and never merges.
+/// Executes one publication request: pushes the task's own factory branch and opens a pull request — draft when
+/// <see cref="PublicationRequest.RequireHumanMerge"/> is <see langword="true"/>, ready for review otherwise
+/// (SF-709). Never pushes anything but that branch, never targets the repository's base branch directly, and
+/// never merges — merging a ready-for-review pull request, when the task's policy allows it, is
+/// <c>Factory.GitHubSync.Worker</c>'s responsibility once it independently observes CI green, never this class's.
 /// Every step is idempotent under retry, so a publication reclaimed after a crash (see
 /// <see cref="ITaskStore.ClaimNextPublicationAsync"/>) can safely re-run this from the top.
 /// </summary>
@@ -67,7 +70,7 @@ public sealed class PublicationExecutor(ITaskStore tasks, IGitHubPublisher publi
             {
                 var (title, body) = DescribePullRequest(request);
                 pullRequest = await publisher.CreatePullRequestAsync(request.RepositoryOwner, request.RepositoryName,
-                    request.BranchName, request.BaseBranch, title, body, cancellationToken);
+                    request.BranchName, request.BaseBranch, title, body, request.RequireHumanMerge, cancellationToken);
                 if (!pullRequest.Succeeded)
                 {
                     await FailAsync(request, pullRequest.Error ?? "gh pr create failed.", cancellationToken);

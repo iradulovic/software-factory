@@ -28,6 +28,49 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task PreparePublication_persists_the_effective_merge_policy_from_repository_configuration()
+    {
+        // SF-709: the default Harness configuration requires human merge and the issue carries no marker, so
+        // the effective policy computed at PreparePublicationStep time should still require it.
+        var harness = new Harness();
+
+        await harness.ExecuteAsync();
+
+        var recorded = Assert.Single(harness.Store.RequireHumanMergeSet);
+        Assert.Equal(harness.ClaimedTask.Id, recorded.TaskId);
+        Assert.True(recorded.RequireHumanMerge);
+    }
+
+    [Fact]
+    public async Task PreparePublication_allows_automatic_merge_when_the_repository_allows_it_and_no_marker_is_present()
+    {
+        var harness = new Harness
+        {
+            Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 2, 1, RequireHumanMerge: false)
+        };
+
+        await harness.ExecuteAsync();
+
+        var recorded = Assert.Single(harness.Store.RequireHumanMergeSet);
+        Assert.False(recorded.RequireHumanMerge);
+    }
+
+    [Fact]
+    public async Task PreparePublication_requires_human_merge_when_the_issue_carries_a_human_review_marker_even_if_the_repository_allows_automatic_merge()
+    {
+        var harness = new Harness
+        {
+            Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 2, 1, RequireHumanMerge: false),
+            IssueBody = "This touches billing. HUMAN REVIEW please."
+        };
+
+        await harness.ExecuteAsync();
+
+        var recorded = Assert.Single(harness.Store.RequireHumanMergeSet);
+        Assert.True(recorded.RequireHumanMerge);
+    }
+
+    [Fact]
     public async Task Successful_run_posts_a_started_and_a_ready_for_publish_notification()
     {
         var harness = new Harness();
@@ -520,6 +563,9 @@ public sealed class TaskExecutorTests
         public string? ConfigurationBaseRef { get; private set; }
         public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
         public string? PreferredAgent { get; init; }
+        public string IssueTitle { get; init; } = "Add invoice export";
+        public string IssueBody { get; init; } = "";
+        public IReadOnlyList<string> IssueLabels { get; init; } = [];
         private FactoryTask? _claimedTask;
         public FactoryTask ClaimedTask => _claimedTask ??= new(Guid.NewGuid(), 1, 2, 42, "Add invoice export", "", "GitHubIssue", 0,
             FactoryTaskStatus.Claimed, PreferredAgent, "main", null, null, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null);
@@ -567,7 +613,7 @@ public sealed class TaskExecutorTests
             public Task<GitHubRepository?> GetRepositoryAsync(long id, CancellationToken cancellationToken) =>
                 Task.FromResult(harness.RepositoryFound ? new GitHubRepository(id, "acme", "billing", "url", "main", true) : null);
             public Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken) => Task.FromResult<GitHubIssue?>(
-                new GitHubIssue(id, 1, 999, 42, "Add invoice export", "", "open", "me", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [], []));
+                new GitHubIssue(id, 1, 999, 42, harness.IssueTitle, harness.IssueBody, "open", "me", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, harness.IssueLabels, []));
             public Task UpsertRepositoryAsync(GitHubRepository repository, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task MarkRepositorySyncedAsync(long repositoryId, DateTimeOffset syncedThrough, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task RecordRepositorySyncFailureAsync(long repositoryId, string error, CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -638,7 +684,8 @@ public sealed class TaskExecutorTests
         {
             public Task<PushResult> PushAsync(string worktreePath, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<PullRequestResult?> FindExistingPullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
-            public Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, bool draft, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<MergeResult> MergePullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken) => throw new NotSupportedException();
 
             public Task<GitHubWriteResult> CommentOnIssueAsync(string owner, string name, int issueNumber, string body, CancellationToken cancellationToken)
             {
