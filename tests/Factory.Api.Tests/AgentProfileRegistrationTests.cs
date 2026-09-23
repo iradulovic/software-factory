@@ -16,15 +16,15 @@ public sealed class AgentProfileRegistrationTests : IClassFixture<AgentProfileRe
         // Regression test: AgentProfilesOptions.Profiles previously defaulted to a non-empty list containing the
         // built-in Codex profile. ConfigurationBinder.Get<T>() binds a configured List<T> section by appending
         // to whatever the target list already contains rather than replacing it, so appsettings.json's own
-        // "Agents:Profiles" (a single Codex entry, matching the built-in default) ended up bound alongside that
-        // default instead of in place of it — registering every configured agent, and so every IAgentRunner and
+        // "Agents:Profiles" (matching the built-in default entries) ended up bound alongside that default instead
+        // of in place of it — registering every configured agent, and so every IAgentRunner and
         // IAgentAvailabilityChecker, twice.
         using var scope = app.Services.CreateScope();
         var runners = scope.ServiceProvider.GetServices<IAgentRunner>().ToList();
         var checkers = scope.ServiceProvider.GetServices<IAgentAvailabilityChecker>().ToList();
 
-        Assert.Equal(["Codex"], runners.Select(r => r.Name));
-        Assert.Equal(["Codex"], checkers.Select(c => c.Agent));
+        Assert.Equal(["Codex", "Claude"], runners.Select(r => r.Name));
+        Assert.Equal(["Codex", "Claude"], checkers.Select(c => c.Agent));
     }
 
     public sealed class FactoryApplication : WebApplicationFactory<Program>
