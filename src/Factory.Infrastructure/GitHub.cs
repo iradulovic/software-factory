@@ -55,12 +55,12 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
             if (++pages > MaxPages)
                 throw new InvalidOperationException($"GitHub issue sync for {repository.Owner}/{repository.Name} did not converge after {MaxPages} pages of {PageSize}; aborting rather than silently truncating history.");
 
-            // Everything is expressed through --search rather than combined with a separate --state flag: GitHub's
-            // search syntax already returns both open and closed issues unless narrowed with is:open/is:closed, so
-            // this is equivalent to the old --state all without risking an undocumented flag conflict.
+            // --state all is required even with --search: gh issue list defaults to --state open regardless of
+            // --search (verified against gh's own --help; a --search query alone silently drops every closed
+            // issue), so without it a closed issue would never be observed and could never converge below.
             var search = cursor is null ? "sort:updated-asc" : $"sort:updated-asc updated:>={cursor.Value.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}";
             var result = await runner.RunAsync(new ProcessRequest("gh",
-                ["issue", "list", "--repo", $"{repository.Owner}/{repository.Name}", "--search", search, "--limit", PageSize.ToString(),
+                ["issue", "list", "--repo", $"{repository.Owner}/{repository.Name}", "--search", search, "--state", "all", "--limit", PageSize.ToString(),
                  "--json", "id,number,title,body,state,author,createdAt,updatedAt,closedAt,labels"],
                 Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
             if (!result.Succeeded) throw new InvalidOperationException(DescribeFailure(result.StandardError));
