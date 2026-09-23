@@ -5,6 +5,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>dotnet-Factory.Orchestrator-811df729-d6d7-466a-867c-b3429ed5b8f7</UserSecretsId>
+    <!-- Factory:RootDirectory (factory-data/) holds git caches and worktrees checked out at run time, nested
+         under this project directory; without excluding it, the SDK's default compile glob sweeps a worktree's
+         own .cs files (e.g. a full repo checkout of this very solution) into this project's build. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);factory-data/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

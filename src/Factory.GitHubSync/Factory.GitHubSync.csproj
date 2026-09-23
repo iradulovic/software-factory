@@ -5,6 +5,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>dotnet-Factory.GitHubSync-27b0861b-47d0-4ed2-a236-63788b3809de</UserSecretsId>
+    <!-- Factory:RootDirectory (factory-data/) holds git caches and worktrees checked out at run time, nested
+         under this project directory; without excluding it, the SDK's default compile glob sweeps a worktree's
+         own .cs files (e.g. a full repo checkout of this very solution) into this project's build. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);factory-data/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
