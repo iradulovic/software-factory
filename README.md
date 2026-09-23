@@ -97,6 +97,8 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
 }
 ```
 
+Under the SF-709 merge policy, `requireHumanMerge: true` keeps the pull request as a draft awaiting a human merge, while `false` allows automatic merge once CI is green. A per-issue opt-out marker on the originating issue forces the human-required path regardless of the repository default; see [AGENTS.md's Agent Boundaries section](AGENTS.md#agent-boundaries) for the marker.
+
 Each entry in `buildCommands`/`testCommands` is an executable plus its arguments, run directly through `IProcessRunner` — never through a shell, and never split on whitespace at run time, so an argument containing a space (a quoted test filter, a path) needs no escaping:
 
 ```json
