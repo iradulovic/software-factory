@@ -238,6 +238,22 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<int> CountOutstandingReviewWorkAsync(CancellationToken cancellationToken) =>
         Task.FromResult(OutstandingReviewWorkCount);
 
+    public List<DigestFinishedTask> FinishedTasks { get; set; } = [];
+    public Task<IReadOnlyList<DigestFinishedTask>> GetRecentlyFinishedTasksAsync(DateTimeOffset since, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<DigestFinishedTask>>(FinishedTasks);
+
+    public List<DigestAlertCandidate> OpenCiFailureAlerts { get; set; } = [];
+    public Task<IReadOnlyList<DigestAlertCandidate>> GetOpenCiFailureAlertsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<DigestAlertCandidate>>(OpenCiFailureAlerts);
+
+    public List<DigestAlertCandidate> NeedsHumanAlerts { get; set; } = [];
+    public Task<IReadOnlyList<DigestAlertCandidate>> GetNeedsHumanAlertsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<DigestAlertCandidate>>(NeedsHumanAlerts);
+
+    public List<DigestAlertCandidate> ActiveBlockerAlerts { get; set; } = [];
+    public Task<IReadOnlyList<DigestAlertCandidate>> GetActiveBlockerAlertsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<DigestAlertCandidate>>(ActiveBlockerAlerts);
+
     public Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken)
     {
         GitHubWrites.Add((taskId, kind, detail, succeeded, error));

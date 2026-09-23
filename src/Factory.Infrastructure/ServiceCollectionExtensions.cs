@@ -12,6 +12,7 @@ public static class ServiceCollectionExtensions
         services.Configure<FactoryOptions>(configuration.GetSection("Factory"));
         services.Configure<GitHubSyncOptions>(configuration.GetSection("GitHub"));
         services.Configure<WorktreeCleanupOptions>(configuration.GetSection("WorktreeCleanup"));
+        services.Configure<DigestOptions>(configuration.GetSection("Digest"));
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IAgentResultReader, AgentResultReader>();
@@ -37,6 +38,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGitHubPublisher, GhCliPublisher>();
         services.AddSingleton<IGitHubStore, PostgresGitHubStore>();
         services.AddSingleton<ITaskStore, PostgresTaskStore>();
+        services.AddSingleton<IDigestStore, PostgresDigestStore>();
         services.AddSingleton<ITrackerFileSync, TrackerFileSync>();
         services.AddSingleton<DatabaseMigrator>();
         return services;
