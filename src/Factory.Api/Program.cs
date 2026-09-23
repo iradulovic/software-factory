@@ -474,6 +474,27 @@ app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, I
         configuration = await configurationReader.ReadAsync(worktreePath, $"origin/{(string)item.defaultBranch}", ct);
     return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration });
 });
+
+// SF-711: an operator adding a repository here needs no service restart — Factory.GitHubSync.Worker already
+// re-reads IGitHubStore.GetEnabledRepositoriesAsync every poll cycle, so this row is picked up on the next cycle.
+app.MapPost("/api/repositories", async (AddRepositoryRequest body, IGitHubStore github, CancellationToken ct) =>
+{
+    var owner = body.Owner?.Trim() ?? "";
+    var name = body.Name?.Trim() ?? "";
+    if (!RepositoryNameValidator.IsValid(owner) || !RepositoryNameValidator.IsValid(name))
+        return Results.BadRequest(new { error = "Owner and name must be non-empty and use only letters, digits, '.', '_', or '-'." });
+    var cloneUrl = string.IsNullOrWhiteSpace(body.CloneUrl) ? $"https://github.com/{owner}/{name}.git" : body.CloneUrl.Trim();
+    var defaultBranch = string.IsNullOrWhiteSpace(body.DefaultBranch) ? "main" : body.DefaultBranch.Trim();
+    var repository = await github.AddRepositoryAsync(owner, name, cloneUrl, defaultBranch, ct);
+    return Results.Ok(repository);
+});
+
+app.MapPatch("/api/repositories/{id:long}", async (long id, SetRepositoryEnabledRequest body, IGitHubStore github, CancellationToken ct) =>
+{
+    var updated = await github.SetRepositoryEnabledAsync(id, body.IsEnabled, ct);
+    return updated ? Results.NoContent() : Results.NotFound(new { error = $"No repository with id {id}." });
+});
+
 app.MapGet("/api/workers", async (NpgsqlDataSource db, IOptions<FactoryOptions> options, CancellationToken ct) =>
 {
     // A worker heartbeats at least every max(PollingIntervalSeconds, LeaseHeartbeatSeconds); tripling that bound

@@ -672,6 +672,48 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Adding_a_repository_is_idempotent_by_owner_and_name_and_always_enabled()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var github = new PostgresGitHubStore(settings);
+        var suffix = Guid.NewGuid().ToString("N");
+        long repositoryId = 0;
+        try
+        {
+            var created = await github.AddRepositoryAsync("factory-tests", suffix, $"https://example.invalid/{suffix}.git", "main", CancellationToken.None);
+            repositoryId = created.Id;
+            Assert.True(created.IsEnabled);
+            Assert.Equal("main", created.DefaultBranch);
+
+            // SF-711: adding an already-disabled repository again re-enables it — the runtime "switch it back on"
+            // path, matching AddRepositoryAsync's own "always enabled" doc comment.
+            await github.SetRepositoryEnabledAsync(repositoryId, false, CancellationToken.None);
+            var disabled = await github.GetRepositoryAsync(repositoryId, CancellationToken.None);
+            Assert.False(disabled?.IsEnabled);
+
+            var readded = await github.AddRepositoryAsync("factory-tests", suffix, $"https://example.invalid/{suffix}-updated.git", "develop", CancellationToken.None);
+            Assert.Equal(repositoryId, readded.Id);
+            Assert.True(readded.IsEnabled);
+            Assert.Equal("develop", readded.DefaultBranch);
+            Assert.Equal($"https://example.invalid/{suffix}-updated.git", readded.CloneUrl);
+
+            Assert.False(await github.SetRepositoryEnabledAsync(-1, true, CancellationToken.None));
+        }
+        finally
+        {
+            if (repositoryId != 0)
+            {
+                await using var connection = new NpgsqlConnection(connectionString);
+                await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+            }
+        }
+    }
+
+    [Fact]
     public async Task Sync_checkpoint_closed_at_and_pending_cancellation_are_persisted()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

@@ -326,6 +326,25 @@ public sealed class PostgresGitHubStore(IOptions<FactoryOptions> options) : IGit
         await using var c = Connection(); await c.ExecuteAsync(new CommandDefinition(sql, r, cancellationToken: cancellationToken));
     }
 
+    public async Task<GitHubRepository> AddRepositoryAsync(string owner, string name, string cloneUrl, string defaultBranch, CancellationToken cancellationToken)
+    {
+        const string sql = $"""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled) VALUES(@owner,@name,@cloneUrl,@defaultBranch,true)
+            ON CONFLICT(owner,name) DO UPDATE SET clone_url=excluded.clone_url,default_branch=excluded.default_branch,is_enabled=true,updated_at=now()
+            RETURNING {RepositoryColumns};
+            """;
+        await using var c = Connection();
+        var row = await c.QuerySingleAsync<GitHubRepositoryRow>(new CommandDefinition(sql, new { owner, name, cloneUrl, defaultBranch }, cancellationToken: cancellationToken));
+        return ToModel(row);
+    }
+
+    public async Task<bool> SetRepositoryEnabledAsync(long id, bool enabled, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        var affected = await c.ExecuteAsync(new CommandDefinition("UPDATE github.repository SET is_enabled=@enabled,updated_at=now() WHERE id=@id", new { id, enabled }, cancellationToken: cancellationToken));
+        return affected > 0;
+    }
+
     public async Task MarkRepositorySyncedAsync(long repositoryId, DateTimeOffset syncedThrough, CancellationToken cancellationToken)
     {
         await using var c = Connection();
