@@ -60,8 +60,8 @@ Every CLI coding agent — Codex, Claude Code, or anything else with a CLI and a
 {
   "Agents": {
     "Profiles": [
-      { "Name": "Codex", "Executable": "codex", "Arguments": ["exec", "--full-auto", "-"], "PromptDelivery": "stdin", "TimeoutMinutes": 90, "QuotaSignatures": ["quota", "usage limit"], "VersionArguments": ["--version"], "AvailabilityTimeoutSeconds": 5, "QuotaCooldownHours": 5 },
-      { "Name": "Claude", "Executable": "claude", "Arguments": ["--print"], "PromptDelivery": "argument", "TimeoutMinutes": 90, "QuotaSignatures": ["rate limited"], "VersionArguments": ["--version"], "AvailabilityTimeoutSeconds": 5, "QuotaCooldownHours": 5 }
+      { "Name": "Codex", "Executable": "codex", "Arguments": ["exec", "--approve-for-me", "-"], "PromptDelivery": "stdin", "TimeoutMinutes": 90, "QuotaSignatures": ["quota", "usage limit"], "VersionArguments": ["--version"], "AvailabilityTimeoutSeconds": 5, "QuotaCooldownHours": 5 },
+      { "Name": "Claude", "Executable": "claude", "Arguments": ["--print", "--dangerously-skip-permissions"], "PromptDelivery": "argument", "TimeoutMinutes": 90, "QuotaSignatures": ["rate limited"], "VersionArguments": ["--version"], "AvailabilityTimeoutSeconds": 5, "QuotaCooldownHours": 5 }
     ]
   }
 }

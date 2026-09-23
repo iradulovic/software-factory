@@ -4,6 +4,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Factory:RootDirectory (factory-data/) holds git caches and worktrees checked out at run time, nested
+         under this project directory; without excluding it, the SDK's default compile glob sweeps a worktree's
+         own .cs files (e.g. a full repo checkout of this very solution) into this project's build. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);factory-data/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Factory.Core\Factory.Core.csproj" />
