@@ -271,12 +271,36 @@ public static class StepLogPaths
 /// them from <see cref="MaxImplementationAttempts"/> cannot let a task wait on quota forever: once a task has
 /// accumulated this many quota-interrupted invocations without a successful implementation attempt, it moves to
 /// <c>NeedsHuman</c> instead of waiting again.</param>
+/// <param name="SmokeTest">Opt-in local browser smoke-test configuration (SF-703), parsed from
+/// <c>.factory/config.json</c>'s <c>smokeTest</c> key. <see langword="null"/> (the default — absent from the
+/// file) means <c>SmokeTestStep</c> is skipped entirely; a repository must explicitly configure this to start a
+/// local server and launch a browser at all.</param>
 public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<ValidationCommand> BuildCommands, IReadOnlyList<ValidationCommand> TestCommands,
-    int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual", int MaxQuotaInterruptions = 20)
+    int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual", int MaxQuotaInterruptions = 20,
+    SmokeTestConfiguration? SmokeTest = null)
 {
     public static RepositoryConfiguration Default { get; } =
-        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20);
+        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null);
 }
+
+/// <summary>Opt-in configuration for SF-703's local browser smoke tests. <paramref name="StartCommand"/> starts
+/// the repository's local application (the same <see cref="ValidationCommand"/> shape build/test commands already
+/// use); <paramref name="HealthCheckUrl"/> is polled until it responds successfully, or
+/// <paramref name="StartupTimeoutSeconds"/> elapses, before any check runs; each of <paramref name="CheckPaths"/>
+/// (resolved against <paramref name="HealthCheckUrl"/>'s origin) is then visited once, each capped at
+/// <paramref name="CheckTimeoutSeconds"/>.</summary>
+public sealed record SmokeTestConfiguration(
+    ValidationCommand StartCommand,
+    string HealthCheckUrl,
+    IReadOnlyList<string> CheckPaths,
+    int StartupTimeoutSeconds = 60,
+    int CheckTimeoutSeconds = 30);
+
+/// <summary>One browser check's outcome (SF-703) — a deterministic page-load check, not a full assertion
+/// framework: <paramref name="Succeeded"/> means the page navigated and finished loading within its timeout.
+/// <paramref name="ScreenshotPath"/> is populated on both success and failure, so a passing run still has
+/// evidence, not only a failing one.</summary>
+public sealed record SmokeTestCheckResult(string Path, bool Succeeded, string? Error, string? ScreenshotPath, TimeSpan Duration);
 
 /// <summary>Everything <see cref="IGitHubPublisher"/> needs to push a task's committed branch and open a draft pull request for it.</summary>
 /// <param name="ValidatedHeadCommit">The head commit the task's implementation was actually validated against, or

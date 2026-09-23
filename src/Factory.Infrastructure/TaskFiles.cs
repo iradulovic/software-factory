@@ -37,7 +37,8 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
             file?.MaxReviewAttempts ?? defaults.MaxReviewAttempts,
             file?.RequireHumanMerge ?? defaults.RequireHumanMerge,
             string.IsNullOrWhiteSpace(file?.Publish) ? defaults.Publish : file.Publish.Trim(),
-            file?.MaxQuotaInterruptions ?? defaults.MaxQuotaInterruptions);
+            file?.MaxQuotaInterruptions ?? defaults.MaxQuotaInterruptions,
+            ParseSmokeTest(file?.SmokeTest, source));
 
         if (configuration.MaxImplementationAttempts < 1 || configuration.MaxReviewAttempts < 0)
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxImplementationAttempts must be at least 1 and maxReviewAttempts must not be negative.");
@@ -48,6 +49,23 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
         if (configuration.Publish is not ("manual" or "auto-draft"))
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: publish must be 'manual' or 'auto-draft'.");
         return configuration;
+    }
+
+    /// <summary>SF-703's opt-in <c>smokeTest</c> key — absent entirely means no smoke test (the common case,
+    /// unlike build/test commands which always have a default), so this returns <see langword="null"/> rather
+    /// than substituting any default configuration.</summary>
+    private static SmokeTestConfiguration? ParseSmokeTest(SmokeTestConfigurationFile? file, string source)
+    {
+        if (file is null) return null;
+        if (file.StartCommand is null || string.IsNullOrWhiteSpace(file.StartCommand.Executable))
+            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: smokeTest.startCommand must be set with a non-empty executable.");
+        if (string.IsNullOrWhiteSpace(file.HealthCheckUrl))
+            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: smokeTest.healthCheckUrl must be set.");
+        var startupTimeoutSeconds = file.StartupTimeoutSeconds ?? 60;
+        var checkTimeoutSeconds = file.CheckTimeoutSeconds ?? 30;
+        if (startupTimeoutSeconds < 1 || checkTimeoutSeconds < 1)
+            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: smokeTest.startupTimeoutSeconds and smokeTest.checkTimeoutSeconds must be at least 1.");
+        return new SmokeTestConfiguration(file.StartCommand, file.HealthCheckUrl.Trim(), file.CheckPaths ?? ["/"], startupTimeoutSeconds, checkTimeoutSeconds);
     }
 }
 
@@ -61,6 +79,16 @@ internal sealed class RepositoryConfigurationFile
     public bool? RequireHumanMerge { get; init; }
     public string? Publish { get; init; }
     public int? MaxQuotaInterruptions { get; init; }
+    public SmokeTestConfigurationFile? SmokeTest { get; init; }
+}
+
+internal sealed class SmokeTestConfigurationFile
+{
+    public ValidationCommand? StartCommand { get; init; }
+    public string? HealthCheckUrl { get; init; }
+    public IReadOnlyList<string>? CheckPaths { get; init; }
+    public int? StartupTimeoutSeconds { get; init; }
+    public int? CheckTimeoutSeconds { get; init; }
 }
 
 public sealed class TaskContextWriter : ITaskContextWriter

@@ -127,6 +127,22 @@ The Overview page's "Outcomes" panel reports a small set of explicitly-defined m
 
 A failed build or test command that looks like a genuine code problem is automatically rescheduled for repair — no need to click Retry — as long as `maxImplementationAttempts` isn't already exhausted; the preserved worktree and the failed command's exact output feed straight into the next attempt. A failure that looks like a broken environment instead (missing command, authentication, network) never triggers this: no amount of code editing could fix it, so it ends the task immediately with an explicit reason rather than wasting an attempt.
 
+A repository can optionally opt into local browser smoke tests (SF-703) with a `smokeTest` key — absent by default, so no task starts a local server or launches a browser unless explicitly configured:
+
+```json
+{
+  "smokeTest": {
+    "startCommand": ["npm", "run", "start"],
+    "healthCheckUrl": "http://localhost:3000/health",
+    "checkPaths": ["/", "/orders"],
+    "startupTimeoutSeconds": 60,
+    "checkTimeoutSeconds": 30
+  }
+}
+```
+
+`startCommand` starts the application (same array/string/`{"shell":...}` forms as `buildCommands`/`testCommands`); `healthCheckUrl` is polled every second until it responds successfully or `startupTimeoutSeconds` elapses; each of `checkPaths` (default `["/"]`, resolved against `healthCheckUrl`'s origin) is then visited once in a headless Chromium browser via [Playwright](https://playwright.dev/dotnet/), capped at `checkTimeoutSeconds`. A screenshot is always saved next to the step's log (pass or fail), so a failure has concrete evidence, not just an error message. The application is always stopped afterward, success or failure — its process is killed the same way a build/test command's timeout kills one. Requires Chromium to already be installed locally (`playwright install chromium`, run once per machine); if it is not, every check fails with a clear message rather than the step silently doing nothing. This never deploys or reaches a public URL — everything runs against `localhost`.
+
 A quota-interrupted invocation never got a real chance to implement anything, so it does not count toward `maxImplementationAttempts`, and the "previous attempt" context above always reflects the last invocation that actually tried, never a quota blip. Excluding quota interruptions from that budget is bounded separately by `maxQuotaInterruptions`: once a task has accumulated that many quota-interrupted invocations without a successful attempt, it moves to `NeedsHuman` instead of waiting again, so a persistently blocked provider cannot make a task wait forever.
 
 A `WaitingForQuota` task resumes from real-time provider availability, not its own history: even a task that was interrupted before ever being invoked (every configured provider was already at quota) resumes automatically the moment any configured provider becomes available again, and a task that last used a now-still-blocked provider still resumes as soon as a different configured one frees up — no manual Retry needed either way.
