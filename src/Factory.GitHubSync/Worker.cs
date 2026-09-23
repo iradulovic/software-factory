@@ -6,7 +6,7 @@ using Microsoft.Extensions.Options;
 namespace Factory.GitHubSync;
 
 public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHubClient client, IGitHubPublisher publisher,
-    ITaskStore tasks, IClock clock, IOptions<GitHubSyncOptions> options, IOptions<FactoryOptions> factoryOptions, ILogger<Worker> logger) : BackgroundService
+    ITaskStore tasks, ITrackerFileSync trackerFileSync, IClock clock, IOptions<GitHubSyncOptions> options, IOptions<FactoryOptions> factoryOptions, ILogger<Worker> logger) : BackgroundService
 {
     // Distinct from the orchestrator's own heartbeat (which shares the same FactoryOptions:WorkerId default,
     // {machine}-{pid}, unique per process) so GET /api/workers can tell the two apart at a glance (SF-615) — this
@@ -60,6 +60,8 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                         // margin, the checkpoint would advance past it anyway and it would never be fetched again.
                         await store.MarkRepositorySyncedAsync(repository.Id, SyncCheckpoint.From(syncStartedAt), stoppingToken);
                         logger.LogInformation("Synchronized {Repository}; imported {IssueCount} issues, created {TaskCount} tasks, cancelled {CancelledCount} pending tasks", $"{repository.Owner}/{repository.Name}", imported, created, cancelled);
+
+                        await SyncTrackerFileAsync(repository, stoppingToken);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
@@ -113,6 +115,123 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
         {
             // Not currently Pending (already progressed, or already resting elsewhere) — the warning log above is
             // this case's trace; no dependent is actually left silently stuck by a cycle it can no longer create.
+        }
+    }
+
+    /// <summary>Reads and acts on a repository's own <c>TASKS.md</c> tracker file (SF-707), if it has one — the
+    /// native, GitHub-issue-free task source for a repository whose backlog lives in a hand-written tracker file.
+    /// A no-op for a repository with no <c>TASKS.md</c> at its base branch's root (<see cref="ITrackerFileSync.ReadAsync"/>
+    /// returns <see langword="null"/>), and safe to run every cycle alongside GitHub issue sync for a repository
+    /// that uses both sources — every tracker-sourced task carries its own distinct <c>tracker_item_id</c>, never
+    /// confused with a <c>github_issue_id</c>-carrying task, so neither source can double-claim the other's work.
+    /// Three independent passes: (1) create a task for every unchecked "Next up" item not already tracked, (2)
+    /// reconcile each item's own <c>Dependencies:</c> line into <c>source='tracker'</c> edges, exactly mirroring
+    /// <see cref="ReconcileIssueDependenciesAsync"/>, and (3) write back to the file whichever section
+    /// (<see cref="TrackerSectionMapper.From"/>) each already-tracked task's current status now belongs in, if
+    /// that differs from what the file was last confirmed to reflect.</summary>
+    private async Task SyncTrackerFileAsync(GitHubRepository repository, CancellationToken cancellationToken)
+    {
+        string? content;
+        try { content = await trackerFileSync.ReadAsync(repository, repository.DefaultBranch, cancellationToken); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Reading TASKS.md failed for {Repository}", $"{repository.Owner}/{repository.Name}");
+            return;
+        }
+        if (content is null) return;
+
+        var items = TasksMdParser.Parse(content);
+        var tracked = await tasks.GetTrackerFileTasksAsync(repository.Id, cancellationToken);
+        var trackedIds = tracked.Select(t => t.TrackerItemId).ToHashSet();
+
+        var createdCount = 0;
+        foreach (var item in items.Where(i => i.Section == TrackerSection.NextUp && !i.Checked && !trackedIds.Contains(i.Id)))
+        {
+            using var activity = FactoryTelemetry.Source.StartActivity("github.create_task_for_tracker_item");
+            activity?.SetTag("factory.repository_id", repository.Id);
+            activity?.SetTag("factory.tracker_item_id", item.Id);
+            if (await tasks.CreateForTrackerItemIfEligibleAsync(repository.Id, repository.DefaultBranch, item.Id, item.Title, item.Description, cancellationToken))
+                createdCount++;
+        }
+        if (createdCount > 0)
+            logger.LogInformation("Synchronized TASKS.md for {Repository}; created {TaskCount} tracker-file tasks", $"{repository.Owner}/{repository.Name}", createdCount);
+
+        foreach (var item in items)
+            await ReconcileTrackerDependenciesAsync(repository, item, cancellationToken);
+
+        await WritebackTrackerTransitionsAsync(repository, cancellationToken);
+    }
+
+    /// <summary>Parses <paramref name="item"/>'s own <c>Dependencies:</c> line (SF-707) and reconciles the result
+    /// into <c>source='tracker'</c> task_dependency edges for the task it produced — the TASKS.md analogue of
+    /// <see cref="ReconcileIssueDependenciesAsync"/>. A no-op when this item has not yet produced a task, and each
+    /// referenced id is likewise skipped, not treated as an error, until its own item has produced a task in turn
+    /// (retried automatically on a later sync pass). Dependencies are resolved within this repository only —
+    /// TASKS.md's own <c>Dependencies:</c> convention has no cross-repository reference form, unlike SF-710's
+    /// issue-body <c>owner/repo#N</c>.</summary>
+    private async Task ReconcileTrackerDependenciesAsync(GitHubRepository repository, TrackerItem item, CancellationToken cancellationToken)
+    {
+        var dependentTaskId = await tasks.FindTaskIdForTrackerItemAsync(repository.Id, item.Id, cancellationToken);
+        if (dependentTaskId is null) return;
+
+        var resolvedIds = new List<Guid>();
+        foreach (var dependencyId in item.DependencyIds)
+        {
+            var resolved = await tasks.FindTaskIdForTrackerItemAsync(repository.Id, dependencyId, cancellationToken);
+            if (resolved is not null) resolvedIds.Add(resolved.Value);
+        }
+
+        var result = await tasks.ReconcileTrackerDependenciesAsync(dependentTaskId.Value, resolvedIds, cancellationToken);
+        if (result.SkippedCycles.Count == 0) return;
+
+        logger.LogWarning("Task {TaskId} (tracker item {TrackerItemId}) has {Count} tracker-declared dependency edge(s) skipped because they would create a cycle",
+            dependentTaskId, item.Id, result.SkippedCycles.Count);
+        try
+        {
+            await tasks.TransitionAsync(dependentTaskId.Value, FactoryTaskStatus.Pending, FactoryTaskStatus.NeedsHuman,
+                "Blocked: TASKS.md declares a dependency that would create a cycle.", cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            // Not currently Pending (already progressed, or already resting elsewhere) — the warning log above is
+            // this case's trace; no dependent is actually left silently stuck by a cycle it can no longer create.
+        }
+    }
+
+    /// <summary>Writes back to TASKS.md whichever section (<see cref="TrackerSectionMapper.From"/>) each
+    /// tracker-sourced task's current status now belongs in, for every task whose status has moved it into a
+    /// different section than the file was last confirmed to reflect (SF-707) — the same role
+    /// <c>TaskGitHubNotifier</c> plays for a GitHub issue's own labels/comments, except this is the one component
+    /// that owns writing to TASKS.md at all, so a claim (Orchestrator process) and a completion (this process,
+    /// below) can never race each other into the same file. A rejected push (see <see cref="ITrackerFileSync.ApplyTransitionAsync"/>)
+    /// leaves <c>tracker_writeback_section</c> unchanged, so the next cycle simply retries from the file's
+    /// current state instead of losing the update.</summary>
+    private async Task WritebackTrackerTransitionsAsync(GitHubRepository repository, CancellationToken cancellationToken)
+    {
+        foreach (var task in await tasks.GetTrackerFileTasksAsync(repository.Id, cancellationToken))
+        {
+            var target = TrackerSectionMapper.From(task.Status);
+            if (target == task.WritebackSection) continue;
+
+            var note = target switch
+            {
+                TrackerSection.Completed => $"Completed {clock.UtcNow:yyyy-MM-dd} by Software Factory; see task {task.TaskId} in the dashboard for full verification evidence.",
+                TrackerSection.Blocked => $"Blocked automatically by Software Factory: {task.FailureReason ?? "see task " + task.TaskId + " in the dashboard for details."}",
+                _ => null
+            };
+
+            using var activity = FactoryTelemetry.Source.StartActivity("github.tracker_file_writeback");
+            activity?.SetTag("factory.task_id", task.TaskId);
+            activity?.SetTag("factory.tracker_item_id", task.TrackerItemId);
+            try
+            {
+                if (await trackerFileSync.ApplyTransitionAsync(repository, repository.DefaultBranch, task.TrackerItemId, target, note, cancellationToken))
+                    await tasks.SetTrackerWritebackSectionAsync(task.TaskId, target, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "Writing a TASKS.md update for tracker item {TrackerItemId} failed for {Repository}", task.TrackerItemId, $"{repository.Owner}/{repository.Name}");
+            }
         }
     }
 

@@ -23,9 +23,16 @@ public sealed class ProcessRunner(IClock clock) : IProcessRunner
                 RedirectStandardError = true,
                 RedirectStandardInput = request.StandardInput is not null,
                 UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                // Without these, .NET's default console-stream encoding follows the OS codepage (on Windows,
+                // typically not UTF-8), silently mangling any non-ASCII byte a redirected process writes or reads
+                // (e.g. an em dash in a TASKS.md item, SF-707, or in any GitHub issue title/body). git itself
+                // always writes and expects UTF-8 on these streams, so every caller of this runner needs the same.
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
             }
         };
+        if (request.StandardInput is not null) process.StartInfo.StandardInputEncoding = Encoding.UTF8;
 
         foreach (var argument in request.Arguments) process.StartInfo.ArgumentList.Add(argument);
         if (request.Environment is not null)

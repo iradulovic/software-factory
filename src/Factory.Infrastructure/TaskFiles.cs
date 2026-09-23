@@ -75,11 +75,14 @@ public sealed class TaskContextWriter : ITaskContextWriter
         if (File.Exists(staleResult)) File.Delete(staleResult);
 
         var comments = issue?.Comments.Count > 0 ? string.Join("\n\n", issue.Comments.Select(c => $"### {c.Author}\n\n{c.Body}")) : "No comments.";
+        // SF-707: a TASKS.md-sourced task has no GitHub issue at all (task.IssueNumber is null) — that line is
+        // simply omitted rather than rendering a bare, misleading "GitHub issue: #".
+        var source = task.IssueNumber is { } issueNumber ? $"GitHub issue: #{issueNumber}" : "Source: this repository's own TASKS.md tracker file";
         var content = $"""
             # Task
 
             Repository: {repository.Owner}/{repository.Name}
-            GitHub issue: #{task.IssueNumber}
+            {source}
 
             ## Title
 
