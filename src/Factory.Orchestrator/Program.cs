@@ -14,6 +14,7 @@ builder.Services.AddSingleton<RunAgentStep>();
 builder.Services.AddSingleton<CollectDiffStep>();
 builder.Services.AddSingleton<ValidateStep>();
 builder.Services.AddSingleton<PreparePublicationStep>();
+builder.Services.AddSingleton<ReviewStep>();
 builder.Services.AddSingleton<TaskGitHubNotifier>();
 builder.Services.AddSingleton<TaskExecutor>();
 builder.Services.AddSingleton<LeaseMonitor>();

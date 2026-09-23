@@ -568,6 +568,100 @@ public sealed class TaskExecutorTests
         Assert.Equal(ExecutionStatus.Failed, harness.Store.Runs[runId]);
     }
 
+    [Fact]
+    public async Task Review_is_never_run_by_default()
+    {
+        var harness = new Harness();
+
+        await harness.ExecuteAsync();
+
+        Assert.DoesNotContain("AgentReview", harness.Store.StepOrder);
+        Assert.DoesNotContain(harness.Store.Transitions, t => t.To == FactoryTaskStatus.Reviewing);
+        var recorded = Assert.Single(harness.Store.ReviewRequestedSet);
+        Assert.False(recorded.Requested);
+    }
+
+    [Fact]
+    public async Task An_issue_carrying_the_review_marker_runs_review_before_ready_for_publish()
+    {
+        var harness = new Harness { IssueBody = "This touches billing. Please request review before merging." };
+
+        await harness.ExecuteAsync();
+
+        Assert.Contains("AgentReview", harness.Store.StepOrder);
+        Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+        Assert.Equal(new (FactoryTaskStatus, FactoryTaskStatus, string?)[]
+        {
+            (FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null),
+            (FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null),
+            (FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null),
+            (FactoryTaskStatus.Validating, FactoryTaskStatus.Reviewing, null),
+            (FactoryTaskStatus.Reviewing, FactoryTaskStatus.ReadyForPublish, null)
+        }, harness.Store.Transitions);
+    }
+
+    [Fact]
+    public async Task An_agent_reported_risk_automatically_requests_review_even_without_an_issue_marker()
+    {
+        var harness = new Harness { AgentResult = Harness.Agent("completed", "Implemented the export") with
+        {
+            Result = new AgentResult("completed", "Implemented the export", ["dotnet test"], true, ["src/Export.cs"], ["Touches billing totals"], false, null)
+        } };
+
+        await harness.ExecuteAsync();
+
+        Assert.Contains("AgentReview", harness.Store.StepOrder);
+        var recorded = Assert.Single(harness.Store.ReviewRequestedSet);
+        Assert.True(recorded.Requested);
+    }
+
+    [Fact]
+    public async Task Review_findings_are_persisted_when_review_runs()
+    {
+        var harness = new Harness
+        {
+            IssueBody = "request review please",
+            ReviewAgentResult = new("completed", "One nit", [new ReviewFinding("low", "src/Export.cs", 5, "Consider a comment")], false, null)
+        };
+
+        await harness.ExecuteAsync();
+
+        var saved = Assert.Single(harness.Store.SavedReviewFindings);
+        Assert.Equal(harness.ClaimedTask.Id, saved.TaskId);
+        Assert.Single(saved.Findings);
+    }
+
+    [Fact]
+    public async Task A_review_that_needs_a_human_stops_the_task_instead_of_reaching_ready_for_publish()
+    {
+        var harness = new Harness
+        {
+            IssueBody = "request review please",
+            ReviewAgentResult = new("completed", "Found something concerning", [], true, "Double-check the tax calculation")
+        };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.NeedsHuman, harness.Store.Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Reviewing, FactoryTaskStatus.NeedsHuman, "Double-check the tax calculation");
+    }
+
+    [Fact]
+    public async Task Setting_max_review_attempts_to_zero_disables_review_even_with_a_marker_present()
+    {
+        var harness = new Harness
+        {
+            IssueBody = "request review please",
+            Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 2, 0, true)
+        };
+
+        await harness.ExecuteAsync();
+
+        Assert.DoesNotContain("AgentReview", harness.Store.StepOrder);
+        var recorded = Assert.Single(harness.Store.ReviewRequestedSet);
+        Assert.False(recorded.Requested);
+    }
+
     private static void AssertLastTransition(FakeTaskStore store, FactoryTaskStatus from, FactoryTaskStatus to, string reason)
     {
         var last = store.Transitions[^1];
@@ -582,6 +676,7 @@ public sealed class TaskExecutorTests
         public List<ProcessRequest> Commands { get; } = [];
         public RepositoryConfiguration Configuration { get; init; } = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 2, 1, true);
         public AgentRunResult AgentResult { get; init; } = Agent("completed", "Implemented the export");
+        public AgentReviewResult ReviewAgentResult { get; init; } = new("completed", "Nothing to flag", [], false, null);
         public bool RepositoryFound { get; init; } = true;
         public bool HasChanges { get; init; } = true;
         public bool IsClean { get; init; } = true;
@@ -635,6 +730,7 @@ public sealed class TaskExecutorTests
                 new CollectDiffStep(Store, new FakeInspector(this)),
                 new ValidateStep(Store, new FakeProcessRunner(this), Options.Create(new FactoryOptions())),
                 new PreparePublicationStep(Store, new FakeInspector(this)),
+                new ReviewStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), NullLogger<ReviewStep>.Instance),
                 new TaskGitHubNotifier(Store, new FakeGitHubPublisher(this), Options.Create(new FactoryOptions()), NullLogger<TaskGitHubNotifier>.Instance),
                 NullLogger<TaskExecutor>.Instance);
             await executor.ExecuteAsync(ClaimedTask, runId, CancellationToken.None);
@@ -690,6 +786,8 @@ public sealed class TaskExecutorTests
             {
                 harness.RecordAgentInvocation(name, request);
                 if (harness.AgentThrows is not null) throw harness.AgentThrows;
+                if (request.Purpose == AgentRunPurpose.Review)
+                    return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: harness.ReviewAgentResult));
                 return Task.FromResult(harness.AgentResult);
             }
         }

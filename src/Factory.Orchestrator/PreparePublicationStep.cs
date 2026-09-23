@@ -39,6 +39,15 @@ public sealed class PreparePublicationStep(ITaskStore tasks, IWorktreeInspector 
         // later GitHub-sync auto-merge decision read the exact same already-decided value.
         var requireHumanMerge = context.Configuration!.RequireHumanMerge || HumanReviewMarker.IsPresent(context.Issue);
         await tasks.SetRequireHumanMergeAsync(context.Task.Id, requireHumanMerge, cancellationToken);
+
+        // SF-702: opt-in, never the default for every task — either the issue explicitly asked for it, or the
+        // implementation agent's own result flagged at least one risk worth a second look. Disabled entirely
+        // (regardless of either signal) when the repository sets MaxReviewAttempts to 0.
+        var reviewRequested = context.Configuration.MaxReviewAttempts > 0 &&
+            (ReviewRequestedMarker.IsPresent(context.Issue) || context.AgentResult?.Risks.Count > 0);
+        await tasks.SetReviewRequestedAsync(context.Task.Id, reviewRequested, cancellationToken);
+        context.ReviewRequested = reviewRequested;
+
         context.ChangeSummary = summary;
         var output = $"{summary.FilesChanged.Count} file(s) changed, +{summary.LinesAdded} -{summary.LinesRemoved}";
         await tasks.CompleteStepAsync(stepId, ExecutionStatus.Succeeded, null, output, cancellationToken);

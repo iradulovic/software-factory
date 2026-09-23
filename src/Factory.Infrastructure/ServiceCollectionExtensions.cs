@@ -15,6 +15,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IAgentResultReader, AgentResultReader>();
+        services.AddSingleton<IAgentReviewResultReader, AgentReviewResultReader>();
 
         // One IAgentRunner/IAgentAvailabilityChecker per configured agent profile: adding a CLI coding agent is
         // a configuration change (see AgentProfilesOptions), never a new class or a registration here.
@@ -22,7 +23,8 @@ public static class ServiceCollectionExtensions
             ? configured : AgentProfilesOptions.DefaultProfiles;
         foreach (var profile in profiles)
         {
-            services.AddSingleton<IAgentRunner>(sp => new CliAgentRunner(profile, sp.GetRequiredService<IProcessRunner>(), sp.GetRequiredService<IAgentResultReader>(), sp.GetRequiredService<IClock>()));
+            services.AddSingleton<IAgentRunner>(sp => new CliAgentRunner(profile, sp.GetRequiredService<IProcessRunner>(), sp.GetRequiredService<IAgentResultReader>(),
+                sp.GetRequiredService<IAgentReviewResultReader>(), sp.GetRequiredService<IClock>()));
             services.AddSingleton<IAgentAvailabilityChecker>(sp => new CliAgentAvailabilityChecker(profile, sp.GetRequiredService<IProcessRunner>()));
         }
 

@@ -549,6 +549,36 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET require_human_merge=@requireHumanMerge WHERE id=@taskId", new { taskId, requireHumanMerge }, cancellationToken: cancellationToken));
     }
 
+    public async Task SetReviewRequestedAsync(Guid taskId, bool requested, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET review_requested=@requested WHERE id=@taskId", new { taskId, requested }, cancellationToken: cancellationToken));
+    }
+
+    public async Task SaveReviewFindingsAsync(Guid taskId, Guid runId, string agent, IReadOnlyList<ReviewFinding> findings, CancellationToken cancellationToken)
+    {
+        if (findings.Count == 0) return;
+        const string sql = """
+            INSERT INTO factory.review_finding(id,task_id,run_id,agent,severity,file,line,description)
+            VALUES(@Id,@TaskId,@RunId,@Agent,@Severity,@File,@Line,@Description)
+            """;
+        var rows = findings.Select(f => new { Id = Guid.NewGuid(), TaskId = taskId, RunId = runId, Agent = agent, f.Severity, f.File, f.Line, f.Description });
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, rows, cancellationToken: cancellationToken));
+    }
+
+    public async Task<IReadOnlyList<PersistedReviewFinding>> GetReviewFindingsAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id AS "Id",task_id AS "TaskId",run_id AS "RunId",agent AS "Agent",severity AS "Severity",
+              file AS "File",line AS "Line",description AS "Description",created_at AS "CreatedAt"
+            FROM factory.review_finding WHERE task_id=@taskId ORDER BY created_at
+            """;
+        await using var c = Connection();
+        var rows = await c.QueryAsync<ReviewFindingRow>(new CommandDefinition(sql, new { taskId }, cancellationToken: cancellationToken));
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
     public async Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken)
     {
         await using var c = Connection();
@@ -1049,6 +1079,22 @@ internal sealed class TaskFeedbackRow
     public string CreatedBy { get; init; } = "";
 
     public TaskFeedback ToModel() => new(Id, TaskId, Body, new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)), CreatedBy);
+}
+
+internal sealed class ReviewFindingRow
+{
+    public Guid Id { get; init; }
+    public Guid TaskId { get; init; }
+    public Guid RunId { get; init; }
+    public string Agent { get; init; } = "";
+    public string Severity { get; init; } = "";
+    public string? File { get; init; }
+    public int? Line { get; init; }
+    public string Description { get; init; } = "";
+    public DateTime CreatedAt { get; init; }
+
+    public PersistedReviewFinding ToModel() => new(Id, TaskId, RunId, Agent, Severity, File, Line, Description,
+        new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)));
 }
 
 internal sealed class TaskDependencyRow
