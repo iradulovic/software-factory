@@ -131,14 +131,18 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
 
     public async Task<PullRequestState?> GetPullRequestStateAsync(string owner, string name, int number, CancellationToken cancellationToken)
     {
+        // `gh pr view --json` no longer accepts a separate "merged" boolean field (confirmed against gh 2.98.0:
+        // requesting it fails outright with "Unknown JSON field: merged") — "state" alone is authoritative and
+        // already distinguishes MERGED from CLOSED (closed without merge) from OPEN.
         var result = await runner.RunAsync(new ProcessRequest("gh",
-            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "state,merged"],
+            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "state"],
             Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
         if (!result.Succeeded) return null;
         using var document = JsonDocument.Parse(result.StandardOutput);
         var state = document.RootElement.GetProperty("state").GetString() ?? "";
-        var merged = document.RootElement.GetProperty("merged").GetBoolean();
-        return new PullRequestState(merged, string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase));
+        return new PullRequestState(
+            string.Equals(state, "MERGED", StringComparison.OrdinalIgnoreCase),
+            string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task<PullRequestChecksResult> GetPullRequestChecksAsync(string owner, string name, int number, CancellationToken cancellationToken)

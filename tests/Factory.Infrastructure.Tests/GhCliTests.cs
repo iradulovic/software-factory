@@ -108,11 +108,13 @@ public sealed class GhCliTests
     }
 
     [Theory]
-    [InlineData("""{"state":"MERGED","merged":true}""", true, false)]
-    [InlineData("""{"state":"CLOSED","merged":false}""", false, true)]
-    [InlineData("""{"state":"OPEN","merged":false}""", false, false)]
-    public async Task GetPullRequestStateAsync_parses_state_and_merged(string stdout, bool expectedMerged, bool expectedClosed)
+    [InlineData("""{"state":"MERGED"}""", true, false)]
+    [InlineData("""{"state":"CLOSED"}""", false, true)]
+    [InlineData("""{"state":"OPEN"}""", false, false)]
+    public async Task GetPullRequestStateAsync_parses_state(string stdout, bool expectedMerged, bool expectedClosed)
     {
+        // gh 2.98.0 rejects a separate "merged" field outright ("Unknown JSON field: merged"); "state" alone is
+        // requested and is authoritative for MERGED vs. CLOSED (without merge) vs. OPEN.
         var runner = new RecordingRunner(0, stdout, "");
         var client = new GhCliClient(runner);
 
@@ -122,7 +124,7 @@ public sealed class GhCliTests
         Assert.Equal(expectedMerged, state.Merged);
         Assert.Equal(expectedClosed, state.Closed);
         Assert.Equal("gh", runner.Request!.FileName);
-        Assert.Equal(new[] { "pr", "view", "17", "--repo", "acme/billing", "--json", "state,merged" }, runner.Request.Arguments);
+        Assert.Equal(new[] { "pr", "view", "17", "--repo", "acme/billing", "--json", "state" }, runner.Request.Arguments);
     }
 
     [Fact]
