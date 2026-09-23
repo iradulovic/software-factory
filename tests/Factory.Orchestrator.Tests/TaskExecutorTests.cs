@@ -433,6 +433,21 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task An_unconfigured_preferred_agent_or_preset_needs_a_human_instead_of_silently_falling_back()
+    {
+        // SF-704: a preset (or agent) name that matches no configured profile is a misconfiguration, not a
+        // transient unavailability — it must fail clearly, never silently run on whatever else is configured.
+        var harness = new Harness { PreferredAgent = "Codex-Typo", ConfiguredAgents = ["Codex", "Claude"] };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.NeedsHuman, harness.Store.Status);
+        Assert.Empty(harness.AgentInvocationNames);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.NeedsHuman,
+            "Preferred agent/preset 'Codex-Typo' is not configured. Configured options: Codex, Claude.");
+    }
+
+    [Fact]
     public async Task Current_agent_is_set_before_invocation_and_cleared_once_it_finishes()
     {
         var harness = new Harness();
@@ -781,6 +796,7 @@ public sealed class TaskExecutorTests
         private sealed class FakeAgent(Harness harness, string name) : IAgentRunner
         {
             public string Name => name;
+            public string Provider => name;
 
             public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
             {

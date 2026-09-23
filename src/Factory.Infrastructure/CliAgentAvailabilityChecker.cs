@@ -6,6 +6,7 @@ namespace Factory.Infrastructure;
 public sealed class CliAgentAvailabilityChecker(AgentProfile profile, IProcessRunner processRunner) : IAgentAvailabilityChecker
 {
     public string Agent => profile.Name;
+    public string Provider => profile.EffectiveProvider;
 
     public async Task<AgentAvailability> CheckAsync(CancellationToken cancellationToken)
     {

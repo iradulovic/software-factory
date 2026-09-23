@@ -523,10 +523,13 @@ static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c,
             (succeeded, errored, version, error) = (false, true, null, ex.Message);
         }
 
+        // Run stats stay keyed by the checker's own preset-specific Agent name (each preset is recorded under its
+        // own AgentRunRecord.Agent), but quota/pause are keyed by Provider (SF-704) — shared across every preset
+        // of one provider, matching AgentSelector.
         var stats = await c.QuerySingleAsync<AgentStatsRow>(new CommandDefinition(AgentStatsSql, new { agent = checker.Agent }, cancellationToken: ct));
-        var isAtQuota = await tasks.IsAgentAtQuotaAsync(checker.Agent, ct);
-        var quotaStatus = await tasks.GetAgentQuotaStatusAsync(checker.Agent, ct);
-        var pause = await tasks.GetDispatchPauseAsync(checker.Agent, ct);
+        var isAtQuota = await tasks.IsAgentAtQuotaAsync(checker.Provider, ct);
+        var quotaStatus = await tasks.GetAgentQuotaStatusAsync(checker.Provider, ct);
+        var pause = await tasks.GetDispatchPauseAsync(checker.Provider, ct);
         var state = AgentOperationalStateResolver.Resolve(succeeded, errored, pause.Paused, isAtQuota, stats.ActiveTask is not null, stats.SuccessfulRuns > 0);
         var (quotaResetAt, quotaWindow, quotaResetKind) = isAtQuota && quotaStatus is not null
             ? (quotaStatus.ResetAt, quotaStatus.Window.ToString(), quotaStatus.ResetKind.ToString())

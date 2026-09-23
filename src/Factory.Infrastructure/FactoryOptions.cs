@@ -47,9 +47,9 @@ public sealed class AgentProfilesOptions
     /// it instead of in place of it — registering every configured agent twice.</summary>
     public static readonly IReadOnlyList<AgentProfile> DefaultProfiles =
     [
-        new("Codex", "codex", ["exec", "--approve-for-me", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
+        new("Codex", "codex", ["exec", "-m", "gpt-5.6-terra", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
             SessionIdPattern: @"session id: (?<sessionId>[0-9a-fA-F-]{36})",
-            ResumeArguments: ["exec", "resume", "{SESSION_ID}", "--dangerously-bypass-approvals-and-sandbox", "-"])
+            ResumeArguments: ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-terra", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"])
     ];
 
     public List<AgentProfile> Profiles { get; set; } = [];

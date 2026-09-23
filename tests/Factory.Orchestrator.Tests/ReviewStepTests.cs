@@ -140,6 +140,7 @@ public sealed class ReviewStepTests
     private sealed class FakeAgent(string name, Func<AgentRunRequest, Task<AgentRunResult>> run) : IAgentRunner
     {
         public string Name => name;
+        public string Provider => name;
         public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken) => run(request);
     }
 }
