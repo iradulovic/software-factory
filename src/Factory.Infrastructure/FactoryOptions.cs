@@ -47,7 +47,7 @@ public sealed class AgentProfilesOptions
     /// it instead of in place of it — registering every configured agent twice.</summary>
     public static readonly IReadOnlyList<AgentProfile> DefaultProfiles =
     [
-        new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5)
+        new("Codex", "codex", ["exec", "--approve-for-me", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5)
     ];
 
     public List<AgentProfile> Profiles { get; set; } = [];

@@ -6,9 +6,9 @@ Planned work and completed features are tracked in [`TASKS.md`](TASKS.md). Futur
 
 ## What works
 
-The bootstrap vertical slice synchronizes issues, labels, and comments through `gh`; creates one pending factory task for each open `factory:ready` issue; claims tasks atomically in PostgreSQL; creates a bare repository cache and Git worktree; writes `.factory/task.md`; invokes the local Codex CLI; validates `.factory/result.json`; runs configured build/test commands; and exposes the persisted history through the API and dashboard. A validated task can be published, with a human's explicit approval by default (or automatically for an `auto-draft` repository): its branch is pushed and a draft pull request is opened. The factory writes its own state back to GitHub as it goes — a concise issue comment and a `factory:*` state label at each of start, ready-for-review, failure, and needs-human — and syncs a published pull request's outcome (merged or closed) back onto the task. It never merges or deploys; merging remains an exclusively human action performed on GitHub itself.
+The bootstrap vertical slice synchronizes issues, labels, and comments through `gh`; creates one pending factory task for each open `factory:ready` issue; claims tasks atomically in PostgreSQL; creates a bare repository cache and Git worktree; writes `.factory/task.md`; invokes a configured coding agent (Codex or Claude Code CLI); validates `.factory/result.json`; runs configured build/test commands; and exposes the persisted history through the API and dashboard. A validated task is published — its branch is pushed and a pull request opened, with a human's explicit approval by default (or automatically for an `auto-draft` repository). The factory writes its own state back to GitHub as it goes — a concise issue comment and a `factory:*` state label at each of start, ready-for-review, failure, and needs-human — and syncs a published pull request's outcome back onto the task. As of SF-709, a CI-green pull request merges automatically unless its own repository's `.factory/config.json` sets `requireHumanMerge: true` (the default) or its originating GitHub issue carries a `HUMAN REVIEW` marker (title, body, or a `human-review` label) — either way it waits on a human merge exactly as every task did before SF-709; it never deploys.
 
-Verification status: the Git cache and worktree flow is covered by tests that run real Git against a temporary upstream repository, and the PostgreSQL claim, lease, and persistence behavior is integration-tested. A complete end-to-end run against a live GitHub repository with Codex has not yet been recorded in `TASKS.md`; treat the sections below as the intended flow until one is.
+Verification status: the Git cache and worktree flow is covered by tests that run real Git against a temporary upstream repository, and the PostgreSQL claim, lease, and persistence behavior is integration-tested. Complete end-to-end runs against this repository itself, for both Codex and Claude Code, including a live automatic merge, are recorded in `TASKS.md` (SF-608, SF-709).
 
 ## Prerequisites
 
@@ -97,7 +97,7 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
 }
 ```
 
-`requireHumanMerge` controls whether a task's pull request opens as a draft and waits for a human to merge it (`true`), or opens ready for review and merges automatically once CI passes (`false`).
+`requireHumanMerge` controls whether a task's pull request opens as a draft and waits for a human to merge it (`true`, the default), or opens ready for review and merges automatically once CI passes (`false`). Either way, a GitHub issue that carries a `HUMAN REVIEW` marker (in its title, body, or a `human-review` label) always waits on a human merge, overriding a repository's own `false` — this decision is computed once, when the task is first published, and never re-derived if the issue changes afterward.
 
 Each entry in `buildCommands`/`testCommands` is an executable plus its arguments, run directly through `IProcessRunner` — never through a shell, and never split on whitespace at run time, so an argument containing a space (a quoted test filter, a path) needs no escaping:
 
@@ -115,7 +115,7 @@ Shell operators (`&&`, `|`, redirection, ...) are never available implicitly. A 
 
 `publish` is `"manual"` (default: a human must click Publish on a `ReadyForPublish` task) or `"auto-draft"` (the orchestrator requests publication itself as soon as a task reaches `ReadyForPublish`). Publishing pushes the task's own branch and opens a draft pull request; it never merges.
 
-While a task's pull request is still open, its GitHub CI status is synchronized every sync cycle and shown on Task Details in its own "CI status" panel, kept distinct from local build/test validation: an overall `Pending`/`Success`/`Failure`/`NoChecks`/`Unavailable` badge, the exact head commit the status is for, and each individual check with a link to its diagnostics. The head commit and its checks are always fetched together in one call, so a status is never shown against a different — possibly stale — commit than the one it actually describes; a read failure (authentication, network) shows its real error text rather than looking like "no checks." This is read-only surfacing: it never merges, deploys, or automatically repairs a failing check.
+While a task's pull request is still open, its GitHub CI status is synchronized every sync cycle and shown on Task Details in its own "CI status" panel, kept distinct from local build/test validation: an overall `Pending`/`Success`/`Failure`/`NoChecks`/`Unavailable` badge, the exact head commit the status is for, and each individual check with a link to its diagnostics. The head commit and its checks are always fetched together in one call, so a status is never shown against a different — possibly stale — commit than the one it actually describes; a read failure (authentication, network) shows its real error text rather than looking like "no checks." A failure on that exact commit that looks like a genuine code problem triggers one bounded automatic repair attempt (SF-706), reusing the same operator-feedback continuation mechanism described above but attributed to the orchestrator; a failure that looks infrastructure/authentication-related instead (cancelled, timed out, needs a workflow approval), or a task whose automatic repair attempts are exhausted, moves to `NeedsHuman` rather than looping. This never deploys.
 
 The Overview page's "Outcomes" panel reports a small set of explicitly-defined metrics over a rolling window (`GET /api/metrics?days=N`, default 7): validated changes ready for review, merged/accepted changes, rejected changes (kept distinct from merged, never folded together), retries (excludes a quota resume, counted separately as a "quota waiting" event instead — resuming stalled work isn't the same signal as retrying failed work), human interventions, agent/process success vs. failure (CLI exit codes), and CI success vs. failure. It deliberately reports no "remaining quota" figure and no lines-changed count — no subscription CLI reports a real, numeric remaining budget, and lines changed was never meant to stand in for productivity. An operator can optionally log review time on any `Completed`/`Rejected` task from its Task Details page; the panel's average is simply absent when nothing has been logged, never shown as zero.
 
@@ -158,25 +158,39 @@ dotnet run --project src/Factory.Api
 
 ## 4. Start the services
 
-Use separate terminals from the repository root:
+The single documented entry point (SF-615) starts everything — PostgreSQL, Sync, Orchestrator, Api, and the dashboard — from the repository root:
 
 ```powershell
-dotnet run --project src/Factory.GitHubSync
-dotnet run --project src/Factory.Orchestrator
-dotnet run --project src/Factory.Api --urls http://localhost:5080
+./scripts/start.ps1
 ```
 
-The orchestrator intentionally runs on the host: it needs the user's Git configuration, authenticated `gh` and `codex` sessions, local SDKs, repositories, and Docker access.
+It checks `gh`/`codex`/`claude`/`docker` availability and authentication first (reporting each clearly rather than letting a missing login surface later as a confusing agent-process failure), waits for PostgreSQL to report healthy, starts each .NET service and the dashboard as background processes with their own log file under `logs/` (`logs/sync.log`, `logs/orchestrator.log`, `logs/api.log`, `logs/dashboard.log`, plus a matching `.err.log` for each), waits for `Factory.Api`'s `/health` to actually confirm database connectivity (not just that the process started), and prints a final status summary including each worker's heartbeat freshness from `GET /api/workers`. Every service always runs from the repository root regardless of where the script itself is invoked from, so `Factory:RootDirectory`/`Factory:LogsDirectory` (both configured as relative paths) resolve to one consistent place rather than silently splitting state across each project's own subdirectory.
 
-Start the dashboard:
+Run it again with `-StatusOnly` any time — after a sleep/wake cycle, a reboot, or just to check — to see what's actually running without starting anything:
 
 ```powershell
-cd web/Factory.Web
-npm install
-npm run dev
+./scripts/start.ps1 -StatusOnly
 ```
 
-Open `http://localhost:3000`. Alternatively, `docker compose up --build postgres factory-api factory-web` runs the infrastructure, API, and dashboard; keep Sync and Orchestrator on the host.
+Stop everything the script started (and nothing else — it never touches a terminal you opened by hand) with:
+
+```powershell
+./scripts/stop.ps1
+```
+
+PostgreSQL itself is deliberately left running by `stop.ps1` (pass `-StopPostgres` to also stop it; its data volume is untouched either way) — Sync and Orchestrator intentionally run on the host, never containerized, since they need the user's own Git configuration, authenticated `gh`/`codex`/`claude` sessions, local SDKs, and Docker access.
+
+Existing database-tracked work needs no special recovery step: a task an old process was mid-executing when it stopped (a crash, a reboot, closing the terminal) simply has its lease expire, and the next `ClaimNextAsync` call — from whichever process starts next, including a freshly restarted Orchestrator — reclaims it via the same expired-lease recovery path every task claim already uses, never creating a second, duplicate attempt. This was exercised for real on the desktop, not just asserted: a task was inserted directly with `status='Implementing'`, `claimed_by` set to a fabricated stale worker id, and `lease_until` in the past (simulating a crash mid-execution), then `./scripts/start.ps1` was run. The freshly started Orchestrator reclaimed it within its first poll cycle (`task_event`: *"Recovered from expired lease and claimed by \<new worker id\>"*), attempted it, and — since the task pointed at a deliberately unreachable placeholder repository — ended at `Failed` with an explicit, actionable reason (*"Repository fetch failed: ... Could not resolve host"*) rather than hanging, silently vanishing, or being picked up by a second process. No database edit was needed to make it resume; only one worker ever claimed it. Prior sessions' now-stopped workers correctly show as stale (`isStale: true`, unseen for longer than three heartbeat intervals) in the same status output, rather than being reported as still alive.
+
+If Windows itself needs to start the factory automatically after a reboot (rather than the operator running `start.ps1` by hand once logged back in), register it as a per-user logon task — `codex`/`claude`/`gh` authentication is stored in the interactive user's own profile and normally survives a reboot without a fresh interactive login, so this does not require any special credential handling:
+
+```powershell
+$action = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument '-NoProfile -File "D:\path\to\software-factory\scripts\start.ps1"'
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+Register-ScheduledTask -TaskName 'SoftwareFactoryStartup' -Action $action -Trigger $trigger -RunLevel Limited
+```
+
+Alternatively, `docker compose up --build postgres factory-api factory-web` runs the infrastructure, API, and dashboard in containers; keep Sync and Orchestrator on the host either way.
 
 ## 5. Exercise the vertical slice
 
@@ -216,7 +230,7 @@ With no `Telemetry__OtlpEndpoint` configured, nothing is exported and startup is
 
 ## Current limitations and safety
 
-- Codex CLI was successfully proven end-to-end (Sync -> claim -> worktree -> agent -> validate -> publish) on the desktop for SF-608.
+- Both Codex and Claude Code CLIs were proven end-to-end (Sync -> claim -> worktree -> agent -> validate -> publish) on the desktop for SF-608; a live automatic merge (Sync -> claim -> worktree -> agent -> validate -> publish -> CI green -> auto-merge, no operator action) was proven for SF-709.
 - The repository cache is a bare repository that tracks `origin` explicitly (`+refs/heads/*:refs/remotes/origin/*`). Caches created by earlier versions with `git clone --bare` are healed automatically on the next task.
 - One task is executed at a time; the schema and claim query support later multi-worker operation.
 - Active task leases (default 10 minutes, renewed every 2 minutes) are renewed by the owning worker. Lost ownership cancels execution; a renewal that merely errors is retried until the lease would expire, so a short database outage does not kill a long agent run. Expired executions are closed and reclaimed, reusing their validated deterministic worktree when present.
@@ -224,7 +238,6 @@ With no `Telemetry__OtlpEndpoint` configured, nothing is exported and startup is
 - Agent results with status `failed` fail the task, `blocked` and `needs-human` hand it to a human, and a `completed` result with no changes in the worktree fails instead of being validated. `.factory/` is excluded from Git in every worktree.
 - A validated task rests at `ReadyForPublish` rather than being marked `Completed` automatically. Reaching it requires the worktree to have every change committed on the expected branch; the orchestrator independently computes the base/head commit SHAs, changed files, and added/removed lines (shown on the task's details page) rather than trusting the agent's own report. This validated head commit is also persisted on the task itself, so publication can later refuse to push a worktree whose HEAD has since moved past what was validated.
 - Lease expiry is not a process fence: if an old worker is completely frozen rather than stopped, it could theoretically resume and touch the worktree after another worker recovers the task. Responsive workers cancel execution when renewal fails; stronger fencing would require process isolation.
-- A human-triggered `POST /api/tasks/{id}/publish` (or an `auto-draft` repository) pushes a `ReadyForPublish` task's own branch and opens a draft pull request through `gh`, moving the task to `Published`; a separate `PublicationWorker` performs this, independently of the main task pipeline. There is still no automatic merge, deployment, webhook handling, or Claude integration.
+- A human-triggered `POST /api/tasks/{id}/publish` (or an `auto-draft` repository) pushes a `ReadyForPublish` task's own branch and opens a pull request through `gh` — a draft unless the task's effective policy allows automatic merge, in which case it opens ready for review — moving the task to `Published`; a separate `PublicationWorker` performs this, independently of the main task pipeline. There is still no automatic deployment or webhook handling.
 - Publication recovers from a crash at any point: `ClaimNextPublicationAsync` reclaims a `Publishing` attempt whose lease expired (default 5 minutes) exactly like a task's own lease; the push and the pull-request check-then-create are both idempotent under retry, so a reclaimed attempt finds and records an already-open pull request instead of duplicating it; and `PublicationWorker` separately reconciles a task still resting in `ReadyForPublish` whose publication already recorded `PullRequestCreated` (the crash happened between that and the task's own transition) straight to `Published`. A task cancelled while its publication is in flight stays `Cancelled`; the pull request, if one was created, is still recorded correctly rather than being reported as a failed publication.
 - Only run trusted repositories: coding agents can execute repository code.
-- Codex CLI was successfully proven end-to-end (Sync -> claim -> worktree -> agent -> validate -> publish) on the desktop for SF-608.

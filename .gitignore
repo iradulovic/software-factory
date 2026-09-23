@@ -11,5 +11,6 @@ out/
 .env*.local
 factory-data/
 logs/
+scripts/.run/
 *.user
 *.suo

@@ -6,8 +6,13 @@ using Microsoft.Extensions.Options;
 namespace Factory.GitHubSync;
 
 public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHubClient client, IGitHubPublisher publisher,
-    ITaskStore tasks, IClock clock, IOptions<GitHubSyncOptions> options, ILogger<Worker> logger) : BackgroundService
+    ITaskStore tasks, IClock clock, IOptions<GitHubSyncOptions> options, IOptions<FactoryOptions> factoryOptions, ILogger<Worker> logger) : BackgroundService
 {
+    // Distinct from the orchestrator's own heartbeat (which shares the same FactoryOptions:WorkerId default,
+    // {machine}-{pid}, unique per process) so GET /api/workers can tell the two apart at a glance (SF-615) — this
+    // host had no liveness signal at all before, only a per-repository "did the last sync fail" one.
+    private string SyncWorkerId => $"sync-{factoryOptions.Value.WorkerId}";
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await migrator.MigrateAsync(stoppingToken);
@@ -18,6 +23,7 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
         {
             try
             {
+                await tasks.RecordHeartbeatAsync(SyncWorkerId, Environment.MachineName, null, stoppingToken);
                 foreach (var repository in await store.GetEnabledRepositoriesAsync(stoppingToken))
                 {
                     using var repositoryActivity = FactoryTelemetry.Source.StartActivity("github.sync_repository");

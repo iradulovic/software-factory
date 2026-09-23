@@ -22,6 +22,17 @@ public sealed class RootEndpointTests : IClassFixture<RootEndpointTests.FactoryA
         Assert.Equal("http://localhost:3000", document?.Dashboard);
     }
 
+    [Fact]
+    public async Task Health_actually_checks_the_database_rather_than_only_confirming_the_process_is_up()
+    {
+        var response = await client.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var document = await response.Content.ReadFromJsonAsync<HealthDocument>();
+        Assert.Equal("healthy", document?.Status);
+        Assert.Equal("reachable", document?.Database);
+    }
+
     [Theory]
     [InlineData("title", "asc", "t.title", "ASC")]
     [InlineData("startedAt", "desc", "t.started_at", "DESC")]
@@ -80,4 +91,5 @@ public sealed class RootEndpointTests : IClassFixture<RootEndpointTests.FactoryA
     }
 
     private sealed record RootDocument(string Service, string Status, string Health, string Dashboard, string Message);
+    private sealed record HealthDocument(string Status, string Database);
 }
