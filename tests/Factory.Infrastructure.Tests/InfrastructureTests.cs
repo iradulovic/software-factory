@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Factory.Core;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace Factory.Infrastructure.Tests;
@@ -9,7 +10,7 @@ public sealed class InfrastructureTests
     [Fact]
     public void Worktree_location_is_deterministic_and_safe()
     {
-        var manager = new GitWorktreeManager(new StubCache(), new StubRunner(), Options.Create(new FactoryOptions { RootDirectory = "C:/factory" }));
+        var manager = new GitWorktreeManager(new StubCache(), new StubRunner(), Options.Create(new FactoryOptions { RootDirectory = "C:/factory" }), NullLogger<GitWorktreeManager>.Instance);
         var repository = new GitHubRepository(1, "acme", "billing", "url", "main", true);
         var task = NewTask("Add CSV Export!!!", 142);
         var first = manager.GetLocation(repository, task);
@@ -26,7 +27,7 @@ public sealed class InfrastructureTests
         {
             var options = Options.Create(new FactoryOptions { RootDirectory = root.FullName });
             var runner = new StubRunner();
-            var manager = new GitWorktreeManager(new StubCache(), runner, options);
+            var manager = new GitWorktreeManager(new StubCache(), runner, options, NullLogger<GitWorktreeManager>.Instance);
             var repository = new GitHubRepository(1, "acme", "billing", "url", "main", true);
             var pending = NewTask("Add CSV Export!!!", 142);
             var location = manager.GetLocation(repository, pending);
