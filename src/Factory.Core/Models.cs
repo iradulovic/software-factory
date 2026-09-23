@@ -15,8 +15,21 @@ public enum AddDependencyOutcome { Added, AlreadyExists, WouldCreateCycle, TaskN
 
 /// <summary>One prerequisite <paramref name="DependsOnTaskId"/> must reach <see cref="FactoryTaskStatus.Completed"/>
 /// before <paramref name="TaskId"/> becomes claimable — <see cref="DependsOnTitle"/>/<see cref="DependsOnStatus"/>
-/// are read alongside the edge so the operator can see what is blocking a task without a second lookup.</summary>
-public sealed record TaskDependency(Guid TaskId, Guid DependsOnTaskId, string DependsOnTitle, FactoryTaskStatus DependsOnStatus);
+/// are read alongside the edge so the operator can see what is blocking a task without a second lookup.
+/// <paramref name="Source"/> is <c>"issue"</c> when SF-710 parsed this edge from the dependent task's GitHub issue
+/// body, or <see langword="null"/> when an operator added it manually through the dashboard (SF-611).</summary>
+public sealed record TaskDependency(Guid TaskId, Guid DependsOnTaskId, string DependsOnTitle, FactoryTaskStatus DependsOnStatus, string? Source = null);
+
+/// <summary>The result of reconciling a task's <c>source='issue'</c> dependency edges (SF-710) against the current
+/// set of task ids parsed from its GitHub issue body on one sync pass. <paramref name="SkippedCycles"/> lists a
+/// parsed prerequisite that was not inserted because it would have closed a cycle — never silently dropped.</summary>
+public sealed record IssueDependencyReconciliation(IReadOnlyList<Guid> Added, IReadOnlyList<Guid> Removed, IReadOnlyList<Guid> SkippedCycles);
+
+/// <summary>One dependency reference parsed from an issue body's <c>Depends on #N</c> / <c>Blocked by #N</c>
+/// convention (SF-710). <see cref="Owner"/>/<see cref="Name"/> are <see langword="null"/> for a same-repository
+/// reference (plain <c>#N</c>); both are set for the cross-repository <c>owner/repo#N</c> form, consistent with
+/// SF-611's existing cross-repository dependency support.</summary>
+public sealed record IssueDependencyRef(string? Owner, string? Name, int IssueNumber);
 
 /// <summary>One piece of operator feedback recorded against a task (SF-613) — a correction or a manual-test
 /// failure attached when the operator continues a resting task rather than accepting it as-is. Every feedback

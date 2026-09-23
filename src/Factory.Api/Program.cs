@@ -195,7 +195,7 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
         """, new { id }, cancellationToken: ct));
     var feedback = await tasks.GetFeedbackAsync(id, ct);
     var ciStatus = await tasks.GetCiStatusAsync(id, ct);
-    var dependencyDtos = dependencies.Select(d => new { d.TaskId, d.DependsOnTaskId, d.DependsOnTitle, DependsOnStatus = d.DependsOnStatus.ToString() });
+    var dependencyDtos = dependencies.Select(d => new { d.TaskId, d.DependsOnTaskId, d.DependsOnTitle, DependsOnStatus = d.DependsOnStatus.ToString(), d.Source });
     return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos, feedback, ciStatus });
 });
 

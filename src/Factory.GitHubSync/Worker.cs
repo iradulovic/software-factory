@@ -45,6 +45,8 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                                 ? "Issue was closed on GitHub."
                                 : !issue.Labels.Contains("factory:ready", StringComparer.OrdinalIgnoreCase) ? "The factory:ready label was removed on GitHub." : null;
                             if (reason is not null && await tasks.CancelPendingForIssueAsync(saved.Id, reason, stoppingToken)) cancelled++;
+
+                            await ReconcileIssueDependenciesAsync(repository, saved, stoppingToken);
                         }
                         // Backdated by SyncCheckpoint.SafetyMargin rather than persisted as-is: GitHub's search API
                         // (see GetIssuesAsync) is eventually consistent, so an issue that changed just before
@@ -64,6 +66,47 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { logger.LogError(ex, "GitHub synchronization cycle failed"); }
             await Task.Delay(TimeSpan.FromSeconds(options.Value.PollingIntervalSeconds), stoppingToken);
+        }
+    }
+
+    /// <summary>Parses <paramref name="issue"/>'s body for its own <c>Depends on #N</c>/<c>Blocked by #N</c>
+    /// convention (SF-710) and reconciles the result into <c>factory.task_dependency</c> for the task this issue
+    /// produced. A no-op when this issue has not yet produced a task (retried automatically on a later sync pass
+    /// once it does), and each referenced line is likewise skipped — not treated as an error — until its own
+    /// referenced issue has produced a task in turn. A reference that would close a dependency cycle is skipped
+    /// and surfaced by moving a still-<see cref="FactoryTaskStatus.Pending"/> dependent to
+    /// <see cref="FactoryTaskStatus.NeedsHuman"/>, the same visibility <see cref="BlockDependentsOnFailedPrerequisitesAsync"/>-style
+    /// issue-derived problems already get; a dependent that has since moved on is left alone (the warning log is
+    /// this case's only trace, which is acceptable since it is no longer blocking anything).</summary>
+    private async Task ReconcileIssueDependenciesAsync(GitHubRepository repository, GitHubIssue issue, CancellationToken cancellationToken)
+    {
+        var dependentTaskId = await tasks.FindTaskIdForIssueAsync(repository.Owner, repository.Name, issue.IssueNumber, cancellationToken);
+        if (dependentTaskId is null) return;
+
+        var resolvedIds = new List<Guid>();
+        foreach (var reference in IssueDependencyParser.Parse(issue.Body))
+        {
+            var owner = reference.Owner ?? repository.Owner;
+            var name = reference.Name ?? repository.Name;
+            var resolved = await tasks.FindTaskIdForIssueAsync(owner, name, reference.IssueNumber, cancellationToken);
+            if (resolved is not null) resolvedIds.Add(resolved.Value);
+            // else: referenced issue/repository has no task yet — retried automatically on a later sync pass.
+        }
+
+        var result = await tasks.ReconcileIssueDependenciesAsync(dependentTaskId.Value, resolvedIds, cancellationToken);
+        if (result.SkippedCycles.Count == 0) return;
+
+        logger.LogWarning("Task {TaskId} (issue #{IssueNumber}) has {Count} issue-declared dependency edge(s) skipped because they would create a cycle",
+            dependentTaskId, issue.IssueNumber, result.SkippedCycles.Count);
+        try
+        {
+            await tasks.TransitionAsync(dependentTaskId.Value, FactoryTaskStatus.Pending, FactoryTaskStatus.NeedsHuman,
+                "Blocked: issue body declares a dependency that would create a cycle.", cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            // Not currently Pending (already progressed, or already resting elsewhere) — the warning log above is
+            // this case's trace; no dependent is actually left silently stuck by a cycle it can no longer create.
         }
     }
 

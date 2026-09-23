@@ -168,6 +168,18 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<IReadOnlyList<TaskDependency>> GetDependenciesAsync(Guid taskId, CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<TaskDependency>>(Dependencies.Where(d => d.TaskId == taskId).ToList());
 
+    public Dictionary<(string Owner, string Name, int IssueNumber), Guid> IssueTaskIds { get; } = [];
+    public Task<Guid?> FindTaskIdForIssueAsync(string owner, string name, int issueNumber, CancellationToken cancellationToken) =>
+        Task.FromResult(IssueTaskIds.TryGetValue((owner, name, issueNumber), out var id) ? id : (Guid?)null);
+
+    public List<(Guid TaskId, IReadOnlyList<Guid> ParsedDependsOnTaskIds)> IssueDependencyReconciliations { get; } = [];
+    public IssueDependencyReconciliation NextIssueDependencyReconciliation { get; set; } = new([], [], []);
+    public Task<IssueDependencyReconciliation> ReconcileIssueDependenciesAsync(Guid taskId, IReadOnlyList<Guid> parsedDependsOnTaskIds, CancellationToken cancellationToken)
+    {
+        IssueDependencyReconciliations.Add((taskId, parsedDependsOnTaskIds));
+        return Task.FromResult(NextIssueDependencyReconciliation);
+    }
+
     public int TasksToBlockOnFailedPrerequisites { get; set; }
     public Task<int> BlockDependentsOnFailedPrerequisitesAsync(CancellationToken cancellationToken) =>
         Task.FromResult(TasksToBlockOnFailedPrerequisites);
