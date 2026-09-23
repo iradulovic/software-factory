@@ -493,6 +493,14 @@ public interface IGitHubClient
     /// be determined.</summary>
     Task<string?> GetAuthenticatedLoginAsync(CancellationToken cancellationToken);
 }
+/// <summary>Runs SF-703's deterministic browser checks against a local application <c>SmokeTestStep</c> has
+/// already confirmed healthy — the one browser-automation boundary in the codebase, kept behind this abstraction
+/// exactly like every other external boundary (git, process execution, coding agents).</summary>
+public interface IBrowserSmokeTestRunner
+{
+    Task<IReadOnlyList<SmokeTestCheckResult>> RunAsync(string baseUrl, IReadOnlyList<string> checkPaths, string artifactsDirectory, TimeSpan timeout, CancellationToken cancellationToken);
+}
+
 public interface IRepositoryCache
 {
     Task<string> PrepareAsync(GitHubRepository repository, CancellationToken cancellationToken);

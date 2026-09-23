@@ -98,8 +98,6 @@ public sealed class TasksMdParserTests
 
         Assert.Contains(items, i => i.Id == "SF-618" && !i.Checked && i.Section == TrackerSection.NextUp);
         Assert.Contains(items, i => i.Id == "SF-710" && i.Checked && i.Section == TrackerSection.Completed);
-        // SF-703/SF-705/SF-708 live under "## Optional backlog" — outside the four recognized sections — so
-        // they are correctly never returned even though each is a valid "- [ ] **SF-nnn — ...**" bullet.
-        Assert.DoesNotContain(items, i => i.Id == "SF-703");
+        Assert.Contains(items, i => i.Id == "SF-703" && i.Checked && i.Section == TrackerSection.Completed);
     }
 }

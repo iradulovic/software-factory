@@ -19,6 +19,50 @@ public sealed class RepositoryConfigurationReaderTests
     }
 
     [Fact]
+    public void Smoke_test_is_absent_by_default()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("{}", "origin/main");
+
+        Assert.Null(configuration.SmokeTest);
+    }
+
+    [Fact]
+    public void Smoke_test_is_parsed_with_its_own_defaults_when_only_the_required_fields_are_set()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("""
+            {"smokeTest":{"startCommand":"npm run start","healthCheckUrl":"http://localhost:3000/health"}}
+            """, "origin/main");
+
+        Assert.NotNull(configuration.SmokeTest);
+        Assert.Equal(new ValidationCommand("npm", ["run", "start"]), configuration.SmokeTest.StartCommand);
+        Assert.Equal("http://localhost:3000/health", configuration.SmokeTest.HealthCheckUrl);
+        Assert.Equal(["/"], configuration.SmokeTest.CheckPaths);
+        Assert.Equal(60, configuration.SmokeTest.StartupTimeoutSeconds);
+        Assert.Equal(30, configuration.SmokeTest.CheckTimeoutSeconds);
+    }
+
+    [Fact]
+    public void Smoke_test_check_paths_and_timeouts_are_read_when_set()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("""
+            {"smokeTest":{"startCommand":"npm run start","healthCheckUrl":"http://localhost:3000/health",
+              "checkPaths":["/","/orders"],"startupTimeoutSeconds":90,"checkTimeoutSeconds":15}}
+            """, "origin/main");
+
+        Assert.Equal(["/", "/orders"], configuration.SmokeTest!.CheckPaths);
+        Assert.Equal(90, configuration.SmokeTest.StartupTimeoutSeconds);
+        Assert.Equal(15, configuration.SmokeTest.CheckTimeoutSeconds);
+    }
+
+    [Theory]
+    [InlineData("""{"smokeTest":{"healthCheckUrl":"http://localhost:3000"}}""")]
+    [InlineData("""{"smokeTest":{"startCommand":"npm run start"}}""")]
+    [InlineData("""{"smokeTest":{"startCommand":"npm run start","healthCheckUrl":"http://localhost:3000","startupTimeoutSeconds":0}}""")]
+    [InlineData("""{"smokeTest":{"startCommand":"npm run start","healthCheckUrl":"http://localhost:3000","checkTimeoutSeconds":0}}""")]
+    public void Invalid_smoke_test_configuration_fails_clearly(string json) =>
+        Assert.Contains(".factory/config.json", Assert.Throws<InvalidOperationException>(() => RepositoryConfigurationReader.Parse(json, "origin/main")).Message);
+
+    [Fact]
     public void Publish_policy_is_read_and_trimmed()
     {
         var configuration = RepositoryConfigurationReader.Parse("""{"publish":" auto-draft "}""", "origin/main");

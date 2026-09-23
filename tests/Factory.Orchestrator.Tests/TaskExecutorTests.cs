@@ -1,5 +1,7 @@
+using System.Net.Http;
 using Factory.Core;
 using Factory.Infrastructure;
+using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -744,6 +746,7 @@ public sealed class TaskExecutorTests
                 new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions())),
                 new CollectDiffStep(Store, new FakeInspector(this)),
                 new ValidateStep(Store, new FakeProcessRunner(this), Options.Create(new FactoryOptions())),
+                new SmokeTestStep(Store, new FakeProcessRunner(this), new UnusedBrowserSmokeTestRunner(), new UnusedHttpClientFactory(), Options.Create(new FactoryOptions())),
                 new PreparePublicationStep(Store, new FakeInspector(this)),
                 new ReviewStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), NullLogger<ReviewStep>.Instance),
                 new TaskGitHubNotifier(Store, new FakeGitHubPublisher(this), Options.Create(new FactoryOptions()), NullLogger<TaskGitHubNotifier>.Instance),
@@ -817,6 +820,19 @@ public sealed class TaskExecutorTests
                 harness.ConfigurationBaseRef = baseRef;
                 return Task.FromResult(harness.Configuration);
             }
+        }
+
+        // No Harness test opts into RepositoryConfiguration.SmokeTest, so SmokeTestStep always returns Ok
+        // without ever touching either of these — SmokeTestStep itself has its own dedicated tests.
+        private sealed class UnusedBrowserSmokeTestRunner : IBrowserSmokeTestRunner
+        {
+            public Task<IReadOnlyList<SmokeTestCheckResult>> RunAsync(string baseUrl, IReadOnlyList<string> checkPaths, string artifactsDirectory, TimeSpan timeout, CancellationToken cancellationToken) =>
+                throw new NotSupportedException();
+        }
+
+        private sealed class UnusedHttpClientFactory : IHttpClientFactory
+        {
+            public HttpClient CreateClient(string name) => throw new NotSupportedException();
         }
 
         private sealed class FakeProcessRunner(Harness harness) : IProcessRunner

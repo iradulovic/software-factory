@@ -17,6 +17,7 @@ public sealed class TaskExecutor(
     RunAgentStep runAgent,
     CollectDiffStep collectDiff,
     ValidateStep validate,
+    SmokeTestStep smokeTest,
     PreparePublicationStep preparePublication,
     ReviewStep review,
     TaskGitHubNotifier notifier,
@@ -45,6 +46,8 @@ public sealed class TaskExecutor(
 
             await TransitionAsync(context, FactoryTaskStatus.Validating, null, cancellationToken);
             if (!await RunStepAsync(validate, context, cancellationToken)) return;
+            // SF-703: skipped entirely unless this repository opted in (RepositoryConfiguration.SmokeTest set).
+            if (!await RunStepAsync(smokeTest, context, cancellationToken)) return;
             if (!await RunStepAsync(preparePublication, context, cancellationToken)) return;
 
             // SF-702: an optional, opt-in second-agent review pass — only entered when PreparePublicationStep
