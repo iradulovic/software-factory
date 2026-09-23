@@ -312,6 +312,19 @@ public interface IGitHubStore
     Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken);
     Task UpsertRepositoryAsync(GitHubRepository repository, CancellationToken cancellationToken);
 
+    /// <summary>Adds a repository for the factory to work against, or updates an existing owner/name match —
+    /// the same "insert or update by owner/name" semantics <see cref="UpsertRepositoryAsync"/> already provides
+    /// for startup config seeding, exposed as an operator-facing runtime control (SF-711). Always enabled: an
+    /// operator explicitly adding a repository means it should start participating in sync/dispatch immediately.
+    /// Picked up without a restart, since <c>Factory.GitHubSync.Worker</c> already re-reads
+    /// <see cref="GetEnabledRepositoriesAsync"/> every poll cycle.</summary>
+    Task<GitHubRepository> AddRepositoryAsync(string owner, string name, string cloneUrl, string defaultBranch, CancellationToken cancellationToken);
+
+    /// <summary>Switches a repository on or off for sync/dispatch (SF-711) without discarding its configuration
+    /// or history — the runtime equivalent of removing it from <c>GitHubSync:Repositories</c>. Takes effect on
+    /// the next sync poll cycle, no restart required. Returns <see langword="false"/> if no repository has this id.</summary>
+    Task<bool> SetRepositoryEnabledAsync(long id, bool enabled, CancellationToken cancellationToken);
+
     /// <summary>Records the point in time through which this repository's issues have been fully synchronized, so
     /// the next cycle's <see cref="IGitHubClient.GetIssuesAsync"/> call can search only for what changed since
     /// then. Pass a value derived from the time the sync cycle started, not when it finished, so an issue updated

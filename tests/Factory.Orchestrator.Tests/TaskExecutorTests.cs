@@ -760,6 +760,8 @@ public sealed class TaskExecutorTests
             public Task<GitHubIssue?> GetIssueAsync(long id, CancellationToken cancellationToken) => Task.FromResult<GitHubIssue?>(
                 new GitHubIssue(id, 1, 999, 42, harness.IssueTitle, harness.IssueBody, "open", "me", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, harness.IssueLabels, []));
             public Task UpsertRepositoryAsync(GitHubRepository repository, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<GitHubRepository> AddRepositoryAsync(string owner, string name, string cloneUrl, string defaultBranch, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<bool> SetRepositoryEnabledAsync(long id, bool enabled, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task MarkRepositorySyncedAsync(long repositoryId, DateTimeOffset syncedThrough, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task RecordRepositorySyncFailureAsync(long repositoryId, string error, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<GitHubIssue> UpsertIssueAsync(long repositoryId, GitHubIssue issue, CancellationToken cancellationToken) => throw new NotSupportedException();
