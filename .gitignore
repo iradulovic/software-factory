@@ -12,5 +12,6 @@ out/
 factory-data/
 logs/
 scripts/.run/
+backups/
 *.user
 *.suo

@@ -209,6 +209,28 @@ Within the configured polling interval, Sync imports it and creates a task. The 
 
 Sync is incremental: each repository records the point in time through which it is fully synchronized, and the next cycle asks `gh` only for issues updated at or after that checkpoint (fully paginated, never capped at a single page), so a repository with thousands of issues eventually converges without re-fetching its whole history every cycle. The checkpoint only advances once a cycle finishes fetching everything it found, using the time the cycle started rather than when it finished (backdated by a small fixed safety margin to absorb GitHub's search-indexing lag), so an issue that changes mid-cycle, or just before it, is safely picked up again next time rather than skipped. Every comment is fetched per issue rather than trusting `gh issue list`'s own capped nested field, and `closed_at` is persisted alongside `state`. A closed issue or one that loses its `factory:ready` label converges automatically: its still-`Pending` task (never one already in flight) is cancelled with an explicit reason recorded on the task; a reopened, still-eligible issue is picked up again like any other eligible issue on its next sync. `gh` CLI failures, including rate limiting, are persisted per repository as operational state and surfaced on the Repositories page.
 
+## 6. Back up and restore local state
+
+GitHub is not a backup of this factory's state: a task's database row, its dependency graph, and any work an agent committed to a branch that was never pushed — or never even committed — exist only in this machine's PostgreSQL volume and `factory-data/` tree (SF-616). `./scripts/backup.ps1` snapshots both together, consistently, into one timestamped directory:
+
+```powershell
+./scripts/backup.ps1
+```
+
+It pauses dispatch (SF-610's global pause) and waits for any active task to finish before copying, so the worktree copy isn't racing an agent's own writes, then dumps the database (`pg_dump -Fc`) and copies `factory-data/` (repository caches and worktrees) into `<Destination>/<yyyyMMdd-HHmmss>/`, and resumes dispatch again if this run was the one that paused it. It never blocks on the API being reachable — quiescence is skipped, with a clear warning, if the factory is already fully stopped; the dump itself is always transactionally consistent regardless.
+
+- **Destination**: `-Destination`, or `$env:FACTORY_BACKUP_DIR`, defaults to `./backups` (gitignored). Point this at removable or network storage for real disaster recovery — a backup on the same disk as the thing it backs up only protects against database or worktree corruption, not drive loss.
+- **Retention**: `-RetentionCount`, or `$env:FACTORY_BACKUP_RETENTION`, defaults to 14 snapshots; older ones are pruned automatically after each successful backup. `-RetentionCount 0` disables pruning.
+- **Credential handling**: a snapshot contains factory task state and this machine's own Git history, never `gh`/`codex`/`claude` credentials — those live in the interactive user's own profile, outside `RootDirectory`, and are untouched by this script. Treat the backup destination as sensitive regardless: anyone with access to a snapshot can read every task's implementation history and diff.
+
+Restore a snapshot with `./scripts/restore.ps1`:
+
+```powershell
+./scripts/restore.ps1 -BackupPath ./backups/20260923-141500
+```
+
+This always restores into a brand-new database and a brand-new directory — never the live database or the live `factory-data/` — so a restore can be verified safely without any risk to, or interference from, whatever the live factory is currently doing. It refuses to target the live database name or the live `RootDirectory` (`-Force` overrides, though there is normally no good reason to). It never starts a service and never touches `factory.dispatch_pause`: recovery must not start dispatch automatically against an unverified restore, and since the restore target is a location nothing live reads from, there is nothing to start in the first place. It then prints verification evidence for exactly the three things a backup exists to protect that GitHub alone would not — task history (row counts and the most recent tasks from `factory.task` in the restored database), an unpushed commit (local branches, per repository cache, unreachable from any `origin/*` ref), and uncommitted work (`git status --porcelain` for every restored worktree, after repairing the worktree's administrative link via `git worktree repair`, since a worktree copied to a new location can't otherwise be used by Git). Promoting a verified restore to be the live system — stopping the live services and swapping in the restored database/directory — is a separate, deliberate operator action this script does not take for you.
+
 ## API
 
 The bootstrap exposes dashboard, tasks (including retry/cancel), runs, agents, repositories, workers, and metrics under `/api`. Swagger is intentionally omitted to keep the host small.
