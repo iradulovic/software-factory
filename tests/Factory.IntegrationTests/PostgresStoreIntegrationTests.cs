@@ -756,6 +756,21 @@ public sealed class PostgresStoreIntegrationTests
                 null, checkedAt.AddMinutes(1), null), CancellationToken.None);
             Assert.False(await tasks.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
 
+            // ClearAgentQuotaAsync is the operator override for a stale quota status: it works even while an
+            // agent is currently detected at quota, without waiting for a later invocation to overwrite it.
+            await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus("Claude", true, QuotaWindow.ShortTerm, QuotaResetKind.Estimated,
+                checkedAt.AddHours(4), checkedAt, "rate limited"), CancellationToken.None);
+            Assert.True(await tasks.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
+            Assert.True(await tasks.ClearAgentQuotaAsync("Claude", CancellationToken.None));
+            Assert.False(await tasks.IsAgentAtQuotaAsync("Claude", CancellationToken.None));
+            var clearedStatus = await tasks.GetAgentQuotaStatusAsync("Claude", CancellationToken.None);
+            Assert.NotNull(clearedStatus);
+            Assert.False(clearedStatus!.Detected);
+            Assert.Null(clearedStatus.ResetAt);
+
+            // An agent with no recorded quota status at all has nothing to clear.
+            Assert.False(await tasks.ClearAgentQuotaAsync("NeverUsedAgent", CancellationToken.None));
+
             // SF-604 regression: a task that goes straight to WaitingForQuota with no prior invocation at all
             // (every configured agent was already at quota on its very first attempt) still resumes once a
             // configured provider becomes available — resumption is scheduled from provider availability, never

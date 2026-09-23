@@ -754,6 +754,18 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return row?.ToModel();
     }
 
+    public async Task<bool> ClearAgentQuotaAsync(string agent, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE factory.agent_availability
+            SET detected=false, quota_window='None', reset_kind='None', reset_at=NULL, checked_at=now()
+            WHERE agent=@agent
+            """;
+        await using var c = Connection();
+        var rows = await c.ExecuteAsync(new CommandDefinition(sql, new { agent }, cancellationToken: cancellationToken));
+        return rows > 0;
+    }
+
     public Task<bool> IsDispatchPausedAsync(CancellationToken cancellationToken) => IsPausedAsync(DispatchPauseScope.Global, cancellationToken);
     public Task<bool> IsAgentPausedAsync(string agent, CancellationToken cancellationToken) => IsPausedAsync(agent, cancellationToken);
 
