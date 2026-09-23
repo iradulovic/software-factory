@@ -2,9 +2,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
+import { useTheme } from "next-themes";
+import { useEffect, useState } from "react";
 import { z } from "zod";
-import { Activity, Boxes, CircleGauge, ListTodo, MessageSquareText } from "lucide-react";
+import { Activity, Boxes, CircleGauge, ListTodo, MessageSquareText, Moon, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, workerSchema, type Worker } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import {
   Sidebar,
   SidebarContent,
@@ -76,11 +79,38 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <p className="text-sm font-medium">Development orchestration</p>
             </div>
           </div>
-          <AgentStatusPill />
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <AgentStatusPill />
+          </div>
         </header>
         <div className="p-4 md:p-6">{children}</div>
       </SidebarInset>
     </SidebarProvider>
+  );
+}
+
+function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- next-themes requires deferring to the client to avoid a hydration mismatch
+    setMounted(true);
+  }, []);
+
+  if (!mounted) return <Button variant="ghost" size="icon" className="size-8" disabled aria-label="Toggle theme" />;
+
+  const isDark = resolvedTheme === "dark";
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="size-8"
+      aria-label="Toggle theme"
+      onClick={() => setTheme(isDark ? "light" : "dark")}
+    >
+      {isDark ? <Sun /> : <Moon />}
+    </Button>
   );
 }
 
