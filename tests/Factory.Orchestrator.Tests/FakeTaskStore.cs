@@ -128,6 +128,13 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.CompletedTask;
     }
 
+    public List<(Guid TaskId, bool RequireHumanMerge)> RequireHumanMergeSet { get; } = [];
+    public Task SetRequireHumanMergeAsync(Guid taskId, bool requireHumanMerge, CancellationToken cancellationToken)
+    {
+        RequireHumanMergeSet.Add((taskId, requireHumanMerge));
+        return Task.CompletedTask;
+    }
+
     public List<string?> CurrentAgentCalls { get; } = [];
     public Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken)
     {

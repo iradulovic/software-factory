@@ -205,6 +205,56 @@ public sealed class GhCliTests
     }
 
     [Fact]
+    public async Task CreatePullRequestAsync_passes_draft_when_requested()
+    {
+        var runner = new RecordingRunner(0, "https://github.com/acme/billing/pull/17", "");
+        var publisher = new GhCliPublisher(runner);
+
+        var result = await publisher.CreatePullRequestAsync("acme", "billing", "factory/17-add-export", "main", "Add export", "Body", true, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Contains("--draft", runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task CreatePullRequestAsync_omits_draft_when_not_requested()
+    {
+        // SF-709: a task whose effective policy allows automatic merge opens ready for review immediately.
+        var runner = new RecordingRunner(0, "https://github.com/acme/billing/pull/17", "");
+        var publisher = new GhCliPublisher(runner);
+
+        var result = await publisher.CreatePullRequestAsync("acme", "billing", "factory/17-add-export", "main", "Add export", "Body", false, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.DoesNotContain("--draft", runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task MergePullRequestAsync_squash_merges_and_deletes_the_branch_without_auto()
+    {
+        var runner = new RecordingRunner(0, "", "");
+        var publisher = new GhCliPublisher(runner);
+
+        var result = await publisher.MergePullRequestAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(new[] { "pr", "merge", "17", "--repo", "acme/billing", "--squash", "--delete-branch" }, runner.Request!.Arguments);
+        Assert.DoesNotContain("--auto", runner.Request.Arguments);
+    }
+
+    [Fact]
+    public async Task MergePullRequestAsync_reports_the_error_explicitly_when_gh_fails()
+    {
+        var runner = new RecordingRunner(1, "", " Pull Request is not mergeable: the merge commit conflicts ");
+        var publisher = new GhCliPublisher(runner);
+
+        var result = await publisher.MergePullRequestAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("Pull Request is not mergeable: the merge commit conflicts", result.Error);
+    }
+
+    [Fact]
     public async Task SetStateLabelAsync_adds_the_target_label_and_removes_every_other_state_label()
     {
         var runner = new RecordingRunner(0, "", "");

@@ -189,7 +189,9 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
 
 /// <summary>
 /// Publishes through the authenticated <c>git</c> and <c>gh</c> CLIs, exactly as read access already does through
-/// <see cref="GhCliClient"/>. Never passes <c>--force</c> to <c>git push</c> and never runs a merge command.
+/// <see cref="GhCliClient"/>. Never passes <c>--force</c> to <c>git push</c>. Runs a merge command only via
+/// <see cref="MergePullRequestAsync"/> (SF-709), and only ever called by <c>Factory.GitHubSync.Worker</c> for a
+/// task whose own effective policy allows it.
 /// </summary>
 public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
 {
@@ -213,11 +215,12 @@ public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
         return new PullRequestResult(true, first.GetProperty("number").GetInt32(), first.GetProperty("url").GetString(), null);
     }
 
-    public async Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken)
+    public async Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, bool draft, CancellationToken cancellationToken)
     {
-        var result = await runner.RunAsync(new ProcessRequest("gh",
-            ["pr", "create", "--repo", $"{owner}/{name}", "--base", baseBranch, "--head", branchName, "--draft", "--title", title, "--body", body],
-            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
+        var arguments = new List<string> { "pr", "create", "--repo", $"{owner}/{name}", "--base", baseBranch, "--head", branchName };
+        if (draft) arguments.Add("--draft");
+        arguments.AddRange(["--title", title, "--body", body]);
+        var result = await runner.RunAsync(new ProcessRequest("gh", arguments, Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
         if (!result.Succeeded) return new PullRequestResult(false, null, null, result.StandardError.Trim());
 
         // `gh pr create` prints the new PR's URL as the last line of stdout on success.
@@ -226,6 +229,16 @@ public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
         var numberText = url.Split('/').LastOrDefault();
         int.TryParse(numberText, out var number);
         return new PullRequestResult(true, number == 0 ? null : number, url, null);
+    }
+
+    /// <summary>Squash-merges and deletes the branch (SF-709) — never <c>--auto</c>, since the caller has already
+    /// independently confirmed CI is green before calling this.</summary>
+    public async Task<MergeResult> MergePullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "merge", number.ToString(), "--repo", $"{owner}/{name}", "--squash", "--delete-branch"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
+        return result.Succeeded ? new MergeResult(true, null) : new MergeResult(false, result.StandardError.Trim());
     }
 
     /// <summary>The mutually exclusive state labels a task's issue carries; <see cref="SetStateLabelAsync"/>

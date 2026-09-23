@@ -5,8 +5,8 @@ using Microsoft.Extensions.Options;
 
 namespace Factory.GitHubSync;
 
-public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHubClient client, ITaskStore tasks,
-    IClock clock, IOptions<GitHubSyncOptions> options, ILogger<Worker> logger) : BackgroundService
+public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHubClient client, IGitHubPublisher publisher,
+    ITaskStore tasks, IClock clock, IOptions<GitHubSyncOptions> options, ILogger<Worker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -85,10 +85,17 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                 else if (state.Closed)
                     await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.Rejected, "Pull request closed without merge.", cancellationToken);
                 else
+                {
                     // Still open: synchronize CI status for exactly the commit GitHub reports as this PR's
                     // current head (SF-614) — fetched together in one call, so a check result can never be
                     // attributed to an older, since-superseded head (e.g. after an SF-613 continuation republished).
-                    await SyncCiStatusAsync(published, cancellationToken);
+                    var overallStatus = await SyncCiStatusAsync(published, cancellationToken);
+                    // SF-709: a task whose own policy allows automatic merge gets one merged the moment its exact
+                    // head commit's CI is green — never on a pending or failing status. A HUMAN REVIEW task is
+                    // never touched here; it waits on a human merge exactly as every task did before SF-709.
+                    if (!published.RequireHumanMerge && overallStatus == PullRequestCiStatus.Success)
+                        await AttemptAutoMergeAsync(published, cancellationToken);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -99,12 +106,49 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
 
     /// <summary>Fetches and persists CI status for one still-open published pull request. A read failure
     /// (authentication, network, missing permissions) is recorded explicitly as <see cref="PullRequestCiStatus.Unavailable"/>
-    /// with its error text, never silently skipped or conflated with "no checks configured."</summary>
-    private async Task SyncCiStatusAsync(PublishedTaskRef published, CancellationToken cancellationToken)
+    /// with its error text, never silently skipped or conflated with "no checks configured." Returns the overall
+    /// status just persisted, so the caller can decide whether an SF-709 automatic merge applies without a second
+    /// read of what was just written.</summary>
+    private async Task<string> SyncCiStatusAsync(PublishedTaskRef published, CancellationToken cancellationToken)
     {
         using var activity = FactoryTelemetry.Source.StartActivity("github.sync_ci_status");
         activity?.SetTag("factory.task_id", published.TaskId);
         var result = await client.GetPullRequestChecksAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
-        await tasks.SetCiStatusAsync(published.TaskId, PullRequestCiStatus.Overall(result), result.HeadSha, result.Checks, result.Error, cancellationToken);
+        var overallStatus = PullRequestCiStatus.Overall(result);
+        await tasks.SetCiStatusAsync(published.TaskId, overallStatus, result.HeadSha, result.Checks, result.Error, cancellationToken);
+        return overallStatus;
+    }
+
+    /// <summary>Requests GitHub merge a task's pull request now that its own policy allows automatic merge and CI
+    /// on its exact head commit is green (SF-709). On success, nothing further happens here — the next poll's own
+    /// <see cref="GetPullRequestStateAsync"/> check at the top of <see cref="ResolvePublishedTasksAsync"/> observes
+    /// the merge and transitions the task to <see cref="FactoryTaskStatus.Completed"/> exactly as it already does
+    /// for a human-initiated merge, so no separate terminal-state logic is needed here. A rejection (a conflict, a
+    /// protected-branch rule, insufficient reviews) moves the task to <see cref="FactoryTaskStatus.NeedsHuman"/>
+    /// instead of retrying forever; the task leaving <see cref="FactoryTaskStatus.Published"/> this way also
+    /// removes it from the next poll's <see cref="GetPublishedTasksAsync"/> result, so a rejected merge is
+    /// attempted at most once.</summary>
+    private async Task AttemptAutoMergeAsync(PublishedTaskRef published, CancellationToken cancellationToken)
+    {
+        using var activity = FactoryTelemetry.Source.StartActivity("github.auto_merge");
+        activity?.SetTag("factory.task_id", published.TaskId);
+        var result = await publisher.MergePullRequestAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
+        if (result.Succeeded)
+        {
+            logger.LogInformation("Requested automatic merge for task {TaskId}'s pull request", published.TaskId);
+            return;
+        }
+
+        logger.LogWarning("Automatic merge failed for task {TaskId}: {Error}", published.TaskId, result.Error);
+        try
+        {
+            await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.NeedsHuman,
+                $"Automatic merge failed: {result.Error}", cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            // The task already left Published through some other authoritative action (a human merged or closed
+            // it concurrently) between this poll's state check and the merge attempt above; nothing further to do.
+        }
     }
 }

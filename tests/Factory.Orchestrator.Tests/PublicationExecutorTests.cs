@@ -28,6 +28,28 @@ public sealed class PublicationExecutorTests
     }
 
     [Fact]
+    public async Task A_task_requiring_human_merge_opens_a_draft_pull_request()
+    {
+        var harness = new Harness { RequireHumanMerge = true };
+
+        await harness.ExecuteAsync();
+
+        Assert.True(harness.PullRequestDraft);
+    }
+
+    [Fact]
+    public async Task A_task_not_requiring_human_merge_opens_a_ready_for_review_pull_request()
+    {
+        // SF-709: a task whose effective policy allows automatic merge should not sit as a draft waiting on a
+        // human to mark it ready — no human is expected to look at it before CI-green merges it automatically.
+        var harness = new Harness { RequireHumanMerge = false };
+
+        await harness.ExecuteAsync();
+
+        Assert.False(harness.PullRequestDraft);
+    }
+
+    [Fact]
     public async Task Resolves_the_worktree_summary_against_the_origin_tracked_base_branch()
     {
         // The repository cache tracks origin explicitly and never creates a local branch matching the base
@@ -264,6 +286,7 @@ public sealed class PublicationExecutorTests
         public string? ValidatedHeadCommit { get; init; } = "abc123";
         public PullRequestResult? ExistingPullRequest { get; init; }
         public string? ExistingPullRequestLookupError { get; init; }
+        public bool RequireHumanMerge { get; init; } = true;
 
         public List<string> Pushed { get; } = [];
         public string? SummarizeBaseRef { get; private set; }
@@ -272,10 +295,11 @@ public sealed class PublicationExecutorTests
         public (string Owner, string Name, string Branch, string Base)? PullRequestTarget { get; private set; }
         public string? PullRequestTitle { get; private set; }
         public string? PullRequestBody { get; private set; }
+        public bool? PullRequestDraft { get; private set; }
 
         private PublicationRequest? _request;
         public PublicationRequest Request => _request ??= new(Guid.NewGuid(), Guid.NewGuid(), BranchNameOverride ?? "factory/142-add-export",
-            "/tmp/worktree/issue-142", "main", 1, "acme", "billing", "Add invoice export", IssueNumber, ValidatedHeadCommit);
+            "/tmp/worktree/issue-142", "main", 1, "acme", "billing", "Add invoice export", IssueNumber, ValidatedHeadCommit, RequireHumanMerge);
 
         public async Task ExecuteAsync()
         {
@@ -312,12 +336,13 @@ public sealed class PublicationExecutorTests
                 return Task.FromResult(harness.ExistingPullRequest);
             }
 
-            public Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, CancellationToken cancellationToken)
+            public Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, bool draft, CancellationToken cancellationToken)
             {
                 harness.PullRequestCreateCalled = true;
                 harness.PullRequestTarget = (owner, name, branchName, baseBranch);
                 harness.PullRequestTitle = title;
                 harness.PullRequestBody = body;
+                harness.PullRequestDraft = draft;
                 return Task.FromResult(harness.PullRequestSucceeds
                     ? new PullRequestResult(true, 17, "https://github.com/acme/billing/pull/17", null)
                     : new PullRequestResult(false, null, null, harness.PullRequestError));
@@ -325,6 +350,7 @@ public sealed class PublicationExecutorTests
 
             public Task<GitHubWriteResult> CommentOnIssueAsync(string owner, string name, int issueNumber, string body, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<GitHubWriteResult> SetStateLabelAsync(string owner, string name, int issueNumber, string label, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<MergeResult> MergePullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken) => throw new NotSupportedException();
         }
     }
 }
