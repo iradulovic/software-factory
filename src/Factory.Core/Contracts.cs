@@ -227,6 +227,27 @@ public interface ITaskStore
     /// concurrent action).</summary>
     Task<bool> TriggerCiRepairAsync(Guid taskId, string headCommit, string feedback, CancellationToken cancellationToken);
 
+    /// <summary>Every review-comment id already ingested for a task (SF-708) — checked before calling
+    /// <see cref="IngestReviewFeedbackAsync"/> so a poll with nothing new never even opens a transaction or locks
+    /// the task row.</summary>
+    Task<IReadOnlyList<long>> GetIngestedReviewCommentIdsAsync(Guid taskId, CancellationToken cancellationToken);
+
+    /// <summary>Records genuinely new PR review comments/change-requests as continuation feedback (SF-708) — the
+    /// review-comment analogue of <see cref="TriggerCiRepairAsync"/>, but for a growing set of distinct comment
+    /// ids rather than a single "last repaired commit." Dedup is the source of truth: each item in
+    /// <paramref name="comments"/> is inserted into <c>factory.task_review_comment_ingested</c> (idempotent via a
+    /// unique constraint), and only the ones that are genuinely new become <c>factory.task_feedback</c> rows
+    /// (<c>created_by='review-comment'</c>) — so an already-ingested comment is never re-applied even if the
+    /// caller's own pre-filter (<see cref="GetIngestedReviewCommentIdsAsync"/>) somehow missed it. If the task is
+    /// not currently resting in exactly <see cref="FactoryTaskStatus.Published"/>, nothing is recorded at all
+    /// (comments are retried on a later poll once it is, mirroring how this method is only ever called for a task
+    /// <c>Factory.GitHubSync.Worker</c> just observed as <see cref="FactoryTaskStatus.Published"/> in this same
+    /// cycle) — otherwise every newly-ingested comment's feedback is recorded and the task transitions to
+    /// <see cref="FactoryTaskStatus.Pending"/> exactly once, in the same transaction, granting a fresh
+    /// implementation-attempt budget exactly as <see cref="ContinueWithFeedbackAsync"/> already does. Returns how
+    /// many comments were newly ingested and applied (0 if none were new, or the task was not Published).</summary>
+    Task<int> IngestReviewFeedbackAsync(Guid taskId, IReadOnlyList<PullRequestFeedbackItem> comments, CancellationToken cancellationToken);
+
     /// <summary>Small outcome/review-effort metrics computed directly from <c>task_event</c>, <c>agent_run</c>,
     /// <c>task_ci_status</c>, and any recorded review time, since <paramref name="since"/> (SF-617). See
     /// <see cref="OutcomeMetrics"/> for exact per-field definitions.</summary>
@@ -458,6 +479,19 @@ public interface IGitHubClient
     /// <see langword="null"/> on a read failure — reported explicitly via <see cref="PullRequestChecksResult.Error"/>
     /// instead, so an authentication or network failure is never silently indistinguishable from "no checks configured."</summary>
     Task<PullRequestChecksResult> GetPullRequestChecksAsync(string owner, string name, int number, CancellationToken cancellationToken);
+
+    /// <summary>Every reviewer comment and review submission with a non-empty body currently on this pull
+    /// request's conversation (SF-708) — both the top-level PR comments and formal reviews (including a change
+    /// request with no separate comment, surfaced with a synthetic body). Never throws on a read failure; returns
+    /// an empty list instead, since the caller (<c>Factory.GitHubSync.Worker</c>) treats that identically to
+    /// "nothing new this poll."</summary>
+    Task<IReadOnlyList<PullRequestFeedbackItem>> GetPullRequestFeedbackAsync(string owner, string name, int number, CancellationToken cancellationToken);
+
+    /// <summary>The GitHub login <c>gh</c> is currently authenticated as (SF-708) — used to filter the factory's
+    /// own bot account out of ingested review feedback, so a comment from the factory's own automated writes
+    /// (e.g. CI status reporting) is never misread as reviewer feedback. <see langword="null"/> if it could not
+    /// be determined.</summary>
+    Task<string?> GetAuthenticatedLoginAsync(CancellationToken cancellationToken);
 }
 public interface IRepositoryCache
 {

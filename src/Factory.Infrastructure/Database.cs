@@ -697,6 +697,59 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return true;
     }
 
+    public async Task<IReadOnlyList<long>> GetIngestedReviewCommentIdsAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        var rows = await c.QueryAsync<long>(new CommandDefinition(
+            "SELECT comment_id FROM factory.task_review_comment_ingested WHERE task_id=@taskId", new { taskId }, cancellationToken: cancellationToken));
+        return rows.AsList();
+    }
+
+    public async Task<int> IngestReviewFeedbackAsync(Guid taskId, IReadOnlyList<PullRequestFeedbackItem> comments, CancellationToken cancellationToken)
+    {
+        if (comments.Count == 0) return 0;
+
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (currentText != nameof(FactoryTaskStatus.Published)) return 0;
+
+        // Dedup is the source of truth, not the caller's own pre-filtering: only a comment id that actually
+        // inserts here (ON CONFLICT DO NOTHING) is newly ingested, so a duplicate call for the same comment can
+        // never apply its feedback twice.
+        var newlyIngested = new List<PullRequestFeedbackItem>();
+        foreach (var comment in comments)
+        {
+            var inserted = await connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO factory.task_review_comment_ingested(task_id,comment_id,author) VALUES(@taskId,@commentId,@author) ON CONFLICT DO NOTHING",
+                new { taskId, commentId = comment.CommentId, author = comment.Author }, transaction, cancellationToken: cancellationToken));
+            if (inserted > 0) newlyIngested.Add(comment);
+        }
+        if (newlyIngested.Count == 0) { await transaction.CommitAsync(cancellationToken); return 0; }
+
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Published, FactoryTaskStatus.Pending);
+        foreach (var comment in newlyIngested)
+        {
+            var feedback = $"Reviewer {comment.Author} ({comment.Kind}): {comment.Body}";
+            await connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO factory.task_feedback(id,task_id,body,created_by) VALUES(@id,@taskId,@feedback,'review-comment')",
+                new { id = Guid.NewGuid(), taskId, feedback }, transaction, cancellationToken: cancellationToken));
+        }
+        // The existing branch/worktree are deliberately left untouched, exactly as ContinueWithFeedbackAsync/
+        // TriggerCiRepairAsync do — the next attempt keeps working on the same changes, so a later publish updates
+        // the same pull request.
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId",
+            new { taskId }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,'Published','Pending',@reason,'orchestrator')",
+            new { taskId, reason = $"{newlyIngested.Count} new reviewer comment(s) ingested" }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return newlyIngested.Count;
+    }
+
     public async Task<OutcomeMetrics> GetOutcomeMetricsAsync(DateTimeOffset since, CancellationToken cancellationToken)
     {
         // Every count is windowed by when the thing itself happened (occurred_at/started_at/synced_at/

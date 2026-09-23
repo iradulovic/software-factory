@@ -211,6 +211,89 @@ public sealed class GhCliTests
     }
 
     [Fact]
+    public async Task GetPullRequestFeedbackAsync_returns_comments_and_reviews_with_a_body_and_ignores_empty_ones()
+    {
+        var runner = new RecordingRunner(0, """
+            {
+              "comments": [
+                {"id":"IC_1","author":{"login":"reviewer1"},"body":"Please add a test for the empty-list case.","createdAt":"2026-01-01T00:00:00Z"},
+                {"id":"IC_2","author":{"login":"reviewer2"},"body":"","createdAt":"2026-01-01T01:00:00Z"}
+              ],
+              "reviews": [
+                {"id":"PRR_1","author":{"login":"reviewer1"},"body":"Looks mostly good, one nit.","state":"COMMENTED","submittedAt":"2026-01-01T02:00:00Z"},
+                {"id":"PRR_2","author":{"login":"reviewer2"},"body":null,"state":"APPROVED","submittedAt":"2026-01-01T03:00:00Z"}
+              ]
+            }
+            """, "");
+        var client = new GhCliClient(runner);
+
+        var feedback = await client.GetPullRequestFeedbackAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.Equal(2, feedback.Count);
+        Assert.Contains(feedback, f => f.Kind == "comment" && f.Author == "reviewer1" && f.Body == "Please add a test for the empty-list case.");
+        Assert.Contains(feedback, f => f.Kind == "review" && f.Author == "reviewer1" && f.Body == "Looks mostly good, one nit.");
+        Assert.Equal(new[] { "pr", "view", "17", "--repo", "acme/billing", "--json", "comments,reviews" }, runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task GetPullRequestFeedbackAsync_surfaces_a_change_request_with_no_body_using_a_synthetic_body()
+    {
+        var runner = new RecordingRunner(0, """
+            {"comments": [], "reviews": [{"id":"PRR_3","author":{"login":"reviewer1"},"body":null,"state":"CHANGES_REQUESTED","submittedAt":"2026-01-01T00:00:00Z"}]}
+            """, "");
+        var client = new GhCliClient(runner);
+
+        var feedback = await client.GetPullRequestFeedbackAsync("acme", "billing", 17, CancellationToken.None);
+
+        var item = Assert.Single(feedback);
+        Assert.Equal("review", item.Kind);
+        Assert.Contains("Changes requested", item.Body);
+    }
+
+    [Fact]
+    public async Task GetPullRequestFeedbackAsync_assigns_a_stable_id_so_the_same_comment_always_dedups_to_the_same_value()
+    {
+        const string body = """{"comments": [{"id":"IC_1","author":{"login":"reviewer1"},"body":"Fix this.","createdAt":"2026-01-01T00:00:00Z"}], "reviews": []}""";
+        var client1 = new GhCliClient(new RecordingRunner(0, body, ""));
+        var client2 = new GhCliClient(new RecordingRunner(0, body, ""));
+
+        var first = await client1.GetPullRequestFeedbackAsync("acme", "billing", 17, CancellationToken.None);
+        var second = await client2.GetPullRequestFeedbackAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.Equal(first.Single().CommentId, second.Single().CommentId);
+    }
+
+    [Fact]
+    public async Task GetPullRequestFeedbackAsync_returns_an_empty_list_when_gh_fails_rather_than_throwing()
+    {
+        var runner = new RecordingRunner(1, "", "gh: authentication required");
+        var client = new GhCliClient(runner);
+
+        var feedback = await client.GetPullRequestFeedbackAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.Empty(feedback);
+    }
+
+    [Fact]
+    public async Task GetAuthenticatedLoginAsync_returns_the_trimmed_login_when_gh_succeeds()
+    {
+        var runner = new RecordingRunner(0, "factory-bot\n", "");
+        var client = new GhCliClient(runner);
+
+        Assert.Equal("factory-bot", await client.GetAuthenticatedLoginAsync(CancellationToken.None));
+        Assert.Equal(new[] { "api", "user", "--jq", ".login" }, runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task GetAuthenticatedLoginAsync_returns_null_when_gh_fails()
+    {
+        var runner = new RecordingRunner(1, "", "not authenticated");
+        var client = new GhCliClient(runner);
+
+        Assert.Null(await client.GetAuthenticatedLoginAsync(CancellationToken.None));
+    }
+
+    [Fact]
     public async Task CommentOnIssueAsync_runs_gh_issue_comment()
     {
         var runner = new RecordingRunner(0, "", "");

@@ -280,6 +280,19 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.FromResult(NextTriggerCiRepairAllowed);
     }
 
+    public List<long> IngestedReviewCommentIds { get; set; } = [];
+    public Task<IReadOnlyList<long>> GetIngestedReviewCommentIdsAsync(Guid taskId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<long>>(IngestedReviewCommentIds);
+
+    public bool NextIngestReviewFeedbackAllowed { get; set; } = true;
+    public List<(Guid TaskId, IReadOnlyList<PullRequestFeedbackItem> Comments)> ReviewFeedbackIngested { get; } = [];
+    public Task<int> IngestReviewFeedbackAsync(Guid taskId, IReadOnlyList<PullRequestFeedbackItem> comments, CancellationToken cancellationToken)
+    {
+        if (!NextIngestReviewFeedbackAllowed || comments.Count == 0) return Task.FromResult(0);
+        ReviewFeedbackIngested.Add((taskId, comments));
+        return Task.FromResult(comments.Count);
+    }
+
     public OutcomeMetrics? OutcomeMetrics { get; set; }
     public Task<OutcomeMetrics> GetOutcomeMetricsAsync(DateTimeOffset since, CancellationToken cancellationToken) => Task.FromResult(OutcomeMetrics!);
     public List<(Guid TaskId, int Minutes)> ReviewMinutesSet { get; } = [];

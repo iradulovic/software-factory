@@ -2025,6 +2025,76 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Review_feedback_ingestion_transitions_a_published_task_back_to_pending_exactly_once_and_never_reapplies_an_ingested_comment()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('review-feedback-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync(
+                "INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@taskId,@repositoryId,'Review feedback task','Published','main')",
+                new { taskId, repositoryId });
+
+            var comment = new PullRequestFeedbackItem(111, "reviewer1", "Please add a test for the empty-list case.", DateTimeOffset.UtcNow, "comment");
+            var review = new PullRequestFeedbackItem(222, "reviewer2", "Changes requested (no comment body provided).", DateTimeOffset.UtcNow, "review");
+
+            Assert.Empty(await tasks.GetIngestedReviewCommentIdsAsync(taskId, CancellationToken.None));
+
+            var applied = await tasks.IngestReviewFeedbackAsync(taskId, [comment, review], CancellationToken.None);
+            Assert.Equal(2, applied);
+
+            var status = await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId });
+            Assert.Equal("Pending", status);
+
+            var feedback = await tasks.GetFeedbackAsync(taskId, CancellationToken.None);
+            Assert.Equal(2, feedback.Count);
+            Assert.All(feedback, f => Assert.Equal("review-comment", f.CreatedBy));
+            Assert.Contains(feedback, f => f.Body.Contains("Please add a test for the empty-list case."));
+            Assert.Contains(feedback, f => f.Body.Contains("Changes requested"));
+
+            var ingestedIds = await tasks.GetIngestedReviewCommentIdsAsync(taskId, CancellationToken.None);
+            Assert.Equal(new long[] { 111, 222 }, ingestedIds.OrderBy(id => id));
+
+            // The task already left Published (it's Pending now), so re-offering the exact same comments — as a
+            // later poll naturally would before re-fetching dedup state — applies nothing further.
+            var reapplied = await tasks.IngestReviewFeedbackAsync(taskId, [comment, review], CancellationToken.None);
+            Assert.Equal(0, reapplied);
+            Assert.Equal(2, (await tasks.GetFeedbackAsync(taskId, CancellationToken.None)).Count);
+
+            // Once published again, a brand-new comment applies, but the two already-ingested ones never reapply
+            // even though they're offered again alongside it (dedup is the source of truth, not caller filtering).
+            await connection.ExecuteAsync("UPDATE factory.task SET status='Published' WHERE id=@taskId", new { taskId });
+            var newComment = new PullRequestFeedbackItem(333, "reviewer1", "One more thing.", DateTimeOffset.UtcNow, "comment");
+            var secondApplied = await tasks.IngestReviewFeedbackAsync(taskId, [comment, review, newComment], CancellationToken.None);
+            Assert.Equal(1, secondApplied);
+            Assert.Equal(3, (await tasks.GetFeedbackAsync(taskId, CancellationToken.None)).Count);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_review_comment_ingested WHERE task_id=@taskId", new { taskId });
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.task_feedback WHERE task_id=@taskId;
+                DELETE FROM factory.task_event WHERE task_id=@taskId;
+                DELETE FROM factory.task WHERE id=@taskId;
+                """, new { taskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Quota_interruptions_are_excluded_from_the_implementation_attempt_budget_but_real_failures_are_not()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
