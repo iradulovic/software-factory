@@ -36,6 +36,10 @@ public sealed record IssueDependencyRef(string? Owner, string? Name, int IssueNu
 /// row stays permanently, so prior instructions remain auditable even once superseded by a later one.</summary>
 public sealed record TaskFeedback(Guid Id, Guid TaskId, string Body, DateTimeOffset CreatedAt, string CreatedBy);
 
+/// <param name="ResumableSessionId">The provider session id this task's most recent invocation reported, paired
+/// with <paramref name="ResumableSessionAgent"/> (SF-701) — <see langword="null"/> if that invocation's agent
+/// does not support or report one. Only ever resumed by a following invocation of the *same* agent; a different
+/// agent ignores it entirely rather than risk a private session format it cannot use.</param>
 public sealed record FactoryTask(
     Guid Id,
     long RepositoryId,
@@ -57,7 +61,9 @@ public sealed record FactoryTask(
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
     DateTimeOffset? FailedAt,
-    string? FailureReason);
+    string? FailureReason,
+    string? ResumableSessionId = null,
+    string? ResumableSessionAgent = null);
 
 /// <param name="LastSyncedAt">The point in time through which this repository's issues are known to be fully
 /// synchronized, used as the incremental sync checkpoint; <see langword="null"/> before the first sync.</param>
@@ -82,7 +88,7 @@ public sealed record FactoryStep(Guid Id, Guid RunId, string StepType, Execution
 public sealed record AgentRunRecord(Guid Id, Guid TaskId, Guid RunId, Guid StepId, string Agent, DateTimeOffset StartedAt,
     DateTimeOffset? CompletedAt, double? DurationSeconds, int? ExitCode, string Status, string? StandardOutput,
     string? StandardError, bool QuotaDetected, DateTimeOffset? QuotaResetAt, int AttemptNumber, bool NeedsHuman, AgentResult? Result,
-    bool CountsAsImplementationAttempt = true);
+    bool CountsAsImplementationAttempt = true, string? ProviderSessionId = null);
 
 /// <param name="LogPath">When set, stdout and stderr are streamed to this file as the process runs, interleaved
 /// in arrival order, in addition to the bounded preview <see cref="ProcessResult"/> always returns.</param>
@@ -103,15 +109,22 @@ public sealed record ProcessResult(
     public bool Succeeded => ExitCode == 0 && !TimedOut && !Cancelled;
 }
 
-public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null);
+/// <param name="ResumeSessionId">The provider session id to resume (SF-701), if the selected agent matches the
+/// one <see cref="FactoryTask.ResumableSessionAgent"/> recorded and that agent's <see cref="AgentProfile.SupportsSessionResume"/>
+/// is enabled — <see langword="null"/> for a fresh session, exactly as before this task.</param>
+public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null, string? ResumeSessionId = null);
 
 /// <param name="Window">The classified reset window a detected quota signal falls into; <see cref="QuotaWindow.None"/>
 /// when <paramref name="QuotaDetected"/> is <see langword="false"/>. See <see cref="QuotaClassifier"/>.</param>
 /// <param name="ResetKind">How confidently <paramref name="QuotaResetAt"/> is known.</param>
 /// <param name="QuotaDetail">The short, configured signature string that triggered detection, if any — never the
 /// full process output, which is preserved separately.</param>
+/// <param name="ProviderSessionId">The session id this invocation's own output reported (SF-701), extracted via
+/// <see cref="AgentProfile.SessionIdPattern"/> — <see langword="null"/> if the profile has session resume
+/// disabled, has no pattern configured, or none was found in this invocation's output.</param>
 public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, string? ValidationError, bool QuotaDetected,
-    DateTimeOffset? QuotaResetAt = null, QuotaWindow Window = QuotaWindow.None, QuotaResetKind ResetKind = QuotaResetKind.None, string? QuotaDetail = null);
+    DateTimeOffset? QuotaResetAt = null, QuotaWindow Window = QuotaWindow.None, QuotaResetKind ResetKind = QuotaResetKind.None,
+    string? QuotaDetail = null, string? ProviderSessionId = null);
 
 public sealed record AgentAvailability(string Agent, bool Available, string? Version, string? Error);
 
@@ -353,6 +366,21 @@ public sealed record PreviousAttemptSummary(
 /// extracts a structured reset expression (an absolute timestamp, or a relative duration like "5h" or "2 days")
 /// from a matched signature's surrounding text. Left <see langword="null"/>, quota resets are always estimated
 /// from <see cref="QuotaCooldownHours"/>/<paramref name="WeeklyQuotaCooldownHours"/> rather than parsed.</param>
+/// <param name="SupportsSessionResume">Whether this profile's CLI both reports a session id
+/// <see cref="SessionIdPattern"/> can extract and can resume one via <see cref="ResumeArguments"/> (SF-701).
+/// Defaults to <see langword="false"/>: resuming is real, CLI-documented functionality (verified directly against
+/// the installed <c>codex</c>/<c>claude</c> CLIs for this task), but capturing a session id changes what actually
+/// reaches this invocation's stdout — Claude's session id is only reported under <c>--output-format json</c>,
+/// replacing its today's human-readable plain-text log with a JSON blob; Codex's own plain-text banner already
+/// includes its session id for free, but <c>codex exec resume</c> itself has no equivalent to <c>--approve-for-me</c>,
+/// only the strictly more dangerous <c>--dangerously-bypass-approvals-and-sandbox</c>. Both are real trade-offs an
+/// operator should make deliberately per profile, not a change this default silently applies.</param>
+/// <param name="ResumeArguments">The argument list to use instead of <see cref="Arguments"/> when resuming a
+/// session, with the literal token <c>{SESSION_ID}</c> replaced by the id to resume. Required (and only used)
+/// when <see cref="SupportsSessionResume"/> is <see langword="true"/>.</param>
+/// <param name="SessionIdPattern">An optional regular expression, with a named capture group <c>sessionId</c>,
+/// matched against this invocation's stdout to extract the provider's own session/thread id. Only consulted when
+/// <see cref="SupportsSessionResume"/> is <see langword="true"/>.</param>
 public sealed record AgentProfile(
     string Name,
     string Executable,
@@ -365,4 +393,7 @@ public sealed record AgentProfile(
     int QuotaCooldownHours,
     IReadOnlyList<string>? WeeklyQuotaSignatures = null,
     int WeeklyQuotaCooldownHours = 168,
-    string? QuotaResetPattern = null);
+    string? QuotaResetPattern = null,
+    bool SupportsSessionResume = false,
+    IReadOnlyList<string>? ResumeArguments = null,
+    string? SessionIdPattern = null);

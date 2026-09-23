@@ -85,6 +85,14 @@ public interface ITaskStore
     /// fallback) and from <c>factory.agent_run.agent</c> (only recorded after an invocation finishes).</summary>
     Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken);
 
+    /// <summary>Persists the provider session id this task's just-finished invocation reported, alongside the
+    /// agent it belongs to (SF-701) — read back from <see cref="FactoryTask.ResumableSessionId"/>/<see cref="FactoryTask.ResumableSessionAgent"/>
+    /// by the orchestrator's next invocation, only when that invocation picks the *same* agent, and ignored
+    /// (never force-fed into a different provider's CLI) otherwise. Pass <see langword="null"/> for
+    /// <paramref name="sessionId"/> when the invocation's agent does not support or report one, which clears any
+    /// previously recorded session for <paramref name="agentName"/>.</summary>
+    Task SetResumableSessionAsync(Guid taskId, string agentName, string? sessionId, CancellationToken cancellationToken);
+
     /// <summary>Whether new dispatch is currently paused factory-wide (<see cref="DispatchPauseScope.Global"/>).
     /// Checked once per poll iteration, before claiming — never mid-task, so a task already claimed and
     /// executing always finishes undisturbed.</summary>

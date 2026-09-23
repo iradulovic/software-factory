@@ -33,20 +33,28 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
     {
         var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", context.AttemptNumber, cancellationToken);
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
-        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath), cancellationToken);
+        // A previously recorded session is only ever offered back to the *same* agent that produced it (SF-701) —
+        // a fallback to a different agent (quota, pause) always gets a fresh invocation, exactly as before this
+        // task, since a different provider's CLI cannot use another provider's private session id.
+        var resumeSessionId = context.Task.ResumableSessionAgent == agent.Name ? context.Task.ResumableSessionId : null;
+        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath, resumeSessionId), cancellationToken);
         // A quota-interrupted invocation never got a real chance to implement anything, so it is excluded from
         // the implementation-attempt budget (CountAgentRunsAsync) even though it stays recorded here in full.
         await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), context.Task.Id, context.RunId, stepId, agent.Name, result.Process.StartedAt,
             result.Process.CompletedAt, result.Process.Duration.TotalSeconds, result.Process.ExitCode,
             result.Process.Succeeded ? "Succeeded" : "Failed", result.Process.StandardOutput, result.Process.StandardError,
             result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result,
-            CountsAsImplementationAttempt: !result.QuotaDetected), cancellationToken);
+            CountsAsImplementationAttempt: !result.QuotaDetected, ProviderSessionId: result.ProviderSessionId), cancellationToken);
 
         // Quota status is persisted independently of this task's run: every invocation updates it, whether or not
         // quota was detected, so a status that cleared is reflected immediately for AgentSelector rather than only
         // by re-scanning task-run history.
         await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent.Name, result.QuotaDetected, result.Window, result.ResetKind,
             result.QuotaResetAt, result.Process.CompletedAt, result.QuotaDetail), cancellationToken);
+
+        // Independent of this invocation's outcome, exactly like quota status above: a null session id (profile
+        // has resume disabled, or none was reported) correctly clears any stale pointer for this agent.
+        await tasks.SetResumableSessionAsync(context.Task.Id, agent.Name, result.ProviderSessionId, cancellationToken);
 
         if (result.QuotaDetected)
         {

@@ -57,10 +57,12 @@ internal sealed class TaskRow
     public DateTime? CompletedAt { get; init; }
     public DateTime? FailedAt { get; init; }
     public string? FailureReason { get; init; }
+    public string? ResumableSessionId { get; init; }
+    public string? ResumableSessionAgent { get; init; }
 
     public FactoryTask ToModel() => new(Id, RepositoryId, GitHubIssueId, IssueNumber, Title, Description, TaskType, Priority,
         Enum.Parse<FactoryTaskStatus>(Status), PreferredAgent, BaseBranch, BranchName, WorktreePath, ClaimedBy, Offset(ClaimedAt), Offset(LeaseUntil),
-        Offset(CreatedAt), Offset(StartedAt), Offset(CompletedAt), Offset(FailedAt), FailureReason);
+        Offset(CreatedAt), Offset(StartedAt), Offset(CompletedAt), Offset(FailedAt), FailureReason, ResumableSessionId, ResumableSessionAgent);
 
     private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     private static DateTimeOffset? Offset(DateTime? value) => value is null ? null : Offset(value.Value);
@@ -134,7 +136,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
                 t.started_at AS "StartedAt",
                 t.completed_at AS "CompletedAt",
                 t.failed_at AS "FailedAt",
-                t.failure_reason AS "FailureReason"
+                t.failure_reason AS "FailureReason",
+                t.resumable_session_id AS "ResumableSessionId",
+                t.resumable_session_agent AS "ResumableSessionAgent"
             ), logged AS (
               INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
               SELECT c.id,c.old_status,'Claimed',
@@ -160,7 +164,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               claimed."StartedAt",
               claimed."CompletedAt",
               claimed."FailedAt",
-              claimed."FailureReason"
+              claimed."FailureReason",
+              claimed."ResumableSessionId",
+              claimed."ResumableSessionAgent"
             FROM claimed;
             """;
         var executingStatuses = TaskStateMachine.ExecutingStatuses.Select(s => s.ToString()).ToList();
@@ -378,11 +384,11 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         const string sql = """
             INSERT INTO factory.agent_run(
               id,task_id,run_id,step_id,agent,started_at,completed_at,duration_seconds,exit_code,status,stdout,stderr,
-              quota_detected,quota_reset_at,attempt_number,needs_human,counts_as_implementation_attempt,
+              quota_detected,quota_reset_at,attempt_number,needs_human,counts_as_implementation_attempt,provider_session_id,
               result_json,result_summary,tests_run,tests_passed,files_changed,risks,human_reason)
             VALUES(
               @Id,@TaskId,@RunId,@StepId,@Agent,@StartedAt,@CompletedAt,@DurationSeconds,@ExitCode,@Status,@StandardOutput,@StandardError,
-              @QuotaDetected,@QuotaResetAt,@AttemptNumber,@NeedsHuman,@CountsAsImplementationAttempt,
+              @QuotaDetected,@QuotaResetAt,@AttemptNumber,@NeedsHuman,@CountsAsImplementationAttempt,@ProviderSessionId,
               CAST(@ResultJson AS jsonb),@ResultSummary,CAST(@TestsRun AS jsonb),@TestsPassed,
               CAST(@FilesChanged AS jsonb),CAST(@Risks AS jsonb),@HumanReason)
             """;
@@ -390,6 +396,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         {
             r.Id, r.TaskId, r.RunId, r.StepId, r.Agent, r.StartedAt, r.CompletedAt, r.DurationSeconds, r.ExitCode, r.Status,
             r.StandardOutput, r.StandardError, r.QuotaDetected, r.QuotaResetAt, r.AttemptNumber, r.NeedsHuman, r.CountsAsImplementationAttempt,
+            r.ProviderSessionId,
             ResultJson = r.Result is null ? null : JsonSerializer.Serialize(r.Result, JsonOptions),
             ResultSummary = r.Result?.Summary,
             TestsRun = r.Result is null ? null : JsonSerializer.Serialize(r.Result.TestsRun, JsonOptions),
@@ -546,6 +553,14 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         await using var c = Connection();
         await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET current_agent=@agentName WHERE id=@taskId", new { taskId, agentName }, cancellationToken: cancellationToken));
+    }
+
+    public async Task SetResumableSessionAsync(Guid taskId, string agentName, string? sessionId, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.task SET resumable_session_id=@sessionId, resumable_session_agent=@agentName WHERE id=@taskId",
+            new { taskId, agentName, sessionId }, cancellationToken: cancellationToken));
     }
 
     public async Task RecordGitHubWriteAsync(Guid taskId, string kind, string detail, bool succeeded, string? error, CancellationToken cancellationToken)

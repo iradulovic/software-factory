@@ -20,12 +20,21 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
 
     public async Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
     {
+        // A resume is only ever attempted when the profile both opted in and this request actually carries a
+        // session id (set by RunAgentStep only when the selected agent matches the task's own recorded one) —
+        // otherwise every argument, and the resulting log format, is exactly what it was before SF-701.
+        var resuming = profile.SupportsSessionResume && request.ResumeSessionId is not null && profile.ResumeArguments is not null;
+        var arguments = resuming
+            ? profile.ResumeArguments!.Select(a => a.Replace("{SESSION_ID}", request.ResumeSessionId)).ToArray()
+            : profile.Arguments;
+
         var invocation = profile.PromptDelivery == "argument"
-            ? new ProcessRequest(profile.Executable, [.. profile.Arguments, Prompt], request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), LogPath: request.LogPath)
-            : new ProcessRequest(profile.Executable, profile.Arguments, request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), StandardInput: Prompt, LogPath: request.LogPath);
+            ? new ProcessRequest(profile.Executable, [.. arguments, Prompt], request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), LogPath: request.LogPath)
+            : new ProcessRequest(profile.Executable, arguments, request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), StandardInput: Prompt, LogPath: request.LogPath);
         var process = await processRunner.RunAsync(invocation, cancellationToken);
         var (result, error) = await resultReader.ReadAsync(request.WorkingDirectory, cancellationToken);
         var quota = QuotaClassifier.Classify(profile, process, clock.UtcNow);
-        return new AgentRunResult(process, result, error, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail);
+        var sessionId = ProviderSessionExtractor.TryExtract(profile, process.StandardOutput);
+        return new AgentRunResult(process, result, error, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail, sessionId);
     }
 }

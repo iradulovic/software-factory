@@ -8,6 +8,36 @@ namespace Factory.Orchestrator.Tests;
 public sealed class TaskExecutorTests
 {
     [Fact]
+    public async Task A_resumable_session_for_the_selected_agent_is_offered_back_to_it()
+    {
+        var harness = new Harness { ResumableSessionAgent = "Codex", ResumableSessionId = "11111111-1111-1111-1111-111111111111" };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal("11111111-1111-1111-1111-111111111111", harness.LastAgentRunRequest!.ResumeSessionId);
+    }
+
+    [Fact]
+    public async Task A_resumable_session_recorded_for_a_different_agent_is_never_offered()
+    {
+        var harness = new Harness { ResumableSessionAgent = "Claude", ResumableSessionId = "11111111-1111-1111-1111-111111111111", ConfiguredAgents = ["Codex"] };
+
+        await harness.ExecuteAsync();
+
+        Assert.Null(harness.LastAgentRunRequest!.ResumeSessionId);
+    }
+
+    [Fact]
+    public async Task The_session_id_an_invocation_reports_is_persisted_against_its_agent()
+    {
+        var harness = new Harness { AgentResult = Harness.Agent("completed", "Implemented the export") with { ProviderSessionId = "22222222-2222-2222-2222-222222222222" } };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal((harness.ClaimedTask.Id, "Codex", "22222222-2222-2222-2222-222222222222"), Assert.Single(harness.Store.ResumableSessionsSet));
+    }
+
+    [Fact]
     public async Task Successful_run_executes_every_named_step_in_order()
     {
         var harness = new Harness();
@@ -563,12 +593,15 @@ public sealed class TaskExecutorTests
         public string? ConfigurationBaseRef { get; private set; }
         public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
         public string? PreferredAgent { get; init; }
+        public string? ResumableSessionAgent { get; init; }
+        public string? ResumableSessionId { get; init; }
         public string IssueTitle { get; init; } = "Add invoice export";
         public string IssueBody { get; init; } = "";
         public IReadOnlyList<string> IssueLabels { get; init; } = [];
         private FactoryTask? _claimedTask;
         public FactoryTask ClaimedTask => _claimedTask ??= new(Guid.NewGuid(), 1, 2, 42, "Add invoice export", "", "GitHubIssue", 0,
-            FactoryTaskStatus.Claimed, PreferredAgent, "main", null, null, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null);
+            FactoryTaskStatus.Claimed, PreferredAgent, "main", null, null, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null,
+            ResumableSessionId, ResumableSessionAgent);
         public List<(string Owner, string Name, int IssueNumber, string Body)> Comments { get; } = [];
         public List<string> Labels { get; } = [];
         public AttemptContext? WrittenAttempt { get; set; }
@@ -585,7 +618,8 @@ public sealed class TaskExecutorTests
             new(Process(), new AgentResult(status, summary, ["dotnet test"], true, ["src/Export.cs"], [], needsHuman, humanReason), null, false);
 
         public List<string> AgentInvocationNames { get; } = [];
-        public void RecordAgentInvocation(string name) { AgentInvocations++; AgentInvocationNames.Add(name); }
+        public AgentRunRequest? LastAgentRunRequest { get; private set; }
+        public void RecordAgentInvocation(string name, AgentRunRequest request) { AgentInvocations++; AgentInvocationNames.Add(name); LastAgentRunRequest = request; }
 
         public static AgentRunRecord PriorAgentRun(Guid taskId) => new(Guid.NewGuid(), taskId, Guid.NewGuid(), Guid.NewGuid(), "Codex",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1.0, 1, "Failed", null, "boom", false, null, 1, false, null);
@@ -654,7 +688,7 @@ public sealed class TaskExecutorTests
 
             public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
             {
-                harness.RecordAgentInvocation(name);
+                harness.RecordAgentInvocation(name, request);
                 if (harness.AgentThrows is not null) throw harness.AgentThrows;
                 return Task.FromResult(harness.AgentResult);
             }

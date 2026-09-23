@@ -97,6 +97,64 @@ public sealed class CliAgentRunnerTests
         Assert.Null(runner.Request.StandardInput);
     }
 
+    [Fact]
+    public async Task No_resume_requested_uses_the_normal_arguments_even_when_the_profile_supports_resume()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "session id: 11111111-1111-1111-1111-111111111111", "", false, false));
+        var profile = Codex() with { SupportsSessionResume = true, ResumeArguments = ["exec", "resume", "{SESSION_ID}", "-"], SessionIdPattern = "session id: (?<sessionId>[0-9a-fA-F-]{36})" };
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+
+        await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Equal(["exec", "--full-auto", "-"], runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task A_requested_resume_substitutes_the_session_id_into_the_configured_resume_arguments()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var profile = Codex() with { SupportsSessionResume = true, ResumeArguments = ["exec", "resume", "{SESSION_ID}", "-"], SessionIdPattern = "session id: (?<sessionId>[0-9a-fA-F-]{36})" };
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+
+        await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1, ResumeSessionId: "22222222-2222-2222-2222-222222222222"), CancellationToken.None);
+
+        Assert.Equal(["exec", "resume", "22222222-2222-2222-2222-222222222222", "-"], runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task A_resume_request_is_ignored_when_the_profile_does_not_support_it()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+
+        await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1, ResumeSessionId: "22222222-2222-2222-2222-222222222222"), CancellationToken.None);
+
+        Assert.Equal(["exec", "--full-auto", "-"], runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task Session_id_is_extracted_from_stdout_when_the_profile_supports_resume()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "session id: 33333333-3333-3333-3333-333333333333\nOK", "", false, false));
+        var profile = Codex() with { SupportsSessionResume = true, SessionIdPattern = "session id: (?<sessionId>[0-9a-fA-F-]{36})" };
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Equal("33333333-3333-3333-3333-333333333333", result.ProviderSessionId);
+    }
+
+    [Fact]
+    public async Task Session_id_is_never_extracted_when_the_profile_does_not_support_resume()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "session id: 33333333-3333-3333-3333-333333333333", "", false, false));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Null(result.ProviderSessionId);
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : IClock { public DateTimeOffset UtcNow => now; }
     private sealed class NoResultReader : IAgentResultReader
     {
