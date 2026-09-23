@@ -116,10 +116,15 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
 
     private static GitHubComment ParseComment(int issueNumber, JsonElement x, int index)
     {
-        static DateTimeOffset Date(JsonElement element, string name) => DateTimeOffset.Parse(element.GetProperty(name).GetString()!);
         var id = StableLong(x.TryGetProperty("id", out var idProperty) ? idProperty.GetString() ?? $"{issueNumber}:{index}" : $"{issueNumber}:{index}");
+        var createdAt = DateTimeOffset.Parse(x.GetProperty("createdAt").GetString()!);
+        // `gh issue view --json comments` only reports `updatedAt` for a comment that was actually edited; an
+        // unedited comment has no such field at all, so falling back to createdAt is the correct "never edited" value.
+        var updatedAt = x.TryGetProperty("updatedAt", out var updatedProperty) && updatedProperty.ValueKind != JsonValueKind.Null
+            ? DateTimeOffset.Parse(updatedProperty.GetString()!)
+            : createdAt;
         return new GitHubComment(id, x.GetProperty("author").GetProperty("login").GetString() ?? "unknown", x.GetProperty("body").GetString() ?? "",
-            Date(x, "createdAt"), Date(x, "updatedAt"));
+            createdAt, updatedAt);
     }
 
     private static long StableLong(string value) => BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(value)), 0) & long.MaxValue;
