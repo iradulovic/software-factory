@@ -1,4 +1,5 @@
 using Factory.Core;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace Factory.Infrastructure.Tests;
@@ -16,7 +17,7 @@ public sealed class GitRepositoryCacheTests
             var options = Options.Create(new FactoryOptions { RootDirectory = Path.Combine(root.FullName, "factory") });
             var repository = new GitHubRepository(1, "acme", "billing", upstream, "main", true);
             var cache = new RepositoryCache(git.Runner, options);
-            var worktrees = new GitWorktreeManager(cache, git.Runner, options);
+            var worktrees = new GitWorktreeManager(cache, git.Runner, options, NullLogger<GitWorktreeManager>.Instance);
 
             var first = await worktrees.CreateAsync(repository, NewTask("First task", 1), CancellationToken.None);
             Assert.Equal("first", await File.ReadAllTextAsync(Path.Combine(first.Path, "README.md")));
@@ -67,7 +68,7 @@ public sealed class GitRepositoryCacheTests
             var options = Options.Create(new FactoryOptions { RootDirectory = Path.Combine(root.FullName, "factory") });
             var repository = new GitHubRepository(1, "acme", "billing", upstream, "main", true);
             var cache = new RepositoryCache(git.Runner, options);
-            var manager = new GitWorktreeManager(cache, git.Runner, options);
+            var manager = new GitWorktreeManager(cache, git.Runner, options, NullLogger<GitWorktreeManager>.Instance);
             // The task object has no recorded WorktreePath/BranchName, matching what ClearWorkspaceIfStatusUnchangedAsync
             // leaves behind after cleanup — the same nulled state a task starts from before it has ever run too.
             var task = NewTask("Restore after cleanup", 7);
@@ -93,6 +94,45 @@ public sealed class GitRepositoryCacheTests
     }
 
     [Fact]
+    public async Task Leftover_worktree_from_a_retained_failed_task_is_archived_instead_of_blocking_a_new_attempt()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-git-");
+        try
+        {
+            var git = new TestGit(root.FullName);
+            var upstream = await git.CreateUpstreamAsync("first");
+            var options = Options.Create(new FactoryOptions { RootDirectory = Path.Combine(root.FullName, "factory") });
+            var repository = new GitHubRepository(1, "acme", "billing", upstream, "main", true);
+            var cache = new RepositoryCache(git.Runner, options);
+            var manager = new GitWorktreeManager(cache, git.Runner, options, NullLogger<GitWorktreeManager>.Instance);
+            var firstTask = NewTask("Investigate crash", 49);
+
+            var firstAttempt = await manager.CreateAsync(repository, firstTask, CancellationToken.None);
+            // Untracked, uncommitted debris an agent left behind before its task failed — the sort of thing an
+            // operator would want to inspect, which is exactly why WorktreeCleanupWorker retains a Failed task's
+            // worktree instead of deleting it.
+            await File.WriteAllTextAsync(Path.Combine(firstAttempt.Path, "broken.cs"), "class Broken {}");
+
+            // A brand new factory.task row for the same issue (created because the GitHub issue was still open and
+            // labeled factory:ready) has no WorktreePath/BranchName of its own recorded yet, even though it maps to
+            // the exact same deterministic location as the retained, now-orphaned worktree above.
+            var secondTask = firstTask with { Id = Guid.NewGuid() };
+
+            var secondAttempt = await manager.CreateAsync(repository, secondTask, CancellationToken.None);
+
+            Assert.Equal(firstAttempt.Path, secondAttempt.Path);
+            Assert.True(Directory.Exists(secondAttempt.Path));
+            // Fresh checkout of the existing branch — the untracked debris from the failed attempt is not here.
+            Assert.False(File.Exists(Path.Combine(secondAttempt.Path, "broken.cs")));
+
+            var archived = Directory.GetDirectories(Path.GetDirectoryName(firstAttempt.Path)!, "issue-49.stale-*");
+            var archivedDirectory = Assert.Single(archived);
+            Assert.True(File.Exists(Path.Combine(archivedDirectory, "broken.cs")));
+        }
+        finally { TestGit.DeleteRecursively(root); }
+    }
+
+    [Fact]
     public async Task Factory_directory_is_excluded_and_inspector_reports_only_real_changes()
     {
         var root = Directory.CreateTempSubdirectory("factory-git-");
@@ -104,7 +144,7 @@ public sealed class GitRepositoryCacheTests
             var repository = new GitHubRepository(1, "acme", "billing", upstream, "main", true);
             var cache = new RepositoryCache(git.Runner, options);
             var inspector = new GitWorktreeInspector(git.Runner);
-            var worktree = await new GitWorktreeManager(cache, git.Runner, options).CreateAsync(repository, NewTask("Exclude", 3), CancellationToken.None);
+            var worktree = await new GitWorktreeManager(cache, git.Runner, options, NullLogger<GitWorktreeManager>.Instance).CreateAsync(repository, NewTask("Exclude", 3), CancellationToken.None);
             var cachePath = await cache.PrepareAsync(repository, CancellationToken.None);
 
             Assert.Contains(RepositoryCache.ExcludePattern, await File.ReadAllLinesAsync(Path.Combine(cachePath, "info", "exclude")));

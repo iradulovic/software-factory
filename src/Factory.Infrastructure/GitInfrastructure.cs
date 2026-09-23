@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Factory.Core;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Factory.Infrastructure;
@@ -95,7 +96,7 @@ public sealed class GitWorktreeInspector(IProcessRunner runner) : IWorktreeInspe
     }
 }
 
-public sealed partial class GitWorktreeManager(IRepositoryCache cache, IProcessRunner runner, IOptions<FactoryOptions> options) : IWorktreeManager
+public sealed partial class GitWorktreeManager(IRepositoryCache cache, IProcessRunner runner, IOptions<FactoryOptions> options, ILogger<GitWorktreeManager> logger) : IWorktreeManager
 {
     public WorktreeLocation GetLocation(GitHubRepository repository, FactoryTask task)
     {
@@ -122,6 +123,14 @@ public sealed partial class GitWorktreeManager(IRepositoryCache cache, IProcessR
             return location;
         }
 
+        // The worktree location is deterministic per repo+issue, but a Failed task's worktree is deliberately
+        // retained on disk for inspection (see README "Current limitations and safety"), and an open GitHub issue
+        // still labeled factory:ready can get a brand new factory.task row for a later attempt. Without this
+        // check, that new task's own worktree creation would collide with the still-present directory from the
+        // earlier, now-terminal attempt and fail with a hard, unrecoverable "already exists" git error.
+        if (Directory.Exists(location.Path))
+            await ArchiveLeftoverWorktreeAsync(cachePath, location, cancellationToken);
+
         Directory.CreateDirectory(Path.GetDirectoryName(location.Path)!);
         // SF-613: worktree cleanup (WorktreeCleanupExecutor) clears both recorded fields before removing the
         // directory, but never deletes the branch itself from the cache — so a task resumed after cleanup (an
@@ -141,6 +150,19 @@ public sealed partial class GitWorktreeManager(IRepositoryCache cache, IProcessR
             throw new InvalidOperationException(reason);
         }
         return location;
+    }
+
+    // Moves the leftover directory aside (so it stays available for inspection, just as retention intended) and
+    // prunes the cache's administrative record for it, which is what actually frees the branch for reuse below —
+    // git considers a branch "checked out" based on that record, not on whether the directory still exists.
+    private async Task ArchiveLeftoverWorktreeAsync(string cachePath, WorktreeLocation location, CancellationToken cancellationToken)
+    {
+        var archivePath = $"{location.Path}.stale-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}";
+        Directory.Move(location.Path, archivePath);
+        var result = await runner.RunAsync(new ProcessRequest("git", ["worktree", "prune"], cachePath, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!result.Succeeded)
+            throw new InvalidOperationException($"Failed to prune the stale worktree registration for branch '{location.BranchName}' after archiving it to '{archivePath}': {result.StandardError.Trim()}");
+        logger.LogWarning("Archived a leftover worktree for branch {Branch} to {ArchivePath} to unblock a new attempt", location.BranchName, archivePath);
     }
 
     private async Task<bool> BranchExistsAsync(string cachePath, string branchName, CancellationToken cancellationToken)
