@@ -227,7 +227,12 @@ public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, strin
 /// <summary>One CI check's outcome (SF-614), normalized from either a GitHub Actions check run or a legacy
 /// commit status into the same shape. <see cref="Conclusion"/> is one of <see cref="PullRequestCiStatus.Pending"/>,
 /// <see cref="PullRequestCiStatus.Success"/>, or <see cref="PullRequestCiStatus.Failure"/>.</summary>
-public sealed record PullRequestCheck(string Name, string Conclusion, string? Url);
+/// <param name="RawState">The original, un-collapsed GitHub value this check reported (e.g. <c>"FAILURE"</c>,
+/// <c>"CANCELLED"</c>, <c>"ACTION_REQUIRED"</c>, <c>"TIMED_OUT"</c>) — preserved alongside the collapsed
+/// three-state <see cref="Conclusion"/> specifically so <see cref="CiFailureClassifier"/> (SF-706) can tell a
+/// genuine code failure apart from an infrastructure/authentication-shaped one, a distinction <see cref="Conclusion"/>
+/// alone no longer carries. <see langword="null"/> for a check whose shape did not report one.</param>
+public sealed record PullRequestCheck(string Name, string Conclusion, string? Url, string? RawState = null);
 
 /// <summary>CI check status for a pull request, fetched together with the exact commit GitHub reports as its
 /// current head (SF-614) — so a check result can never be attributed to a different, possibly stale, commit
@@ -239,7 +244,11 @@ public sealed record PullRequestChecksResult(bool Succeeded, string? HeadSha, IR
 /// <summary>The most recently synchronized CI status for a task's published pull request (SF-614) — always
 /// fully overwritten by the latest poll, never merged with a previous one, so a status can never survive
 /// alongside a newer head commit than the one it was actually fetched for.</summary>
-public sealed record TaskCiStatus(Guid TaskId, string OverallStatus, string? HeadCommit, IReadOnlyList<PullRequestCheck> Checks, string? Error, DateTimeOffset SyncedAt);
+/// <param name="RepairTriggeredForCommit">The head commit (if any) automatic CI repair (SF-706) has already been
+/// triggered for. Unlike the other fields, <c>SetCiStatusAsync</c> never overwrites this on a routine poll — only
+/// <c>TriggerCiRepairAsync</c> sets it, so it survives across polls of the same commit and is what lets the
+/// sync worker tell "already acted on this exact failure" apart from "a new commit's failure, never seen before."</param>
+public sealed record TaskCiStatus(Guid TaskId, string OverallStatus, string? HeadCommit, IReadOnlyList<PullRequestCheck> Checks, string? Error, DateTimeOffset SyncedAt, string? RepairTriggeredForCommit = null);
 
 /// <summary>Derives one overall status from a <see cref="PullRequestChecksResult"/> (SF-614) — pure and
 /// independently testable, the single place this decision is made so the sync worker and the API/dashboard can
@@ -254,6 +263,35 @@ public static class PullRequestCiStatus
         : result.Checks.Any(c => c.Conclusion == Failure) ? Failure
         : result.Checks.Any(c => c.Conclusion == Pending) ? Pending
         : Success;
+}
+
+/// <summary>Classifies a <see cref="PullRequestChecksResult"/> that has already failed (SF-706) as <see cref="ValidationFailureKind.Repairable"/>
+/// or <see cref="ValidationFailureKind.Operational"/>, mirroring <see cref="ValidationFailureClassifier"/>'s
+/// conservative default (repairable unless clearly not) but working from GitHub's own per-check state rather than
+/// raw process output — a CI check's stdout/stderr is never fetched, only its name/conclusion/URL. The read
+/// itself failing (<see cref="PullRequestChecksResult.Succeeded"/> false — <c>gh</c> authentication, network, a
+/// missing permission) is always <see cref="ValidationFailureKind.Operational"/>: there is no code failure to
+/// even look at. Otherwise, a failure is <see cref="ValidationFailureKind.Operational"/> only when every failing
+/// check's <see cref="PullRequestCheck.RawState"/> is one GitHub itself reports for a run that never genuinely
+/// executed the code under test (cancelled, timed out, needs a workflow approval, failed to start, or a legacy
+/// commit-status "error") — a repairable code failure ("FAILURE"/legacy "FAILURE") anywhere in the set is enough
+/// to call the whole thing repairable, since a real fix is still worth attempting.</summary>
+public static class CiFailureClassifier
+{
+    private static readonly HashSet<string> OperationalRawStates = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE", "ERROR"
+    };
+
+    public static ValidationFailureKind Classify(PullRequestChecksResult result)
+    {
+        if (!result.Succeeded) return ValidationFailureKind.Operational;
+        var failing = result.Checks.Where(c => c.Conclusion == PullRequestCiStatus.Failure).ToList();
+        if (failing.Count == 0) return ValidationFailureKind.Repairable;
+        return failing.All(c => c.RawState is not null && OperationalRawStates.Contains(c.RawState))
+            ? ValidationFailureKind.Operational
+            : ValidationFailureKind.Repairable;
+    }
 }
 
 /// <summary>Small, attribution-explicit outcome and review-effort metrics over a rolling window since

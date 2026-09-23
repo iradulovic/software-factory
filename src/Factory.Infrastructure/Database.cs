@@ -593,12 +593,51 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         const string sql = """
             SELECT task_id AS "TaskId", overall_status AS "OverallStatus", head_commit AS "HeadCommit",
-              checks_json AS "ChecksJson", error AS "Error", synced_at AS "SyncedAt"
+              checks_json AS "ChecksJson", error AS "Error", synced_at AS "SyncedAt",
+              repair_triggered_for_commit AS "RepairTriggeredForCommit"
             FROM factory.task_ci_status WHERE task_id=@taskId
             """;
         await using var c = Connection();
         var row = await c.QuerySingleOrDefaultAsync<TaskCiStatusRow>(new CommandDefinition(sql, new { taskId }, cancellationToken: cancellationToken));
         return row?.ToModel();
+    }
+
+    /// <summary>Automatically continues a task whose published pull request's CI failed on its exact current head
+    /// commit (SF-706) — the same <see cref="FactoryTaskStatus.Published"/>→<see cref="FactoryTaskStatus.Pending"/>
+    /// path <see cref="ContinueWithFeedbackAsync"/> uses for a human continuation (so it grants the same fresh,
+    /// bounded <c>MaxImplementationAttempts</c> allowance and reuses the existing branch/worktree unchanged), but
+    /// attributed to the orchestrator (<c>task_feedback.created_by='ci-repair'</c>, <c>task_event.actor='orchestrator'</c>)
+    /// rather than a human, and restricted to a task actually resting in <see cref="FactoryTaskStatus.Published"/>
+    /// (never any of <see cref="ContinueWithFeedbackAsync"/>'s other continuable statuses — this is only ever
+    /// called from the CI-status sync path). Also records <paramref name="headCommit"/> as the commit this repair
+    /// was triggered for, in the same transaction as the feedback insert and the state transition, so a concurrent
+    /// or repeated call for the same still-failing commit can never trigger a second repair for it.</summary>
+    public async Task<bool> TriggerCiRepairAsync(Guid taskId, string headCommit, string feedback, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (currentText != nameof(FactoryTaskStatus.Published)) return false;
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Published, FactoryTaskStatus.Pending);
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_feedback(id,task_id,body,created_by) VALUES(@id,@taskId,@feedback,'ci-repair')",
+            new { id = Guid.NewGuid(), taskId, feedback }, transaction, cancellationToken: cancellationToken));
+        // The existing branch/worktree are deliberately left untouched, exactly as ContinueWithFeedbackAsync does —
+        // the next attempt keeps working on the same changes, so a later publish updates the same pull request.
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId",
+            new { taskId }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,'Published','Pending','Automatic CI repair triggered','orchestrator')",
+            new { taskId }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.task_ci_status SET repair_triggered_for_commit=@headCommit WHERE task_id=@taskId",
+            new { taskId, headCommit }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     public async Task<OutcomeMetrics> GetOutcomeMetricsAsync(DateTimeOffset since, CancellationToken cancellationToken)
@@ -980,9 +1019,10 @@ internal sealed class TaskCiStatusRow
     public string ChecksJson { get; init; } = "[]";
     public string? Error { get; init; }
     public DateTime SyncedAt { get; init; }
+    public string? RepairTriggeredForCommit { get; init; }
 
     public TaskCiStatus ToModel() => new(TaskId, OverallStatus, HeadCommit,
-        JsonSerializer.Deserialize<List<PullRequestCheck>>(ChecksJson) ?? [], Error, new DateTimeOffset(DateTime.SpecifyKind(SyncedAt, DateTimeKind.Utc)));
+        JsonSerializer.Deserialize<List<PullRequestCheck>>(ChecksJson) ?? [], Error, new DateTimeOffset(DateTime.SpecifyKind(SyncedAt, DateTimeKind.Utc)), RepairTriggeredForCommit);
 }
 
 internal sealed class TaskFeedbackRow

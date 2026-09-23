@@ -206,6 +206,14 @@ internal sealed class FakeTaskStore : ITaskStore
     public TaskCiStatus? CiStatus { get; set; }
     public Task<TaskCiStatus?> GetCiStatusAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(CiStatus);
 
+    public bool NextTriggerCiRepairAllowed { get; set; } = true;
+    public List<(Guid TaskId, string HeadCommit, string Feedback)> CiRepairsTriggered { get; } = [];
+    public Task<bool> TriggerCiRepairAsync(Guid taskId, string headCommit, string feedback, CancellationToken cancellationToken)
+    {
+        if (NextTriggerCiRepairAllowed) CiRepairsTriggered.Add((taskId, headCommit, feedback));
+        return Task.FromResult(NextTriggerCiRepairAllowed);
+    }
+
     public OutcomeMetrics? OutcomeMetrics { get; set; }
     public Task<OutcomeMetrics> GetOutcomeMetricsAsync(DateTimeOffset since, CancellationToken cancellationToken) => Task.FromResult(OutcomeMetrics!);
     public List<(Guid TaskId, int Minutes)> ReviewMinutesSet { get; } = [];
