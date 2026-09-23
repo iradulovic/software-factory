@@ -27,8 +27,11 @@ public sealed class GhCliTests
     }
 
     [Fact]
-    public async Task GetIssuesAsync_passes_the_since_cursor_into_the_first_page_search_and_never_uses_a_separate_state_flag()
+    public async Task GetIssuesAsync_passes_the_since_cursor_into_the_first_page_search_and_always_requests_every_state()
     {
+        // gh issue list defaults to --state open even with --search (verified against gh's own --help: a
+        // --search query alone silently drops every closed issue), so --state all must always be passed
+        // explicitly or a closed issue could never be observed by sync.
         var runner = new SequencedRunner();
         runner.EnqueueIssueList(ShortPage(1, 1, "2026-02-01T00:00:00Z"));
         runner.EnqueueCommentsView();
@@ -37,7 +40,9 @@ public sealed class GhCliTests
         await client.GetIssuesAsync(Repository, new DateTimeOffset(2026, 1, 15, 0, 0, 0, TimeSpan.Zero), CancellationToken.None);
 
         var listRequest = Assert.Single(runner.Requests, r => r.Arguments is ["issue", "list", ..]);
-        Assert.DoesNotContain("--state", listRequest.Arguments);
+        var stateIndex = listRequest.Arguments.ToList().IndexOf("--state");
+        Assert.True(stateIndex >= 0, "Expected --state to be passed explicitly.");
+        Assert.Equal("all", listRequest.Arguments[stateIndex + 1]);
         var searchIndex = listRequest.Arguments.ToList().IndexOf("--search");
         Assert.Equal("sort:updated-asc updated:>=2026-01-15T00:00:00Z", listRequest.Arguments[searchIndex + 1]);
     }

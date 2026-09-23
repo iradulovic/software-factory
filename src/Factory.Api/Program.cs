@@ -289,7 +289,7 @@ app.MapGet("/api/issues", async (string? repository, string? state, bool? eligib
     var items = await c.QueryAsync(new CommandDefinition("""
         SELECT i.id,i.issue_number AS "issueNumber",i.title,i.state,i.author,i.created_at AS "createdAt",i.updated_at AS "updatedAt",
           r.owner || '/' || r.name AS repository,
-          array_agg(label.name ORDER BY label.name) FILTER (WHERE label.name IS NOT NULL) AS labels,
+          array_agg(DISTINCT label.name ORDER BY label.name) FILTER (WHERE label.name IS NOT NULL) AS labels,
           EXISTS(SELECT 1 FROM github.issue_label eligibility WHERE eligibility.issue_id=i.id AND lower(eligibility.name)='factory:ready') AS eligible,
           count(DISTINCT t.id) AS "taskCount"
         FROM github.issue i
