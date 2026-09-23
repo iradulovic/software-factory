@@ -80,6 +80,24 @@ public sealed class WorktreeCleanupOptions
     public List<FactoryTaskStatus> RetainStatuses { get; set; } = [.. WorktreeCleanupPolicy.DefaultRetainedStatuses];
 }
 
+/// <summary>Governs the digest generator (SF-705). <see cref="WebhookUrl"/> left unset means the digest is
+/// generated and persisted (readable via <c>GET /api/digest</c>) but never delivered anywhere — external
+/// delivery requires an explicitly configured destination, exactly like <see cref="TelemetryOptions.OtlpEndpoint"/>
+/// leaving trace export off until an endpoint is configured.</summary>
+public sealed class DigestOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int PollingIntervalSeconds { get; set; } = 3600;
+
+    /// <summary>Minimum time between two generations, regardless of how often the poll loop wakes up — keeps a
+    /// "daily digest" actually daily by default without needing a separate cron-like scheduler.</summary>
+    public int IntervalHours { get; set; } = 24;
+
+    /// <summary>Where to POST the generated digest as JSON. Left unset (the default), nothing is ever delivered
+    /// externally — the digest is still generated and readable via <c>GET /api/digest</c>.</summary>
+    public string? WebhookUrl { get; set; }
+}
+
 /// <summary>Governs OpenTelemetry trace export (see <see cref="TelemetryExtensions.AddFactoryTelemetry"/>).
 /// Exporting is entirely optional: with no <see cref="OtlpEndpoint"/> configured, no exporter is registered at
 /// all, so a missing or unreachable collector never affects startup or the app's own health.</summary>

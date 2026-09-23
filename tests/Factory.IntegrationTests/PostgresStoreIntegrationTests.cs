@@ -1922,6 +1922,109 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Digest_queries_surface_finished_work_and_open_alerts_and_the_store_deduplicates_unchanged_ones()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var digests = new PostgresDigestStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+        var agent = $"digest-tests-{suffix}";
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('digest-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+
+        var completedTaskId = Guid.NewGuid();
+        var publishedCiFailedId = Guid.NewGuid();
+        var needsHumanId = Guid.NewGuid();
+        var allTaskIds = new[] { completedTaskId, publishedCiFailedId, needsHumanId };
+        var digestRunIds = new List<Guid>();
+        try
+        {
+            var since = DateTimeOffset.UtcNow.AddDays(-1);
+            var inWindow = DateTimeOffset.UtcNow.AddHours(-1);
+
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES
+                  (@completedTaskId,@repositoryId,'Digest finished task','Completed','main'),
+                  (@publishedCiFailedId,@repositoryId,'Digest CI failing task','Published','main'),
+                  (@needsHumanId,@repositoryId,'Digest needs-human task','NeedsHuman','main')
+                """, new { completedTaskId, publishedCiFailedId, needsHumanId, repositoryId });
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor,occurred_at) VALUES
+                  (@completedTaskId,'Published','Completed',NULL,'orchestrator',@inWindow),
+                  (@needsHumanId,'Planning','NeedsHuman','ambiguous requirement','orchestrator',@inWindow)
+                """, new { completedTaskId, needsHumanId, inWindow });
+            await tasks.SetCiStatusAsync(publishedCiFailedId, "Failure", "c1", [], "build step failed", CancellationToken.None);
+            await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent, true, QuotaWindow.ShortTerm, QuotaResetKind.Estimated, DateTimeOffset.UtcNow.AddHours(2), DateTimeOffset.UtcNow, "usage limit"), CancellationToken.None);
+            await tasks.SetDispatchPauseAsync(agent, true, "reserved for interactive use", "operator", CancellationToken.None);
+
+            var finished = await tasks.GetRecentlyFinishedTasksAsync(since, CancellationToken.None);
+            Assert.Contains(finished, t => t.TaskId == completedTaskId && t.Merged);
+
+            var ciFailures = await tasks.GetOpenCiFailureAlertsAsync(CancellationToken.None);
+            var ciAlert = Assert.Single(ciFailures, a => a.TaskId == publishedCiFailedId);
+            Assert.Equal("build step failed", ciAlert.Detail);
+
+            var needsHuman = await tasks.GetNeedsHumanAlertsAsync(CancellationToken.None);
+            Assert.Contains(needsHuman, a => a.TaskId == needsHumanId);
+
+            var blockers = await tasks.GetActiveBlockerAlertsAsync(CancellationToken.None);
+            Assert.Contains(blockers, a => a.Key == $"quota:{agent}");
+            Assert.Contains(blockers, a => a.Key == $"pause:{agent}");
+
+            // First generation: everything currently open is new, so every alert is surfaced.
+            var payload1 = DigestBuilder.Build(since, DateTimeOffset.UtcNow, finished, ciFailures, needsHuman, blockers, await digests.GetAlertFingerprintsAsync(CancellationToken.None));
+            var openAlerts = ciFailures.Concat(needsHuman).Concat(blockers).ToList();
+            var run1 = await digests.SaveAsync(payload1, openAlerts, CancellationToken.None);
+            digestRunIds.Add(run1.Id);
+            Assert.Contains(run1.Payload.CiFailures, a => a.TaskId == publishedCiFailedId);
+            Assert.Equal(1, run1.Payload.CiFailureTotal);
+
+            var latest = await digests.GetLatestAsync(CancellationToken.None);
+            Assert.Equal(run1.Id, latest?.Id);
+
+            // Second generation with nothing changed: totals stay the same, but the unchanged alerts are suppressed.
+            var payload2 = DigestBuilder.Build(since, DateTimeOffset.UtcNow, [], ciFailures, needsHuman, blockers, await digests.GetAlertFingerprintsAsync(CancellationToken.None));
+            Assert.Empty(payload2.CiFailures);
+            Assert.Empty(payload2.NeedsHuman);
+            Assert.Empty(payload2.Blockers);
+            Assert.Equal(1, payload2.CiFailureTotal);
+
+            // A resolved alert (no longer open) is dropped from dedup state, so if it recurs later it is treated as new again.
+            digestRunIds.Add((await digests.SaveAsync(payload2, [], CancellationToken.None)).Id);
+            var fingerprintsAfterResolution = await digests.GetAlertFingerprintsAsync(CancellationToken.None);
+            Assert.DoesNotContain($"ci:{publishedCiFailedId}", fingerprintsAfterResolution.Keys);
+
+            await digests.RecordDeliveryAsync(run1.Id, "https://example.invalid/webhook", true, null, CancellationToken.None);
+            var delivered = (await digests.GetRecentAsync(5, CancellationToken.None)).Single(d => d.Id == run1.Id);
+            Assert.True(delivered.Delivered);
+            Assert.Equal("https://example.invalid/webhook", delivered.DeliveryTarget);
+        }
+        finally
+        {
+            var alertKeys = new[] { $"ci:{publishedCiFailedId}", $"human:{needsHumanId}", $"quota:{agent}", $"pause:{agent}" };
+            await connection.ExecuteAsync("DELETE FROM factory.digest_alert_state WHERE alert_key=ANY(@alertKeys)", new { alertKeys });
+            await connection.ExecuteAsync("DELETE FROM factory.digest_run WHERE id=ANY(@digestRunIds)", new { digestRunIds });
+            await connection.ExecuteAsync("DELETE FROM factory.task_ci_status WHERE task_id=ANY(@allTaskIds)", new { allTaskIds });
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.task_event WHERE task_id=ANY(@allTaskIds);
+                DELETE FROM factory.task WHERE id=ANY(@allTaskIds);
+                """, new { allTaskIds });
+            await connection.ExecuteAsync("DELETE FROM factory.agent_availability WHERE agent=@agent", new { agent });
+            await connection.ExecuteAsync("DELETE FROM factory.dispatch_pause WHERE scope=@agent", new { agent });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Quota_interruptions_are_excluded_from_the_implementation_attempt_budget_but_real_failures_are_not()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

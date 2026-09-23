@@ -250,6 +250,18 @@ app.MapGet("/api/metrics", async (int? days, ITaskStore tasks, CancellationToken
     return Results.Ok(await tasks.GetOutcomeMetricsAsync(since, ct));
 });
 
+// The most recently generated digest (SF-705) — finished work, open CI failures, items needing the developer,
+// and meaningful quota/worker blockers, with unchanged alerts already suppressed by DigestBuilder at generation
+// time. history=N (default 0) also returns that many prior digests, oldest-first-of-that-slice reversed to
+// newest-first, for a short "recent digests" view.
+app.MapGet("/api/digest", async (int? history, IDigestStore digests, CancellationToken ct) =>
+{
+    var latest = await digests.GetLatestAsync(ct);
+    if (latest is null) return Results.Ok(new { latest = (DigestRun?)null, history = Array.Empty<DigestRun>() });
+    var recent = history is > 0 ? await digests.GetRecentAsync(history.Value + 1, ct) : [];
+    return Results.Ok(new { latest, history = recent.Where(d => d.Id != latest.Id) });
+});
+
 app.MapPost("/api/tasks/{id:guid}/cancel", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
 {
     using var activity = FactoryTelemetry.Source.StartActivity("api.cancel_task");

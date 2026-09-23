@@ -1098,6 +1098,219 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return await c.ExecuteScalarAsync<int>(new CommandDefinition(
             "SELECT count(*)::int FROM factory.task WHERE status IN ('ReadyForPublish','Published')", cancellationToken: cancellationToken));
     }
+
+    public async Task<IReadOnlyList<DigestFinishedTask>> GetRecentlyFinishedTasksAsync(DateTimeOffset since, CancellationToken cancellationToken)
+    {
+        // Windowed by task_event.occurred_at (when the transition actually happened), matching GetOutcomeMetricsAsync's
+        // own convention, not by task.completed_at/failed_at — Rejected sets neither. t.status=te.to_status excludes a
+        // stale event for a task later retried past it (e.g. a Rejected task an operator continued and later
+        // completed), so nothing already superseded is ever reported as finished work again.
+        const string sql = """
+            SELECT t.id AS "TaskId", t.title AS "Title", (gr.owner || '/' || gr.name) AS "Repository",
+              i.issue_number AS "IssueNumber", p.pull_request_url AS "PullRequestUrl",
+              (te.to_status='Completed') AS "Merged", te.occurred_at AS "FinishedAt"
+            FROM factory.task_event te
+            JOIN factory.task t ON t.id=te.task_id AND t.status=te.to_status
+            JOIN github.repository gr ON gr.id=t.repository_id
+            LEFT JOIN github.issue i ON i.id=t.github_issue_id
+            LEFT JOIN LATERAL (
+              SELECT pull_request_url FROM factory.publication
+              WHERE task_id=t.id AND pull_request_url IS NOT NULL ORDER BY completed_at DESC LIMIT 1
+            ) p ON true
+            WHERE te.to_status IN ('Completed','Rejected') AND te.occurred_at >= @since
+            ORDER BY te.occurred_at DESC
+            """;
+        await using var c = Connection();
+        var rows = await c.QueryAsync<DigestFinishedTaskRow>(new CommandDefinition(sql, new { since }, cancellationToken: cancellationToken));
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task<IReadOnlyList<DigestAlertCandidate>> GetOpenCiFailureAlertsAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT 'Ci' AS "Kind", ('ci:' || t.id) AS "Key", t.title AS "Title",
+              COALESCE(cs.error, 'CI checks failing on commit ' || COALESCE(cs.head_commit, 'unknown')) AS "Detail",
+              t.id AS "TaskId", p.pull_request_url AS "Url", cs.synced_at AS "UpdatedAt"
+            FROM factory.task t
+            JOIN factory.task_ci_status cs ON cs.task_id=t.id
+            LEFT JOIN LATERAL (
+              SELECT pull_request_url FROM factory.publication
+              WHERE task_id=t.id AND pull_request_url IS NOT NULL ORDER BY completed_at DESC LIMIT 1
+            ) p ON true
+            WHERE t.status='Published' AND cs.overall_status='Failure'
+            """;
+        await using var c = Connection();
+        var rows = await c.QueryAsync<DigestAlertCandidateRow>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task<IReadOnlyList<DigestAlertCandidate>> GetNeedsHumanAlertsAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT 'Human' AS "Kind", ('human:' || t.id) AS "Key", t.title AS "Title",
+              COALESCE(t.failure_reason, 'Needs human attention') AS "Detail", t.id AS "TaskId", NULL::text AS "Url",
+              COALESCE((SELECT max(te.occurred_at) FROM factory.task_event te WHERE te.task_id=t.id AND te.to_status='NeedsHuman'), t.created_at) AS "UpdatedAt"
+            FROM factory.task t
+            WHERE t.status='NeedsHuman'
+            """;
+        await using var c = Connection();
+        var rows = await c.QueryAsync<DigestAlertCandidateRow>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task<IReadOnlyList<DigestAlertCandidate>> GetActiveBlockerAlertsAsync(CancellationToken cancellationToken)
+    {
+        const string quotaSql = """
+            SELECT agent AS "Agent", detected AS "Detected", quota_window AS "Window", reset_kind AS "ResetKind",
+              reset_at AS "ResetAt", checked_at AS "CheckedAt", detail AS "Detail"
+            FROM factory.agent_availability WHERE detected AND reset_at > now()
+            """;
+        await using var c = Connection();
+        var quotaRows = await c.QueryAsync<AgentQuotaStatusRow>(new CommandDefinition(quotaSql, cancellationToken: cancellationToken));
+        var pauses = await GetAllDispatchPausesAsync(cancellationToken);
+
+        var alerts = new List<DigestAlertCandidate>();
+        foreach (var quota in quotaRows.Select(r => r.ToModel()))
+        {
+            var detail = quota.Detail is { Length: > 0 } ? $"Quota blocked: {quota.Detail}" : "Quota blocked";
+            if (quota.ResetAt is not null) detail += $" (resets {quota.ResetAt:u})";
+            alerts.Add(new DigestAlertCandidate("Quota", $"quota:{quota.Agent}", $"{quota.Agent} at quota", detail, null, null, quota.CheckedAt));
+        }
+        foreach (var pause in pauses.Where(p => p.Paused))
+        {
+            var title = pause.Scope == DispatchPauseScope.Global ? "Factory dispatch paused" : $"Agent {pause.Scope} paused";
+            var detail = pause.Reason is { Length: > 0 } ? $"Paused by {pause.PausedBy}: {pause.Reason}" : $"Paused by {pause.PausedBy}";
+            alerts.Add(new DigestAlertCandidate("Pause", $"pause:{pause.Scope}", title, detail, null, null, pause.PausedAt ?? clock.UtcNow));
+        }
+        return alerts;
+    }
+}
+
+/// <summary>Persists digest generations and alert-dedup state (SF-705). Fingerprint comparison itself is
+/// <see cref="DigestBuilder"/>'s job (pure, no database access); this store only reads back what was fingerprinted
+/// last time and persists what should be remembered next time.</summary>
+public sealed class PostgresDigestStore(IOptions<FactoryOptions> options, IClock clock) : IDigestStore
+{
+    private NpgsqlConnection Connection() => new(options.Value.ConnectionString);
+
+    public async Task<DigestRun?> GetLatestAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id AS "Id", generated_at AS "GeneratedAt", payload_json AS "PayloadJson",
+              delivered AS "Delivered", delivery_target AS "DeliveryTarget", delivery_error AS "DeliveryError"
+            FROM factory.digest_run ORDER BY generated_at DESC LIMIT 1
+            """;
+        await using var c = Connection();
+        var row = await c.QuerySingleOrDefaultAsync<DigestRunRow>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return row?.ToModel();
+    }
+
+    public async Task<IReadOnlyList<DigestRun>> GetRecentAsync(int limit, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id AS "Id", generated_at AS "GeneratedAt", payload_json AS "PayloadJson",
+              delivered AS "Delivered", delivery_target AS "DeliveryTarget", delivery_error AS "DeliveryError"
+            FROM factory.digest_run ORDER BY generated_at DESC LIMIT @limit
+            """;
+        await using var c = Connection();
+        var rows = await c.QueryAsync<DigestRunRow>(new CommandDefinition(sql, new { limit }, cancellationToken: cancellationToken));
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> GetAlertFingerprintsAsync(CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        var rows = await c.QueryAsync<(string alert_key, string fingerprint)>(new CommandDefinition(
+            "SELECT alert_key, fingerprint FROM factory.digest_alert_state", cancellationToken: cancellationToken));
+        return rows.ToDictionary(r => r.alert_key, r => r.fingerprint);
+    }
+
+    public async Task<DigestRun> SaveAsync(DigestPayload payload, IReadOnlyList<DigestAlertCandidate> openAlerts, CancellationToken cancellationToken)
+    {
+        var id = Guid.NewGuid();
+        var generatedAt = clock.UtcNow;
+        var payloadJson = JsonSerializer.Serialize(payload);
+
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.digest_run(id,generated_at,window_since,window_until,finished_count,ci_failure_count,needs_human_count,blocker_count,payload_json)
+            VALUES(@id,@generatedAt,@windowSince,@windowUntil,@finishedCount,@ciFailureCount,@needsHumanCount,@blockerCount,@payloadJson::jsonb)
+            """, new
+        {
+            id, generatedAt, windowSince = payload.WindowSince, windowUntil = payload.WindowUntil,
+            finishedCount = payload.FinishedWork.Count, ciFailureCount = payload.CiFailureTotal,
+            needsHumanCount = payload.NeedsHumanTotal, blockerCount = payload.BlockerTotal, payloadJson
+        }, transaction, cancellationToken: cancellationToken));
+
+        foreach (var alert in openAlerts)
+        {
+            await connection.ExecuteAsync(new CommandDefinition("""
+                INSERT INTO factory.digest_alert_state(alert_key,kind,fingerprint,first_seen_at,last_seen_at)
+                VALUES(@key,@kind,@fingerprint,@now,@now)
+                ON CONFLICT(alert_key) DO UPDATE SET fingerprint=excluded.fingerprint, last_seen_at=excluded.last_seen_at
+                """, new { key = alert.Key, kind = alert.Kind, fingerprint = DigestBuilder.Fingerprint(alert), now = generatedAt }, transaction, cancellationToken: cancellationToken));
+        }
+
+        var openKeys = openAlerts.Select(a => a.Key).ToArray();
+        await connection.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM factory.digest_alert_state WHERE NOT (alert_key = ANY(@openKeys))",
+            new { openKeys }, transaction, cancellationToken: cancellationToken));
+
+        await transaction.CommitAsync(cancellationToken);
+        return new DigestRun(id, generatedAt, payload, false, null, null);
+    }
+
+    public async Task RecordDeliveryAsync(Guid digestId, string target, bool succeeded, string? error, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.digest_run SET delivered=@succeeded, delivery_target=@target, delivery_error=@error WHERE id=@digestId",
+            new { digestId, target, succeeded, error }, cancellationToken: cancellationToken));
+    }
+}
+
+internal sealed class DigestRunRow
+{
+    public Guid Id { get; init; }
+    public DateTime GeneratedAt { get; init; }
+    public string PayloadJson { get; init; } = "";
+    public bool Delivered { get; init; }
+    public string? DeliveryTarget { get; init; }
+    public string? DeliveryError { get; init; }
+
+    public DigestRun ToModel() => new(Id, new DateTimeOffset(DateTime.SpecifyKind(GeneratedAt, DateTimeKind.Utc)),
+        JsonSerializer.Deserialize<DigestPayload>(PayloadJson)!, Delivered, DeliveryTarget, DeliveryError);
+}
+
+internal sealed class DigestFinishedTaskRow
+{
+    public Guid TaskId { get; init; }
+    public string Title { get; init; } = "";
+    public string Repository { get; init; } = "";
+    public int? IssueNumber { get; init; }
+    public string? PullRequestUrl { get; init; }
+    public bool Merged { get; init; }
+    public DateTime FinishedAt { get; init; }
+
+    public DigestFinishedTask ToModel() => new(TaskId, Title, Repository, IssueNumber, PullRequestUrl, Merged,
+        new DateTimeOffset(DateTime.SpecifyKind(FinishedAt, DateTimeKind.Utc)));
+}
+
+internal sealed class DigestAlertCandidateRow
+{
+    public string Kind { get; init; } = "";
+    public string Key { get; init; } = "";
+    public string Title { get; init; } = "";
+    public string Detail { get; init; } = "";
+    public Guid? TaskId { get; init; }
+    public string? Url { get; init; }
+    public DateTime UpdatedAt { get; init; }
+
+    public DigestAlertCandidate ToModel() => new(Kind, Key, Title, Detail, TaskId, Url,
+        new DateTimeOffset(DateTime.SpecifyKind(UpdatedAt, DateTimeKind.Utc)));
 }
 
 internal sealed class OutcomeMetricsRow

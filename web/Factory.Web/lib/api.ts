@@ -44,6 +44,31 @@ export const workerSchema = z.object({
   currentTaskTitle: z.string().nullable(), isStale: z.boolean()
 });
 export type Worker = z.infer<typeof workerSchema>;
+export const digestFinishedTaskSchema = z.object({
+  taskId: z.string(), title: z.string(), repository: z.string(), issueNumber: z.number().nullable(),
+  pullRequestUrl: z.string().nullable(), merged: z.boolean(), finishedAt: z.string()
+});
+export type DigestFinishedTask = z.infer<typeof digestFinishedTaskSchema>;
+export const digestAlertSchema = z.object({
+  kind: z.string(), key: z.string(), title: z.string(), detail: z.string(),
+  taskId: z.string().nullable(), url: z.string().nullable(), updatedAt: z.string()
+});
+export type DigestAlert = z.infer<typeof digestAlertSchema>;
+export const digestPayloadSchema = z.object({
+  windowSince: z.string(), windowUntil: z.string(),
+  finishedWork: z.array(digestFinishedTaskSchema),
+  ciFailures: z.array(digestAlertSchema), ciFailureTotal: z.number(),
+  needsHuman: z.array(digestAlertSchema), needsHumanTotal: z.number(),
+  blockers: z.array(digestAlertSchema), blockerTotal: z.number()
+});
+export type DigestPayload = z.infer<typeof digestPayloadSchema>;
+export const digestRunSchema = z.object({
+  id: z.string(), generatedAt: z.string(), payload: digestPayloadSchema,
+  delivered: z.boolean(), deliveryTarget: z.string().nullable(), deliveryError: z.string().nullable()
+});
+export type DigestRun = z.infer<typeof digestRunSchema>;
+export const digestResponseSchema = z.object({ latest: digestRunSchema.nullable(), history: z.array(digestRunSchema) });
+
 export const apiBase = process.env.NEXT_PUBLIC_FACTORY_API_URL ?? "http://localhost:5080";
 
 export async function getJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {

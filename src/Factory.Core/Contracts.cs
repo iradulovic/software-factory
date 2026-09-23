@@ -336,6 +336,58 @@ public interface ITaskStore
     /// confirmed to reflect (SF-707), so a later poll only attempts a file write when
     /// <see cref="TrackerSectionMapper.From"/> the task's current status actually differs from this.</summary>
     Task SetTrackerWritebackSectionAsync(Guid taskId, TrackerSection section, CancellationToken cancellationToken);
+
+    /// <summary>Tasks whose most recent settling transition into <see cref="FactoryTaskStatus.Completed"/> or
+    /// <see cref="FactoryTaskStatus.Rejected"/> happened at or after <paramref name="since"/> (SF-705) — the
+    /// "finished work" a digest reports, windowed by when that transition actually occurred (via
+    /// <c>task_event</c>), not by task creation time, and restricted to a task whose current resting status still
+    /// matches that transition (so a task later retried past a stale <c>Rejected</c> event is never reported
+    /// twice).</summary>
+    Task<IReadOnlyList<DigestFinishedTask>> GetRecentlyFinishedTasksAsync(DateTimeOffset since, CancellationToken cancellationToken);
+
+    /// <summary>Every task resting in <see cref="FactoryTaskStatus.Published"/> whose most recently synchronized
+    /// CI status (SF-614) is <c>Failure</c> (SF-705) — the open CI-failure conditions a digest surfaces.</summary>
+    Task<IReadOnlyList<DigestAlertCandidate>> GetOpenCiFailureAlertsAsync(CancellationToken cancellationToken);
+
+    /// <summary>Every task currently resting in <see cref="FactoryTaskStatus.NeedsHuman"/> (SF-705) — the open
+    /// needs-the-developer conditions a digest surfaces.</summary>
+    Task<IReadOnlyList<DigestAlertCandidate>> GetNeedsHumanAlertsAsync(CancellationToken cancellationToken);
+
+    /// <summary>Every currently meaningful quota or dispatch-pause blocker (SF-705): an agent whose
+    /// <see cref="IsAgentAtQuotaAsync"/> reset time has not yet passed, and any scope with an active
+    /// <see cref="SetDispatchPauseAsync"/> pause — the open worker-blocker conditions a digest surfaces.</summary>
+    Task<IReadOnlyList<DigestAlertCandidate>> GetActiveBlockerAlertsAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>Persists digest generations and the alert-dedup state that keeps an unchanged CI failure, needs-human
+/// task, or quota/pause blocker from being re-surfaced as new noise on every subsequent digest (SF-705). The
+/// database is the external boundary this abstracts, exactly like <see cref="ITaskStore"/> and
+/// <see cref="IGitHubStore"/> — digest generation itself (<c>DigestBuilder</c>) stays pure and independent of it.</summary>
+public interface IDigestStore
+{
+    /// <summary>The most recently generated digest, or <see langword="null"/> if none has ever been generated —
+    /// also where the next generation's <c>WindowSince</c> starts.</summary>
+    Task<DigestRun?> GetLatestAsync(CancellationToken cancellationToken);
+
+    /// <summary>The most recent digests, newest first, for a short dashboard history view.</summary>
+    Task<IReadOnlyList<DigestRun>> GetRecentAsync(int limit, CancellationToken cancellationToken);
+
+    /// <summary>Every alert currently tracked as "already surfaced", keyed by <see cref="DigestAlertCandidate.Key"/>,
+    /// with the fingerprint it was last surfaced with — what <c>DigestBuilder</c> compares each newly observed
+    /// candidate against to decide whether it is new, changed, or unchanged.</summary>
+    Task<IReadOnlyDictionary<string, string>> GetAlertFingerprintsAsync(CancellationToken cancellationToken);
+
+    /// <summary>Persists one digest generation (SF-705): inserts the <see cref="DigestRun"/>, upserts a
+    /// fingerprint row for every one of <paramref name="openAlerts"/> (whether newly surfaced or merely still
+    /// open — its last-seen time stays fresh either way), and deletes any previously tracked alert whose key is
+    /// no longer present in <paramref name="openAlerts"/> — resolved, so a later recurrence of the same condition
+    /// is treated as new again rather than permanently suppressed. All in one transaction, so a digest is never
+    /// recorded with partially updated dedup state.</summary>
+    Task<DigestRun> SaveAsync(DigestPayload payload, IReadOnlyList<DigestAlertCandidate> openAlerts, CancellationToken cancellationToken);
+
+    /// <summary>Records one digest's external-delivery attempt outcome (SF-705's "external delivery requires an
+    /// explicitly configured destination" — this is only ever called when one is). Never touches dedup state.</summary>
+    Task RecordDeliveryAsync(Guid digestId, string target, bool succeeded, string? error, CancellationToken cancellationToken);
 }
 
 /// <summary>Reads and writes a repository's own <c>TASKS.md</c> tracker file directly against its base branch

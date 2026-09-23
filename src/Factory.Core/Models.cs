@@ -406,6 +406,41 @@ public sealed record OutcomeMetrics(
 /// to decide whether to remove it and for <see cref="IWorktreeManager"/> to remove it.</summary>
 public sealed record WorktreeCleanupCandidate(Guid TaskId, FactoryTaskStatus Status, string WorktreePath, string RepositoryOwner, string RepositoryName);
 
+/// <summary>One task whose most recent settling transition (<c>Completed</c> or <c>Rejected</c>) fell inside a
+/// digest's time window (SF-705) — "finished work" is always reported exactly once, windowed by when it actually
+/// happened rather than deduplicated against a previous digest, since the window itself never overlaps a prior
+/// one.</summary>
+public sealed record DigestFinishedTask(Guid TaskId, string Title, string Repository, int? IssueNumber, string? PullRequestUrl, bool Merged, DateTimeOffset FinishedAt);
+
+/// <summary>One currently-open, actionable condition a digest may surface (SF-705): a CI failure on a published
+/// pull request, a task resting in <see cref="FactoryTaskStatus.NeedsHuman"/>, or a quota/dispatch-pause blocker.
+/// <paramref name="Key"/> identifies the same underlying condition across digest generations (e.g.
+/// <c>"ci:{taskId}"</c>, <c>"human:{taskId}"</c>, <c>"quota:{agent}"</c>, <c>"pause:{scope}"</c>) so
+/// <see cref="DigestBuilder"/> can tell a still-open, unchanged condition (suppressed — see
+/// <see cref="DigestPayload"/>) from one that is new or has changed (surfaced); <paramref name="Detail"/> is what
+/// actually gets fingerprinted for that comparison.</summary>
+public sealed record DigestAlertCandidate(string Kind, string Key, string Title, string Detail, Guid? TaskId, string? Url, DateTimeOffset UpdatedAt);
+
+/// <summary>The digest <see cref="DigestBuilder"/> builds for one generation cycle (SF-705). Finished work is
+/// always the full <paramref name="WindowSince"/>–<paramref name="WindowUntil"/> window; each alert section lists
+/// only conditions that are new or have changed since the previous generation, while its accompanying <c>*Total</c>
+/// reports how many of that kind are currently open in total — so an operator reading only the section can still
+/// tell "nothing changed since last time" (empty list, non-zero total) apart from "nothing is wrong" (zero
+/// total), rather than either silently repeating unchanged alerts or silently dropping them from view.</summary>
+public sealed record DigestPayload(
+    DateTimeOffset WindowSince, DateTimeOffset WindowUntil,
+    IReadOnlyList<DigestFinishedTask> FinishedWork,
+    IReadOnlyList<DigestAlertCandidate> CiFailures, int CiFailureTotal,
+    IReadOnlyList<DigestAlertCandidate> NeedsHuman, int NeedsHumanTotal,
+    IReadOnlyList<DigestAlertCandidate> Blockers, int BlockerTotal);
+
+/// <summary>One persisted digest generation (SF-705) — what <see cref="IDigestStore.SaveAsync"/> records and
+/// <see cref="IDigestStore.GetLatestAsync"/>/<see cref="IDigestStore.GetRecentAsync"/> read back.
+/// <paramref name="DeliveryTarget"/>/<paramref name="DeliveryError"/> are set only when an external destination
+/// was actually configured and attempted (SF-705's external-delivery requirement); a digest with no configured
+/// destination is still fully generated and persisted, just never attempted.</summary>
+public sealed record DigestRun(Guid Id, DateTimeOffset GeneratedAt, DigestPayload Payload, bool Delivered, string? DeliveryTarget, string? DeliveryError);
+
 /// <summary>Where a task sits in its bounded implementation-attempt budget, for both enforcement and for
 /// telling the agent which attempt this is. <paramref name="Feedback"/> is the most recent operator feedback
 /// recorded for this task (SF-613), if any — surfaced so an explicit correction or manual-test failure the
