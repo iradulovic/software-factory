@@ -129,6 +129,21 @@ public interface ITaskStore
     /// title and status, so the operator can see exactly what is blocking a task without a second lookup.</summary>
     Task<IReadOnlyList<TaskDependency>> GetDependenciesAsync(Guid taskId, CancellationToken cancellationToken);
 
+    /// <summary>The factory task produced from a given repository's given GitHub issue number (SF-710), or
+    /// <see langword="null"/> if that repository is unknown, the issue has not been synced yet, or the issue was
+    /// never eligible to produce a task (e.g. missing <c>factory:ready</c>) — all three are indistinguishable to
+    /// the caller and are retried on a later sync pass rather than treated as an error.</summary>
+    Task<Guid?> FindTaskIdForIssueAsync(string owner, string name, int issueNumber, CancellationToken cancellationToken);
+
+    /// <summary>Reconciles <paramref name="taskId"/>'s <c>source='issue'</c> dependency edges (SF-710) against
+    /// <paramref name="parsedDependsOnTaskIds"/> — the current set parsed from its GitHub issue body on this sync
+    /// pass. Adds a new edge for each id not already present (tagged <c>source='issue'</c>), removes an existing
+    /// <c>source='issue'</c> edge whose id is no longer in the set, and never touches a manually-added (SF-611
+    /// dashboard, <c>source IS NULL</c>) edge either way. A parsed id that would close a dependency cycle (reusing
+    /// the same transitive check <see cref="AddDependencyAsync"/> uses) is skipped, not inserted, and reported in
+    /// the result rather than silently dropped.</summary>
+    Task<IssueDependencyReconciliation> ReconcileIssueDependenciesAsync(Guid taskId, IReadOnlyList<Guid> parsedDependsOnTaskIds, CancellationToken cancellationToken);
+
     /// <summary>Moves a <see cref="FactoryTaskStatus.Pending"/> task to <see cref="FactoryTaskStatus.NeedsHuman"/>
     /// the moment any of its prerequisites ends at <see cref="FactoryTaskStatus.Rejected"/>,
     /// <see cref="FactoryTaskStatus.Cancelled"/>, or <see cref="FactoryTaskStatus.Failed"/> — a prerequisite that

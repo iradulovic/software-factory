@@ -826,9 +826,16 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 
     public async Task<AddDependencyOutcome> AddDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
     {
+        await using var c = Connection();
+        return await InsertDependencyEdgeAsync(c, taskId, dependsOnTaskId, source: null, cancellationToken);
+    }
+
+    /// <summary>Shared by the manual SF-611 dashboard path (<see cref="AddDependencyAsync"/>, <paramref name="source"/>
+    /// <see langword="null"/>) and SF-710's issue-body reconciliation (<paramref name="source"/> <c>"issue"</c>).</summary>
+    private static async Task<AddDependencyOutcome> InsertDependencyEdgeAsync(NpgsqlConnection c, Guid taskId, Guid dependsOnTaskId, string? source, CancellationToken cancellationToken)
+    {
         if (taskId == dependsOnTaskId) return AddDependencyOutcome.SelfDependency;
 
-        await using var c = Connection();
         var existing = (await c.QueryAsync<Guid>(new CommandDefinition(
             "SELECT id FROM factory.task WHERE id = ANY(@ids)", new { ids = new[] { taskId, dependsOnTaskId } }, cancellationToken: cancellationToken))).ToHashSet();
         if (!existing.Contains(taskId) || !existing.Contains(dependsOnTaskId)) return AddDependencyOutcome.TaskNotFound;
@@ -847,9 +854,45 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         var wouldCycle = await c.ExecuteScalarAsync<bool>(new CommandDefinition(cycleSql, new { taskId, dependsOnTaskId }, cancellationToken: cancellationToken));
         if (wouldCycle) return AddDependencyOutcome.WouldCreateCycle;
 
-        const string insertSql = "INSERT INTO factory.task_dependency(task_id,depends_on_task_id) VALUES(@taskId,@dependsOnTaskId) ON CONFLICT DO NOTHING RETURNING task_id";
-        var inserted = await c.ExecuteScalarAsync<Guid?>(new CommandDefinition(insertSql, new { taskId, dependsOnTaskId }, cancellationToken: cancellationToken));
+        const string insertSql = "INSERT INTO factory.task_dependency(task_id,depends_on_task_id,source) VALUES(@taskId,@dependsOnTaskId,@source) ON CONFLICT DO NOTHING RETURNING task_id";
+        var inserted = await c.ExecuteScalarAsync<Guid?>(new CommandDefinition(insertSql, new { taskId, dependsOnTaskId, source }, cancellationToken: cancellationToken));
         return inserted is null ? AddDependencyOutcome.AlreadyExists : AddDependencyOutcome.Added;
+    }
+
+    public async Task<Guid?> FindTaskIdForIssueAsync(string owner, string name, int issueNumber, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT t.id FROM github.repository r
+            JOIN github.issue i ON i.repository_id = r.id AND i.issue_number = @issueNumber
+            JOIN factory.task t ON t.github_issue_id = i.id
+            WHERE lower(r.owner) = lower(@owner) AND lower(r.name) = lower(@name)
+            """;
+        await using var c = Connection();
+        return await c.ExecuteScalarAsync<Guid?>(new CommandDefinition(sql, new { owner, name, issueNumber }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<IssueDependencyReconciliation> ReconcileIssueDependenciesAsync(Guid taskId, IReadOnlyList<Guid> parsedDependsOnTaskIds, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        var parsed = parsedDependsOnTaskIds.Where(id => id != taskId).ToHashSet();
+        var existing = (await c.QueryAsync<Guid>(new CommandDefinition(
+            "SELECT depends_on_task_id FROM factory.task_dependency WHERE task_id=@taskId AND source='issue'", new { taskId }, cancellationToken: cancellationToken))).ToHashSet();
+
+        var toRemove = existing.Except(parsed).ToList();
+        foreach (var dependsOnTaskId in toRemove)
+            await c.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM factory.task_dependency WHERE task_id=@taskId AND depends_on_task_id=@dependsOnTaskId AND source='issue'",
+                new { taskId, dependsOnTaskId }, cancellationToken: cancellationToken));
+
+        var added = new List<Guid>();
+        var skippedCycles = new List<Guid>();
+        foreach (var dependsOnTaskId in parsed.Except(existing))
+        {
+            var outcome = await InsertDependencyEdgeAsync(c, taskId, dependsOnTaskId, "issue", cancellationToken);
+            if (outcome == AddDependencyOutcome.Added) added.Add(dependsOnTaskId);
+            else if (outcome == AddDependencyOutcome.WouldCreateCycle) skippedCycles.Add(dependsOnTaskId);
+        }
+        return new IssueDependencyReconciliation(added, toRemove, skippedCycles);
     }
 
     public async Task RemoveDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
@@ -862,7 +905,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public async Task<IReadOnlyList<TaskDependency>> GetDependenciesAsync(Guid taskId, CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT td.task_id AS "TaskId",td.depends_on_task_id AS "DependsOnTaskId",dep.title AS "DependsOnTitle",dep.status AS "DependsOnStatus"
+            SELECT td.task_id AS "TaskId",td.depends_on_task_id AS "DependsOnTaskId",dep.title AS "DependsOnTitle",dep.status AS "DependsOnStatus",td.source AS "Source"
             FROM factory.task_dependency td JOIN factory.task dep ON dep.id=td.depends_on_task_id
             WHERE td.task_id=@taskId
             ORDER BY td.created_at
@@ -959,8 +1002,9 @@ internal sealed class TaskDependencyRow
     public Guid DependsOnTaskId { get; init; }
     public string DependsOnTitle { get; init; } = "";
     public string DependsOnStatus { get; init; } = "";
+    public string? Source { get; init; }
 
-    public TaskDependency ToModel() => new(TaskId, DependsOnTaskId, DependsOnTitle, Enum.Parse<FactoryTaskStatus>(DependsOnStatus));
+    public TaskDependency ToModel() => new(TaskId, DependsOnTaskId, DependsOnTitle, Enum.Parse<FactoryTaskStatus>(DependsOnStatus), Source);
 }
 
 internal sealed class DispatchPauseRow

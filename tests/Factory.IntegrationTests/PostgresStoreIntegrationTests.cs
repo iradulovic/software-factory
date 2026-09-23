@@ -1145,6 +1145,89 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Issue_dependency_reconciliation_adds_and_removes_only_its_own_edges_and_respects_cycle_rejection()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var owner = "issue-dependency-tests";
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES(@owner,@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { owner, suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+
+        var prerequisiteId = Guid.NewGuid();
+        var dependentId = Guid.NewGuid();
+        var extraId = Guid.NewGuid();
+        try
+        {
+            var prerequisiteIssueId = await InsertIssueAsync(connection, repositoryId, issueNumber: 1);
+            var dependentIssueId = await InsertIssueAsync(connection, repositoryId, issueNumber: 2);
+            var extraIssueId = await InsertIssueAsync(connection, repositoryId, issueNumber: 3);
+            await connection.ExecuteAsync("""
+                INSERT INTO factory.task(id,repository_id,github_issue_id,title,status,base_branch)
+                VALUES(@prerequisiteId,@repositoryId,@prerequisiteIssueId,'Prerequisite task','Pending','main'),
+                      (@dependentId,@repositoryId,@dependentIssueId,'Dependent task','Pending','main'),
+                      (@extraId,@repositoryId,@extraIssueId,'Extra task','Pending','main')
+                """, new { prerequisiteId, dependentId, extraId, repositoryId, prerequisiteIssueId, dependentIssueId, extraIssueId });
+
+            // Resolves same-repository issue numbers to the tasks they produced; an unsynced issue number
+            // resolves to null so the caller retries it on a later sync pass instead of erroring.
+            Assert.Equal(prerequisiteId, await tasks.FindTaskIdForIssueAsync(owner, suffix, 1, CancellationToken.None));
+            Assert.Null(await tasks.FindTaskIdForIssueAsync(owner, suffix, 999, CancellationToken.None));
+
+            // First reconciliation: dependent's issue body declares "Depends on #1" -> one issue-sourced edge added.
+            var first = await tasks.ReconcileIssueDependenciesAsync(dependentId, [prerequisiteId], CancellationToken.None);
+            Assert.Equal([prerequisiteId], first.Added);
+            Assert.Empty(first.Removed);
+            Assert.Empty(first.SkippedCycles);
+            var afterFirst = Assert.Single(await tasks.GetDependenciesAsync(dependentId, CancellationToken.None));
+            Assert.Equal(prerequisiteId, afterFirst.DependsOnTaskId);
+            Assert.Equal("issue", afterFirst.Source);
+
+            // An operator also adds a manual edge (SF-611 dashboard) from the dependent to a third task.
+            Assert.Equal(AddDependencyOutcome.Added, await tasks.AddDependencyAsync(dependentId, extraId, CancellationToken.None));
+
+            // The operator edits the issue body to drop the "Depends on #1" line: re-reconciling with an empty
+            // parsed set removes only the issue-sourced edge, never the manually-added one sitting alongside it.
+            var second = await tasks.ReconcileIssueDependenciesAsync(dependentId, [], CancellationToken.None);
+            Assert.Empty(second.Added);
+            Assert.Equal([prerequisiteId], second.Removed);
+            var afterSecond = Assert.Single(await tasks.GetDependenciesAsync(dependentId, CancellationToken.None));
+            Assert.Equal(extraId, afterSecond.DependsOnTaskId);
+            Assert.Null(afterSecond.Source);
+
+            // A parsed reference that would close a cycle is skipped and reported, never inserted: the
+            // prerequisite already (manually) depends on the dependent, so the dependent's own issue body
+            // declaring "Depends on <prerequisite>" would close prerequisite <- dependent <- prerequisite.
+            Assert.Equal(AddDependencyOutcome.Added, await tasks.AddDependencyAsync(prerequisiteId, dependentId, CancellationToken.None));
+            var third = await tasks.ReconcileIssueDependenciesAsync(dependentId, [prerequisiteId], CancellationToken.None);
+            Assert.Empty(third.Added);
+            Assert.Equal([prerequisiteId], third.SkippedCycles);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_dependency WHERE task_id IN (@prerequisiteId,@dependentId,@extraId) OR depends_on_task_id IN (@prerequisiteId,@dependentId,@extraId)", new { prerequisiteId, dependentId, extraId });
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@prerequisiteId,@dependentId,@extraId)", new { prerequisiteId, dependentId, extraId });
+            await connection.ExecuteAsync("DELETE FROM github.issue WHERE repository_id=@repositoryId", new { repositoryId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    private static Task<long> InsertIssueAsync(NpgsqlConnection connection, long repositoryId, int issueNumber) =>
+        connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.issue(repository_id,github_issue_id,issue_number,title,body,state,author,created_at,updated_at,last_synced_at)
+            VALUES(@repositoryId,@issueNumber,@issueNumber,'Issue','Body','OPEN','alice',now(),now(),now()) RETURNING id
+            """, new { repositoryId, issueNumber });
+
+    [Fact]
     public async Task A_task_with_an_unmerged_prerequisite_is_never_claimed_until_the_prerequisite_merges()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
