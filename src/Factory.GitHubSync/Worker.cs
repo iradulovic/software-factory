@@ -46,7 +46,11 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                                 : !issue.Labels.Contains("factory:ready", StringComparer.OrdinalIgnoreCase) ? "The factory:ready label was removed on GitHub." : null;
                             if (reason is not null && await tasks.CancelPendingForIssueAsync(saved.Id, reason, stoppingToken)) cancelled++;
                         }
-                        await store.MarkRepositorySyncedAsync(repository.Id, syncStartedAt, stoppingToken);
+                        // Backdated by SyncCheckpoint.SafetyMargin rather than persisted as-is: GitHub's search API
+                        // (see GetIssuesAsync) is eventually consistent, so an issue that changed just before
+                        // syncStartedAt can miss this cycle's results because it isn't indexed yet. Without the
+                        // margin, the checkpoint would advance past it anyway and it would never be fetched again.
+                        await store.MarkRepositorySyncedAsync(repository.Id, SyncCheckpoint.From(syncStartedAt), stoppingToken);
                         logger.LogInformation("Synchronized {Repository}; imported {IssueCount} issues, created {TaskCount} tasks, cancelled {CancelledCount} pending tasks", $"{repository.Owner}/{repository.Name}", imported, created, cancelled);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
