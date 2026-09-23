@@ -235,8 +235,10 @@ public interface IGitHubStore
 
     /// <summary>Records the point in time through which this repository's issues have been fully synchronized, so
     /// the next cycle's <see cref="IGitHubClient.GetIssuesAsync"/> call can search only for what changed since
-    /// then. Pass the time the sync cycle started, not when it finished, so an issue updated while this cycle was
-    /// still running is safely re-fetched next time rather than silently skipped.</summary>
+    /// then. Pass a value derived from the time the sync cycle started, not when it finished, so an issue updated
+    /// while this cycle was still running is safely re-fetched next time rather than silently skipped. Callers
+    /// should backdate that start time by <see cref="SyncCheckpoint.SafetyMargin"/> (see <see cref="SyncCheckpoint"/>)
+    /// so a brief GitHub search-indexing lag cannot permanently skip an issue either.</summary>
     Task MarkRepositorySyncedAsync(long repositoryId, DateTimeOffset syncedThrough, CancellationToken cancellationToken);
     Task RecordRepositorySyncFailureAsync(long repositoryId, string error, CancellationToken cancellationToken);
     Task<GitHubIssue> UpsertIssueAsync(long repositoryId, GitHubIssue issue, CancellationToken cancellationToken);
