@@ -62,7 +62,22 @@ app.MapGet("/", () => Results.Ok(new
     dashboard = dashboardUrl,
     message = "The dashboard is a separate Next.js application. Start Factory.Web, then open the dashboard URL."
 }));
-app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+// Actually exercises the dependency this process cannot serve any request without (SF-615) — a process that is
+// merely "up" but cannot reach PostgreSQL is not healthy, and a startup script polling this needs to be able to
+// tell the difference rather than getting a 200 back from a process that will 500 on its very first real request.
+app.MapGet("/health", async (NpgsqlDataSource db, CancellationToken ct) =>
+{
+    try
+    {
+        await using var c = await db.OpenConnectionAsync(ct);
+        await c.ExecuteScalarAsync(new CommandDefinition("SELECT 1", cancellationToken: ct));
+        return Results.Ok(new { status = "healthy", database = "reachable" });
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        return Results.Json(new { status = "unhealthy", database = "unreachable", error = ex.Message }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
 
 app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, IOptions<FactoryOptions> options, CancellationToken ct) =>
 {
