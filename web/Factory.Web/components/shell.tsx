@@ -39,7 +39,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-emerald-500 font-black text-slate-950">SF</div>
             <div className="min-w-0 group-data-[collapsible=icon]:hidden">
               <p className="truncate text-sm font-semibold">Software Factory</p>
-              <p className="truncate text-xs text-slate-500">Local control plane</p>
+              <p className="truncate text-xs text-muted-foreground">Local control plane</p>
             </div>
           </div>
         </SidebarHeader>
@@ -65,7 +65,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </SidebarGroup>
         </SidebarContent>
         <SidebarFooter className="border-t border-[var(--border)] p-3 group-data-[collapsible=icon]:hidden">
-          <div className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+          <div className="rounded-lg border border-[var(--border)] bg-accent p-3">
             <WorkerStatus worker={data?.[0]} />
           </div>
         </SidebarFooter>
@@ -75,7 +75,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-3">
             <SidebarTrigger />
             <div>
-              <p className="text-xs uppercase tracking-[.16em] text-slate-500">Operations</p>
+              <p className="text-xs uppercase tracking-[.16em] text-muted-foreground">Operations</p>
               <p className="text-sm font-medium">Development orchestration</p>
             </div>
           </div>
@@ -118,8 +118,8 @@ const agentDotTones: Record<string, string> = { Verified: "bg-emerald-500", Busy
 
 function AgentStatusPill() {
   const { data } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)) });
-  if (!data?.length) return <div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-slate-500">No agents configured</div>;
-  return <div className="flex items-center gap-3 rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-slate-400">
+  if (!data?.length) return <div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-muted-foreground">No agents configured</div>;
+  return <div className="flex items-center gap-3 rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-muted-foreground">
     {data.map(a => <span className="flex items-center gap-1.5" key={a.agent} title={`${a.agent}: ${a.state}${a.error ? ` — ${a.error}` : ""}`}>
       <span className={`size-1.5 rounded-full ${agentDotTones[a.state] ?? "bg-amber-500"}`} />{a.agent}
     </span>)}
@@ -127,10 +127,10 @@ function AgentStatusPill() {
 }
 
 function WorkerStatus({ worker }: { worker?: Worker }) {
-  if (!worker) return <><p className="text-xs font-medium text-slate-500">● No worker reporting</p><p className="mt-1 text-[11px] text-slate-500">Waiting for a heartbeat</p></>;
+  if (!worker) return <><p className="text-xs font-medium text-muted-foreground">● No worker reporting</p><p className="mt-1 text-[11px] text-muted-foreground">Waiting for a heartbeat</p></>;
   return <>
     <p className={`text-xs font-medium ${worker.isStale ? "text-amber-400" : "text-emerald-400"}`}>● Worker {worker.isStale ? "stale" : "online"}</p>
-    <p className="mt-1 truncate text-[11px] text-slate-500" title={worker.host}>{worker.host}</p>
-    <p className="truncate text-[11px] text-slate-500" title={worker.currentTaskTitle ?? undefined}>{worker.currentTaskTitle ? `Working on ${worker.currentTaskTitle}` : "Idle"}</p>
+    <p className="mt-1 truncate text-[11px] text-muted-foreground" title={worker.host}>{worker.host}</p>
+    <p className="truncate text-[11px] text-muted-foreground" title={worker.currentTaskTitle ?? undefined}>{worker.currentTaskTitle ? `Working on ${worker.currentTaskTitle}` : "Idle"}</p>
   </>;
 }
