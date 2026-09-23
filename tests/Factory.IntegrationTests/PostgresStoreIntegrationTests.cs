@@ -1499,6 +1499,106 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Triggering_ci_repair_continues_a_published_task_and_records_the_repaired_commit()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('ci-repair-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var publishedId = Guid.NewGuid();
+        var pendingId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@publishedId,@repositoryId,'Published task','Published','main')", new { publishedId, repositoryId });
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@pendingId,@repositoryId,'Pending task','Pending','main')", new { pendingId, repositoryId });
+
+            // A Pending task (not Published) is refused, exactly as ContinueWithFeedbackAsync refuses a
+            // mid-execution status — this is only ever meant to act on a task resting in Published.
+            Assert.False(await tasks.TriggerCiRepairAsync(pendingId, "deadbeef", "CI failed on commit deadbeef: test", CancellationToken.None));
+
+            Assert.True(await tasks.TriggerCiRepairAsync(publishedId, "deadbeef", "CI failed on commit deadbeef: test", CancellationToken.None));
+
+            var status = await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@publishedId", new { publishedId });
+            Assert.Equal("Pending", status);
+
+            var recorded = await tasks.GetFeedbackAsync(publishedId, CancellationToken.None);
+            var entry = Assert.Single(recorded);
+            Assert.Equal("ci-repair", entry.CreatedBy);
+            Assert.Contains("deadbeef", entry.Body);
+
+            // A second trigger for the exact same commit is refused, since it is no longer resting in Published.
+            Assert.False(await tasks.TriggerCiRepairAsync(publishedId, "deadbeef", "CI failed again", CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_ci_status WHERE task_id IN (@publishedId,@pendingId)", new { publishedId, pendingId });
+            await connection.ExecuteAsync("DELETE FROM factory.task_feedback WHERE task_id IN (@publishedId,@pendingId)", new { publishedId, pendingId });
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id IN (@publishedId,@pendingId)", new { publishedId, pendingId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task Ci_repair_records_the_repaired_commit_so_the_same_failing_commit_is_never_repaired_twice()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
+        var tasks = new PostgresTaskStore(settings, new TestClock());
+        var suffix = Guid.NewGuid().ToString("N");
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('ci-repair-commit-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        try
+        {
+            await connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@taskId,@repositoryId,'Published task','Published','main')", new { taskId, repositoryId });
+            await tasks.SetCiStatusAsync(taskId, PullRequestCiStatus.Failure, "commit1", [new PullRequestCheck("test", PullRequestCiStatus.Failure, null, "FAILURE")], null, CancellationToken.None);
+
+            Assert.True(await tasks.TriggerCiRepairAsync(taskId, "commit1", "CI failed on commit1", CancellationToken.None));
+
+            // Recorded on the same task_ci_status row that SetCiStatusAsync maintains, and a routine re-sync of
+            // the (still unmerged) same commit never clears it back out.
+            var status = await tasks.GetCiStatusAsync(taskId, CancellationToken.None);
+            Assert.Equal("commit1", status!.RepairTriggeredForCommit);
+
+            await connection.ExecuteAsync("UPDATE factory.task SET status='Published' WHERE id=@taskId", new { taskId });
+            await tasks.SetCiStatusAsync(taskId, PullRequestCiStatus.Failure, "commit1", [new PullRequestCheck("test", PullRequestCiStatus.Failure, null, "FAILURE")], null, CancellationToken.None);
+            var statusAfterResync = await tasks.GetCiStatusAsync(taskId, CancellationToken.None);
+            Assert.Equal("commit1", statusAfterResync!.RepairTriggeredForCommit);
+
+            // A new commit's failure is a fresh case: repair for it is recorded independently.
+            await tasks.SetCiStatusAsync(taskId, PullRequestCiStatus.Failure, "commit2", [new PullRequestCheck("test", PullRequestCiStatus.Failure, null, "FAILURE")], null, CancellationToken.None);
+            Assert.True(await tasks.TriggerCiRepairAsync(taskId, "commit2", "CI failed on commit2", CancellationToken.None));
+            var statusAfterSecondRepair = await tasks.GetCiStatusAsync(taskId, CancellationToken.None);
+            Assert.Equal("commit2", statusAfterSecondRepair!.RepairTriggeredForCommit);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task_ci_status WHERE task_id=@taskId", new { taskId });
+            await connection.ExecuteAsync("DELETE FROM factory.task_feedback WHERE task_id=@taskId", new { taskId });
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE id=@taskId", new { taskId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Continuation_is_allowed_from_resting_states_including_an_open_pull_request_but_refused_mid_execution()
     {
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");

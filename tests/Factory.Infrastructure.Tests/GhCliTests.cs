@@ -165,7 +165,35 @@ public sealed class GhCliTests
         Assert.Equal(PullRequestCiStatus.Success, result.Checks.Single(c => c.Name == "legacy-ci").Conclusion);
         Assert.Equal(PullRequestCiStatus.Pending, result.Checks.Single(c => c.Name == "legacy-pending").Conclusion);
         Assert.Equal("https://example.invalid/2", result.Checks.Single(c => c.Name == "Frontend lint").Url);
+        Assert.Equal("FAILURE", result.Checks.Single(c => c.Name == "Frontend lint").RawState);
+        Assert.Equal("SUCCESS", result.Checks.Single(c => c.Name == "legacy-ci").RawState);
+        Assert.Null(result.Checks.Single(c => c.Name == "Slow job").RawState);
         Assert.Equal(new[] { "pr", "view", "17", "--repo", "acme/billing", "--json", "headRefOid,statusCheckRollup" }, runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task GetPullRequestChecksAsync_preserves_the_raw_conclusion_a_cancelled_or_action_required_check_reports()
+    {
+        var runner = new RecordingRunner(0, """
+            {
+              "headRefOid": "abc123def",
+              "statusCheckRollup": [
+                {"__typename":"CheckRun","name":"Deploy approval","status":"COMPLETED","conclusion":"ACTION_REQUIRED","detailsUrl":null},
+                {"__typename":"CheckRun","name":"Flaky job","status":"COMPLETED","conclusion":"CANCELLED","detailsUrl":null},
+                {"__typename":"StatusContext","context":"legacy-error","state":"ERROR","targetUrl":null}
+              ]
+            }
+            """, "");
+        var client = new GhCliClient(runner);
+
+        var result = await client.GetPullRequestChecksAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.Equal(PullRequestCiStatus.Failure, result.Checks.Single(c => c.Name == "Deploy approval").Conclusion);
+        Assert.Equal("ACTION_REQUIRED", result.Checks.Single(c => c.Name == "Deploy approval").RawState);
+        Assert.Equal(PullRequestCiStatus.Failure, result.Checks.Single(c => c.Name == "Flaky job").Conclusion);
+        Assert.Equal("CANCELLED", result.Checks.Single(c => c.Name == "Flaky job").RawState);
+        Assert.Equal(PullRequestCiStatus.Failure, result.Checks.Single(c => c.Name == "legacy-error").Conclusion);
+        Assert.Equal("ERROR", result.Checks.Single(c => c.Name == "legacy-error").RawState);
     }
 
     [Fact]

@@ -179,6 +179,17 @@ public interface ITaskStore
     /// been synchronized (never published, or not yet polled).</summary>
     Task<TaskCiStatus?> GetCiStatusAsync(Guid taskId, CancellationToken cancellationToken);
 
+    /// <summary>Automatically continues a task whose published pull request's CI failed on its exact current head
+    /// commit (SF-706), the same <see cref="FactoryTaskStatus.Published"/>→<see cref="FactoryTaskStatus.Pending"/>
+    /// path <see cref="ContinueWithFeedbackAsync"/> uses for a human continuation, but attributed to the
+    /// orchestrator rather than a human, and restricted to a task currently resting in exactly
+    /// <see cref="FactoryTaskStatus.Published"/>. Also records <paramref name="headCommit"/>, in the same
+    /// transaction, as the commit this repair was triggered for (surfaced back via <see cref="TaskCiStatus.RepairTriggeredForCommit"/>)
+    /// so the caller never triggers a second repair for the same still-failing commit. Returns <see langword="false"/>
+    /// if the task is no longer resting in <see cref="FactoryTaskStatus.Published"/> (already resolved by a
+    /// concurrent action).</summary>
+    Task<bool> TriggerCiRepairAsync(Guid taskId, string headCommit, string feedback, CancellationToken cancellationToken);
+
     /// <summary>Small outcome/review-effort metrics computed directly from <c>task_event</c>, <c>agent_run</c>,
     /// <c>task_ci_status</c>, and any recorded review time, since <paramref name="since"/> (SF-617). See
     /// <see cref="OutcomeMetrics"/> for exact per-field definitions.</summary>

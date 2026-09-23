@@ -174,7 +174,7 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
                 _ => PullRequestCiStatus.Pending
             };
             var contextUrl = check.TryGetProperty("targetUrl", out var target) ? target.GetString() : null;
-            return new PullRequestCheck(check.GetProperty("context").GetString() ?? "", conclusion, contextUrl);
+            return new PullRequestCheck(check.GetProperty("context").GetString() ?? "", conclusion, contextUrl, contextState.ToUpperInvariant());
         }
 
         var status = check.TryGetProperty("status", out var s) ? s.GetString() : null;
@@ -187,7 +187,7 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
                 _ => PullRequestCiStatus.Pending
             };
         var detailsUrl = check.TryGetProperty("detailsUrl", out var details) ? details.GetString() : null;
-        return new PullRequestCheck(check.GetProperty("name").GetString() ?? "", checkConclusion, detailsUrl);
+        return new PullRequestCheck(check.GetProperty("name").GetString() ?? "", checkConclusion, detailsUrl, rawConclusion?.ToUpperInvariant());
     }
 }
 

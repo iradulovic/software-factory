@@ -57,6 +57,13 @@ public sealed class GitHubSyncOptions
 {
     public int PollingIntervalSeconds { get; set; } = 60;
     public List<ConfiguredRepository> Repositories { get; set; } = [];
+
+    /// <summary>Caps how many times automatic CI repair (SF-706) will continue the same task across an unbounded
+    /// sequence of distinct failing commits, so a task whose repair attempts keep producing new code that still
+    /// fails CI cannot loop forever. Counted from the task's own <c>ci-repair</c>-attributed <c>task_feedback</c>
+    /// rows; once reached, the task moves to <see cref="FactoryTaskStatus.NeedsHuman"/> instead of triggering
+    /// another repair.</summary>
+    public int MaxCiRepairAttempts { get; set; } = 2;
 }
 
 public sealed record ConfiguredRepository(string Owner, string Name, string CloneUrl, string DefaultBranch = "main", bool Enabled = true);

@@ -112,7 +112,8 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
 
     /// <summary>Resolves each task resting in <see cref="FactoryTaskStatus.Published"/> to <see cref="FactoryTaskStatus.Completed"/>
     /// once its pull request is merged, or <see cref="FactoryTaskStatus.Rejected"/> once it is closed without merge.
-    /// A pull request that is still open is left untouched.</summary>
+    /// A pull request that is still open has its CI status synchronized (SF-614), which may in turn trigger an
+    /// automatic merge (SF-709) or an automatic CI repair attempt (SF-706).</summary>
     private async Task ResolvePublishedTasksAsync(CancellationToken cancellationToken)
     {
         foreach (var published in await tasks.GetPublishedTasksAsync(cancellationToken))
@@ -159,7 +160,66 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
         var result = await client.GetPullRequestChecksAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
         var overallStatus = PullRequestCiStatus.Overall(result);
         await tasks.SetCiStatusAsync(published.TaskId, overallStatus, result.HeadSha, result.Checks, result.Error, cancellationToken);
+        if (overallStatus == PullRequestCiStatus.Failure)
+            await TryRepairCiFailureAsync(published, result, cancellationToken);
         return overallStatus;
+    }
+
+    /// <summary>Reacts to a CI failure just observed on a published pull request's exact current head commit
+    /// (SF-706) — <paramref name="result"/> was fetched together with that head in this exact sync pass (SF-614),
+    /// so acting on it here can never be stale the way reading a previously-persisted row back out later could
+    /// be. A failure <see cref="CiFailureClassifier"/> calls <see cref="ValidationFailureKind.Operational"/> (an
+    /// infrastructure/authentication problem CI itself reported, never a code failure) moves the task straight to
+    /// <see cref="FactoryTaskStatus.NeedsHuman"/> instead of repeatedly re-running the agent against something no
+    /// code change can fix. A repairable failure triggers one bounded automatic continuation via <see cref="ITaskStore.TriggerCiRepairAsync"/> —
+    /// but only once per distinct head commit (guarded by <see cref="TaskCiStatus.RepairTriggeredForCommit"/>,
+    /// which that same call refreshes) and only up to <see cref="GitHubSyncOptions.MaxCiRepairAttempts"/> total
+    /// automatic attempts per task, counted from its own <c>ci-repair</c>-attributed <c>task_feedback</c> rows;
+    /// once that bound is reached the task also moves to <see cref="FactoryTaskStatus.NeedsHuman"/>, rather than
+    /// looping forever across an unbounded sequence of new failing commits.</summary>
+    private async Task TryRepairCiFailureAsync(PublishedTaskRef published, PullRequestChecksResult result, CancellationToken cancellationToken)
+    {
+        if (result.HeadSha is not { Length: > 0 } headCommit) return;
+        var status = await tasks.GetCiStatusAsync(published.TaskId, cancellationToken);
+        if (status?.RepairTriggeredForCommit == headCommit) return;
+
+        using var activity = FactoryTelemetry.Source.StartActivity("github.ci_repair");
+        activity?.SetTag("factory.task_id", published.TaskId);
+
+        if (CiFailureClassifier.Classify(result) == ValidationFailureKind.Operational)
+        {
+            await TransitionToNeedsHumanIfStillPublished(published.TaskId,
+                $"CI failure looks infrastructure/authentication-related, not a code problem: {DescribeFailures(result)}", cancellationToken);
+            return;
+        }
+
+        var priorAttempts = (await tasks.GetFeedbackAsync(published.TaskId, cancellationToken)).Count(f => f.CreatedBy == "ci-repair");
+        if (priorAttempts >= options.Value.MaxCiRepairAttempts)
+        {
+            await TransitionToNeedsHumanIfStillPublished(published.TaskId,
+                $"Automatic CI repair attempts exhausted ({priorAttempts} of {options.Value.MaxCiRepairAttempts}).", cancellationToken);
+            return;
+        }
+
+        var feedback = $"CI failed on commit {headCommit}: {DescribeFailures(result)}";
+        if (await tasks.TriggerCiRepairAsync(published.TaskId, headCommit, feedback, cancellationToken))
+            logger.LogInformation("Triggered automatic CI repair for task {TaskId} on commit {Commit} (attempt {Attempt} of {Max})",
+                published.TaskId, headCommit, priorAttempts + 1, options.Value.MaxCiRepairAttempts);
+    }
+
+    private static string DescribeFailures(PullRequestChecksResult result) => string.Join("; ",
+        result.Checks.Where(c => c.Conclusion == PullRequestCiStatus.Failure).Select(c => c.Url is { Length: > 0 } url ? $"{c.Name} ({url})" : c.Name));
+
+    private async Task TransitionToNeedsHumanIfStillPublished(Guid taskId, string reason, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tasks.TransitionAsync(taskId, FactoryTaskStatus.Published, FactoryTaskStatus.NeedsHuman, reason, cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            // Already left Published through some other authoritative action between this poll's sync and here.
+        }
     }
 
     /// <summary>Requests GitHub merge a task's pull request now that its own policy allows automatic merge and CI
