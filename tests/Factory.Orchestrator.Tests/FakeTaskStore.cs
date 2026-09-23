@@ -142,6 +142,13 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.CompletedTask;
     }
 
+    public List<(Guid TaskId, string AgentName, string? SessionId)> ResumableSessionsSet { get; } = [];
+    public Task SetResumableSessionAsync(Guid taskId, string agentName, string? sessionId, CancellationToken cancellationToken)
+    {
+        ResumableSessionsSet.Add((taskId, agentName, sessionId));
+        return Task.CompletedTask;
+    }
+
     public List<(Guid TaskId, int Priority)> PrioritiesSet { get; } = [];
     public Task SetPriorityAsync(Guid taskId, int priority, CancellationToken cancellationToken)
     {

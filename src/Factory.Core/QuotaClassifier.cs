@@ -116,3 +116,18 @@ public static class QuotaResetParser
         return span is null ? null : now + span;
     }
 }
+
+/// <summary>Extracts a provider session/thread id from one invocation's stdout (SF-701), using
+/// <see cref="AgentProfile.SessionIdPattern"/> — the same named-capture-group convention <see cref="QuotaResetParser"/>
+/// already uses for quota reset text, applied here to a different field on the same profile.</summary>
+public static class ProviderSessionExtractor
+{
+    public static string? TryExtract(AgentProfile profile, string standardOutput)
+    {
+        if (!profile.SupportsSessionResume || profile.SessionIdPattern is not { Length: > 0 } pattern) return null;
+        Match match;
+        try { match = Regex.Match(standardOutput, pattern); }
+        catch (ArgumentException) { return null; }
+        return match.Success && match.Groups["sessionId"].Success ? match.Groups["sessionId"].Value : null;
+    }
+}
