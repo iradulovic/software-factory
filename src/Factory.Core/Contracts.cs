@@ -78,6 +78,23 @@ public interface ITaskStore
     /// CI-green pull request merges itself). Never recomputed afterward — see <see cref="HumanReviewMarker"/>.</summary>
     Task SetRequireHumanMergeAsync(Guid taskId, bool requireHumanMerge, CancellationToken cancellationToken);
 
+    /// <summary>Persists whether this task opted into a second-agent review pass (SF-702) — its issue carried
+    /// <see cref="ReviewRequestedMarker"/>, or the implementation agent's own result reported at least one risk.
+    /// Computed once by <c>PreparePublicationStep</c>, exactly like <see cref="SetRequireHumanMergeAsync"/>, and
+    /// read back by the executor to decide whether to run <c>ReviewStep</c> at all: review is opt-in, never run
+    /// for every task by default.</summary>
+    Task SetReviewRequestedAsync(Guid taskId, bool requested, CancellationToken cancellationToken);
+
+    /// <summary>Persists the findings one review invocation reported (SF-702), one row per finding. An empty
+    /// <paramref name="findings"/> list is still worth calling — it records that this task was reviewed and
+    /// nothing was flagged, not that no review happened (the review's own summary is recorded separately, on its
+    /// <c>factory.step</c> row).</summary>
+    Task SaveReviewFindingsAsync(Guid taskId, Guid runId, string agent, IReadOnlyList<ReviewFinding> findings, CancellationToken cancellationToken);
+
+    /// <summary>Every finding recorded for a task across every review invocation, oldest first — the actionable,
+    /// structured record SF-702 requires, rather than findings only ever visible as raw agent stdout.</summary>
+    Task<IReadOnlyList<PersistedReviewFinding>> GetReviewFindingsAsync(Guid taskId, CancellationToken cancellationToken);
+
     /// <summary>Records which agent is actually invoked for a task's current attempt, from the moment it is
     /// selected (before the process starts) until that invocation finishes (pass <see langword="null"/> to
     /// clear it) — the live signal of which provider is really running a task right now, distinct from
@@ -349,6 +366,9 @@ public sealed record ChangeSummary(
     int LinesRemoved);
 public interface ITaskContextWriter { Task WriteAsync(string worktreePath, GitHubRepository repository, GitHubIssue? issue, FactoryTask task, AttemptContext attempt, CancellationToken cancellationToken); }
 public interface IAgentResultReader { Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken); }
+
+/// <summary>Reads a review invocation's <c>.factory/review.json</c> (SF-702), mirroring <see cref="IAgentResultReader"/>.</summary>
+public interface IAgentReviewResultReader { Task<(AgentReviewResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken); }
 
 /// <summary>
 /// The orchestrator's only path to writing to GitHub. Never pushes to anything but the task's own factory branch.

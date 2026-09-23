@@ -39,6 +39,11 @@ public sealed class PipelineContext(FactoryTask task, Guid runId)
     public AgentResult? AgentResult { get; set; }
     public ChangeSummary? ChangeSummary { get; set; }
 
+    /// <summary>Whether this task opted into a second-agent review pass (SF-702), decided once by
+    /// <see cref="PreparePublicationStep"/> and consumed by the executor to decide whether to run
+    /// <see cref="ReviewStep"/> at all.</summary>
+    public bool ReviewRequested { get; set; }
+
     /// <summary>Which implementation attempt this run represents, set by <see cref="WriteContextStep"/> once the
     /// prior attempt count is known.</summary>
     public int AttemptNumber { get; set; } = 1;

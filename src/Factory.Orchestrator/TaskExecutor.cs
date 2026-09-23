@@ -18,6 +18,7 @@ public sealed class TaskExecutor(
     CollectDiffStep collectDiff,
     ValidateStep validate,
     PreparePublicationStep preparePublication,
+    ReviewStep review,
     TaskGitHubNotifier notifier,
     ILogger<TaskExecutor> logger)
 {
@@ -45,6 +46,15 @@ public sealed class TaskExecutor(
             await TransitionAsync(context, FactoryTaskStatus.Validating, null, cancellationToken);
             if (!await RunStepAsync(validate, context, cancellationToken)) return;
             if (!await RunStepAsync(preparePublication, context, cancellationToken)) return;
+
+            // SF-702: an optional, opt-in second-agent review pass — only entered when PreparePublicationStep
+            // decided this task requested one. Skipped entirely otherwise, so most tasks go straight from
+            // Validating to ReadyForPublish exactly as before this task.
+            if (context.ReviewRequested)
+            {
+                await TransitionAsync(context, FactoryTaskStatus.Reviewing, null, cancellationToken);
+                if (!await RunStepAsync(review, context, cancellationToken)) return;
+            }
 
             // ReadyForPublish is a resting state: a validated implementation waits here for a human (or, for an
             // auto-draft repository, the orchestrator's own request below) to actually publish it. The orchestrator

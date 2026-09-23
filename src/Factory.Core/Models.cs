@@ -109,10 +109,17 @@ public sealed record ProcessResult(
     public bool Succeeded => ExitCode == 0 && !TimedOut && !Cancelled;
 }
 
+/// <summary>Whether an <see cref="IAgentRunner"/> invocation is implementing the task (the default, and the only
+/// purpose that existed before SF-702) or performing a bounded, opt-in second-agent review pass over already
+/// committed work. <see cref="CliAgentRunner"/> uses this to choose the prompt it sends and which result file
+/// (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads back.</summary>
+public enum AgentRunPurpose { Implement, Review }
+
 /// <param name="ResumeSessionId">The provider session id to resume (SF-701), if the selected agent matches the
 /// one <see cref="FactoryTask.ResumableSessionAgent"/> recorded and that agent's <see cref="AgentProfile.SupportsSessionResume"/>
 /// is enabled — <see langword="null"/> for a fresh session, exactly as before this task.</param>
-public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null, string? ResumeSessionId = null);
+/// <param name="Purpose">Implement (default) or Review (SF-702) — see <see cref="AgentRunPurpose"/>.</param>
+public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null, string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement);
 
 /// <param name="Window">The classified reset window a detected quota signal falls into; <see cref="QuotaWindow.None"/>
 /// when <paramref name="QuotaDetected"/> is <see langword="false"/>. See <see cref="QuotaClassifier"/>.</param>
@@ -122,9 +129,11 @@ public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, strin
 /// <param name="ProviderSessionId">The session id this invocation's own output reported (SF-701), extracted via
 /// <see cref="AgentProfile.SessionIdPattern"/> — <see langword="null"/> if the profile has session resume
 /// disabled, has no pattern configured, or none was found in this invocation's output.</param>
+/// <param name="ReviewResult">Set instead of <paramref name="Result"/> when this invocation's <see cref="AgentRunRequest.Purpose"/>
+/// was <see cref="AgentRunPurpose.Review"/> (SF-702) — always <see langword="null"/> for an implementation invocation.</param>
 public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, string? ValidationError, bool QuotaDetected,
     DateTimeOffset? QuotaResetAt = null, QuotaWindow Window = QuotaWindow.None, QuotaResetKind ResetKind = QuotaResetKind.None,
-    string? QuotaDetail = null, string? ProviderSessionId = null);
+    string? QuotaDetail = null, string? ProviderSessionId = null, AgentReviewResult? ReviewResult = null);
 
 public sealed record AgentAvailability(string Agent, bool Available, string? Version, string? Error);
 
@@ -161,6 +170,27 @@ public static class AgentResultContract
 {
     public static readonly IReadOnlyList<string> Statuses = ["completed", "failed", "blocked", "needs-human"];
 }
+
+/// <summary>One issue a review invocation (SF-702) flagged about already-committed work. <see cref="File"/>/<see cref="Line"/>
+/// are optional — a finding about overall approach rather than one specific location has neither.</summary>
+public sealed record ReviewFinding(string Severity, string? File, int? Line, string Description);
+
+/// <summary>The shape a review invocation must write to <c>.factory/review.json</c> (SF-702) — separate from
+/// <see cref="AgentResult"/>/<c>.factory/result.json</c> because a review reports findings about work already
+/// done, not new work of its own. An empty <see cref="Findings"/> list is a valid, useful outcome: it means the
+/// review ran and found nothing worth flagging, not that no review happened.</summary>
+public sealed record AgentReviewResult(string Status, string Summary, IReadOnlyList<ReviewFinding> Findings, bool NeedsHuman, string? HumanReason);
+
+/// <summary>The single source of truth for <c>.factory/review.json</c>'s accepted <see cref="AgentReviewResult.Status"/>
+/// values (SF-702), mirroring <see cref="AgentResultContract"/>.</summary>
+public static class AgentReviewResultContract
+{
+    public static readonly IReadOnlyList<string> Statuses = ["completed", "failed", "blocked", "needs-human"];
+}
+
+/// <summary>One review finding as persisted (SF-702): <see cref="ReviewFinding"/> plus the provenance an operator
+/// needs to act on it — which task and run produced it, which agent, and when.</summary>
+public sealed record PersistedReviewFinding(Guid Id, Guid TaskId, Guid RunId, string Agent, string Severity, string? File, int? Line, string Description, DateTimeOffset CreatedAt);
 
 /// <summary>An executable and its already-split arguments, never a shell command line. This is the only shape
 /// validation steps ever invoke: ".factory/config.json" build/test commands opt into a literal shell explicitly

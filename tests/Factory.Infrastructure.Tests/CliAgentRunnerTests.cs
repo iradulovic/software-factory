@@ -13,7 +13,7 @@ public sealed class CliAgentRunnerTests
     public async Task Quota_detection_records_a_reset_time_using_the_profiles_configured_cooldown()
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 1, "", "Error: usage limit reached", false, false));
-        var agent = new CliAgentRunner(Codex(quotaCooldownHours: 3), runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(Codex(quotaCooldownHours: 3), runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
@@ -25,7 +25,7 @@ public sealed class CliAgentRunnerTests
     public async Task No_configured_quota_signature_leaves_the_reset_time_null()
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
-        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
@@ -37,7 +37,7 @@ public sealed class CliAgentRunnerTests
     public async Task A_successful_run_is_never_flagged_even_if_its_output_mentions_a_quota_signature()
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "Implemented the quota dashboard feature.", "", false, false));
-        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
@@ -49,7 +49,7 @@ public sealed class CliAgentRunnerTests
     public async Task Quota_detection_carries_the_classified_window_and_reset_kind_onto_the_result()
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 1, "", "Error: usage limit reached", false, false));
-        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
@@ -63,7 +63,7 @@ public sealed class CliAgentRunnerTests
     {
         var runner = new RecordingRunner(new ProcessResult("claude", [], ".", Now, Now, 1, "", "rate limited, try later", false, false));
         var profile = new AgentProfile("Claude", "claude", ["--print"], "stdin", 90, ["rate limited"], ["--version"], 5, 5);
-        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
@@ -75,7 +75,7 @@ public sealed class CliAgentRunnerTests
     public async Task Stdin_prompt_delivery_pipes_the_prompt_and_leaves_arguments_untouched()
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
-        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
@@ -88,7 +88,7 @@ public sealed class CliAgentRunnerTests
     {
         var runner = new RecordingRunner(new ProcessResult("claude", [], ".", Now, Now, 0, "done", "", false, false));
         var profile = new AgentProfile("Claude", "claude", ["--print"], "argument", 90, ["rate limited"], ["--version"], 5, 5);
-        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
@@ -102,7 +102,7 @@ public sealed class CliAgentRunnerTests
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "session id: 11111111-1111-1111-1111-111111111111", "", false, false));
         var profile = Codex() with { SupportsSessionResume = true, ResumeArguments = ["exec", "resume", "{SESSION_ID}", "-"], SessionIdPattern = "session id: (?<sessionId>[0-9a-fA-F-]{36})" };
-        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
@@ -114,7 +114,7 @@ public sealed class CliAgentRunnerTests
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
         var profile = Codex() with { SupportsSessionResume = true, ResumeArguments = ["exec", "resume", "{SESSION_ID}", "-"], SessionIdPattern = "session id: (?<sessionId>[0-9a-fA-F-]{36})" };
-        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1, ResumeSessionId: "22222222-2222-2222-2222-222222222222"), CancellationToken.None);
 
@@ -125,7 +125,7 @@ public sealed class CliAgentRunnerTests
     public async Task A_resume_request_is_ignored_when_the_profile_does_not_support_it()
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
-        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1, ResumeSessionId: "22222222-2222-2222-2222-222222222222"), CancellationToken.None);
 
@@ -137,7 +137,7 @@ public sealed class CliAgentRunnerTests
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "session id: 33333333-3333-3333-3333-333333333333\nOK", "", false, false));
         var profile = Codex() with { SupportsSessionResume = true, SessionIdPattern = "session id: (?<sessionId>[0-9a-fA-F-]{36})" };
-        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
@@ -148,11 +148,36 @@ public sealed class CliAgentRunnerTests
     public async Task Session_id_is_never_extracted_when_the_profile_does_not_support_resume()
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "session id: 33333333-3333-3333-3333-333333333333", "", false, false));
-        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new FixedClock(Now));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 
         var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
 
         Assert.Null(result.ProviderSessionId);
+    }
+
+    [Fact]
+    public async Task Review_purpose_sends_the_review_prompt_and_never_reads_the_implementation_result()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new StubReviewResultReader(new AgentReviewResult("completed", "Looks fine", [], false, null)), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1, Purpose: AgentRunPurpose.Review), CancellationToken.None);
+
+        Assert.Contains("Review the changes already committed", runner.Request!.StandardInput);
+        Assert.Null(result.Result);
+        Assert.NotNull(result.ReviewResult);
+        Assert.Equal("Looks fine", result.ReviewResult!.Summary);
+    }
+
+    [Fact]
+    public async Task Implement_purpose_never_reads_the_review_result()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new StubReviewResultReader(new AgentReviewResult("completed", "Looks fine", [], false, null)), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Null(result.ReviewResult);
     }
 
     private sealed class FixedClock(DateTimeOffset now) : IClock { public DateTimeOffset UtcNow => now; }
@@ -160,6 +185,16 @@ public sealed class CliAgentRunnerTests
     {
         public Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken) =>
             Task.FromResult<(AgentResult?, string?)>((null, "no result"));
+    }
+    private sealed class NoReviewResultReader : IAgentReviewResultReader
+    {
+        public Task<(AgentReviewResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken) =>
+            Task.FromResult<(AgentReviewResult?, string?)>((null, "no review result"));
+    }
+    private sealed class StubReviewResultReader(AgentReviewResult result) : IAgentReviewResultReader
+    {
+        public Task<(AgentReviewResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken) =>
+            Task.FromResult<(AgentReviewResult?, string?)>((result, null));
     }
     private sealed class RecordingRunner(ProcessResult result) : IProcessRunner
     {
