@@ -213,6 +213,7 @@ With no `Telemetry__OtlpEndpoint` configured, nothing is exported and startup is
 
 ## Current limitations and safety
 
+- Codex CLI was successfully proven end-to-end (Sync -> claim -> worktree -> agent -> validate -> publish) on the desktop for SF-608.
 - The repository cache is a bare repository that tracks `origin` explicitly (`+refs/heads/*:refs/remotes/origin/*`). Caches created by earlier versions with `git clone --bare` are healed automatically on the next task.
 - One task is executed at a time; the schema and claim query support later multi-worker operation.
 - Active task leases (default 10 minutes, renewed every 2 minutes) are renewed by the owning worker. Lost ownership cancels execution; a renewal that merely errors is retried until the lease would expire, so a short database outage does not kill a long agent run. Expired executions are closed and reclaimed, reusing their validated deterministic worktree when present.
