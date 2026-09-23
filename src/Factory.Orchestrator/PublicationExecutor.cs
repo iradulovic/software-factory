@@ -25,7 +25,9 @@ public sealed class PublicationExecutor(ITaskStore tasks, IGitHubPublisher publi
             // moved (a later attempt, a manual edit) between validation and this publication actually running,
             // especially after a crash-and-reclaim. A mismatch here means the current worktree is no longer what
             // was validated, so it must never be silently published.
-            var summary = await inspector.SummarizeAsync(request.WorktreePath, request.BaseBranch, cancellationToken);
+            // The repository cache tracks origin explicitly (see GitRepositoryCache) and never creates a local
+            // branch matching the base branch name, so the git ref to resolve is origin/<base>, not the bare name.
+            var summary = await inspector.SummarizeAsync(request.WorktreePath, $"origin/{request.BaseBranch}", cancellationToken);
             if (!summary.IsClean || !string.Equals(summary.CurrentBranch, request.BranchName, StringComparison.Ordinal))
             {
                 await FailAsync(request, $"Worktree at '{request.WorktreePath}' is not in the validated state expected for branch '{request.BranchName}'.", cancellationToken);
