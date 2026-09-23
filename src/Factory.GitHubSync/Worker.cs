@@ -13,6 +13,11 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
     // host had no liveness signal at all before, only a per-repository "did the last sync fail" one.
     private string SyncWorkerId => $"sync-{factoryOptions.Value.WorkerId}";
 
+    // Resolved once per process lifetime (SF-708), not every poll — gh's authenticated identity does not change
+    // while this process runs, so there is no reason to spend a gh invocation on it every cycle.
+    private string? botLogin;
+    private bool botLoginResolved;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await migrator.MigrateAsync(stoppingToken);
@@ -255,6 +260,10 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                     await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.Rejected, "Pull request closed without merge.", cancellationToken);
                 else
                 {
+                    // SF-708: a genuinely new reviewer comment or change request takes priority over CI/merge this
+                    // cycle — it just moved the task back to Pending, so neither applies to it anymore this poll.
+                    if (await SyncReviewCommentsAsync(published, cancellationToken) > 0) continue;
+
                     // Still open: synchronize CI status for exactly the commit GitHub reports as this PR's
                     // current head (SF-614) — fetched together in one call, so a check result can never be
                     // attributed to an older, since-superseded head (e.g. after an SF-613 continuation republished).
@@ -334,6 +343,45 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
 
     private static string DescribeFailures(PullRequestChecksResult result) => string.Join("; ",
         result.Checks.Where(c => c.Conclusion == PullRequestCiStatus.Failure).Select(c => c.Url is { Length: > 0 } url ? $"{c.Name} ({url})" : c.Name));
+
+    /// <summary>Ingests any genuinely new reviewer comment or change request on this still-open published pull
+    /// request's conversation as continuation feedback (SF-708), via <see cref="ITaskStore.IngestReviewFeedbackAsync"/> —
+    /// the review-comment analogue of <see cref="TryRepairCiFailureAsync"/>, except dedup is per-comment-id rather
+    /// than per-head-commit (comments accumulate independently of commits) and there is no failure-classification
+    /// or attempt-budget gate the way CI repair has: a human reviewer's own comment is never something the factory
+    /// should refuse to act on. The factory's own bot account (whatever <c>gh</c> is currently authenticated as)
+    /// is filtered out first, so the factory's own automated writes (e.g. CI status reporting) are never misread
+    /// as reviewer feedback. Returns how many comments were newly ingested and actually applied.</summary>
+    private async Task<int> SyncReviewCommentsAsync(PublishedTaskRef published, CancellationToken cancellationToken)
+    {
+        var feedback = await client.GetPullRequestFeedbackAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
+        if (feedback.Count == 0) return 0;
+
+        var bot = await GetBotLoginAsync(cancellationToken);
+        var fromReviewers = bot is null ? feedback : feedback.Where(item => !string.Equals(item.Author, bot, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (fromReviewers.Count == 0) return 0;
+
+        var alreadyIngested = await tasks.GetIngestedReviewCommentIdsAsync(published.TaskId, cancellationToken);
+        var candidates = fromReviewers.Where(item => !alreadyIngested.Contains(item.CommentId)).ToList();
+        if (candidates.Count == 0) return 0;
+
+        using var activity = FactoryTelemetry.Source.StartActivity("github.sync_review_comments");
+        activity?.SetTag("factory.task_id", published.TaskId);
+        var applied = await tasks.IngestReviewFeedbackAsync(published.TaskId, candidates, cancellationToken);
+        if (applied > 0)
+            logger.LogInformation("Ingested {Count} new reviewer comment(s) as continuation feedback for task {TaskId}", applied, published.TaskId);
+        return applied;
+    }
+
+    private async Task<string?> GetBotLoginAsync(CancellationToken cancellationToken)
+    {
+        if (botLoginResolved) return botLogin;
+        botLogin = await client.GetAuthenticatedLoginAsync(cancellationToken);
+        botLoginResolved = true;
+        if (botLogin is null)
+            logger.LogWarning("Could not determine the factory's authenticated GitHub login; review-comment ingestion cannot filter out its own comments");
+        return botLogin;
+    }
 
     private async Task TransitionToNeedsHumanIfStillPublished(Guid taskId, string reason, CancellationToken cancellationToken)
     {

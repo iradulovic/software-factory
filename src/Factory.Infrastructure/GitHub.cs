@@ -189,6 +189,59 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
         var detailsUrl = check.TryGetProperty("detailsUrl", out var details) ? details.GetString() : null;
         return new PullRequestCheck(check.GetProperty("name").GetString() ?? "", checkConclusion, detailsUrl, rawConclusion?.ToUpperInvariant());
     }
+
+    public async Task<IReadOnlyList<PullRequestFeedbackItem>> GetPullRequestFeedbackAsync(string owner, string name, int number, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "comments,reviews"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!result.Succeeded) return [];
+
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var items = new List<PullRequestFeedbackItem>();
+        foreach (var comment in document.RootElement.GetProperty("comments").EnumerateArray())
+            AddCommentIfMeaningful(items, comment);
+        foreach (var review in document.RootElement.GetProperty("reviews").EnumerateArray())
+            AddReviewIfMeaningful(items, review);
+        return items;
+    }
+
+    private static void AddCommentIfMeaningful(List<PullRequestFeedbackItem> items, JsonElement comment)
+    {
+        var body = comment.TryGetProperty("body", out var bodyProperty) ? bodyProperty.GetString() : null;
+        if (string.IsNullOrWhiteSpace(body)) return;
+        items.Add(ToFeedbackItem(comment, body, "comment", "createdAt", items.Count));
+    }
+
+    // A review with no body (e.g. a plain APPROVED with nothing typed) carries no actionable feedback and is
+    // skipped, but CHANGES_REQUESTED is always meaningful on its own even without a comment — the state itself is
+    // the reviewer's feedback, so a synthetic body is substituted rather than silently dropping it.
+    private static void AddReviewIfMeaningful(List<PullRequestFeedbackItem> items, JsonElement review)
+    {
+        var state = review.TryGetProperty("state", out var stateProperty) ? stateProperty.GetString() : null;
+        var body = review.TryGetProperty("body", out var bodyProperty) ? bodyProperty.GetString() : null;
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            if (!string.Equals(state, "CHANGES_REQUESTED", StringComparison.OrdinalIgnoreCase)) return;
+            body = "Changes requested (no comment body provided).";
+        }
+        items.Add(ToFeedbackItem(review, body, "review", "submittedAt", items.Count));
+    }
+
+    private static PullRequestFeedbackItem ToFeedbackItem(JsonElement element, string body, string kind, string dateProperty, int fallbackIndex)
+    {
+        var nodeId = element.TryGetProperty("id", out var idProperty) ? idProperty.GetString() : null;
+        var commentId = StableLong(nodeId ?? $"{kind}:{fallbackIndex}");
+        var author = element.TryGetProperty("author", out var authorProperty) && authorProperty.TryGetProperty("login", out var login) ? login.GetString() ?? "unknown" : "unknown";
+        var createdAt = DateTimeOffset.Parse(element.GetProperty(dateProperty).GetString()!);
+        return new PullRequestFeedbackItem(commentId, author, body, createdAt, kind);
+    }
+
+    public async Task<string?> GetAuthenticatedLoginAsync(CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh", ["api", "user", "--jq", ".login"], Environment.CurrentDirectory, Timeout: TimeSpan.FromSeconds(30)), cancellationToken);
+        return result.Succeeded && result.StandardOutput.Trim() is { Length: > 0 } login ? login : null;
+    }
 }
 
 /// <summary>

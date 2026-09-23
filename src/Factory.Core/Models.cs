@@ -325,6 +325,14 @@ public sealed record PullRequestCheck(string Name, string Conclusion, string? Ur
 /// conflated with "no checks configured" (an empty, successful <see cref="Checks"/> list).</summary>
 public sealed record PullRequestChecksResult(bool Succeeded, string? HeadSha, IReadOnlyList<PullRequestCheck> Checks, string? Error);
 
+/// <summary>One reviewer comment or review submission with a non-empty body, observed on a still-open published
+/// pull request (SF-708) — the review-comment analogue of <see cref="GitHubComment"/>, scoped to exactly what
+/// ingestion needs: a stable <paramref name="CommentId"/> (a SHA-derived long from GitHub's own node id, matching
+/// <c>GhCliClient</c>'s existing convention for <see cref="GitHubComment.GitHubCommentId"/>) for dedup, and enough
+/// content to record as <c>factory.task_feedback</c>. <paramref name="Kind"/> is <c>"comment"</c> (top-level PR
+/// conversation) or <c>"review"</c> (a formal review submission, including a change request).</summary>
+public sealed record PullRequestFeedbackItem(long CommentId, string Author, string Body, DateTimeOffset CreatedAt, string Kind);
+
 /// <summary>The most recently synchronized CI status for a task's published pull request (SF-614) — always
 /// fully overwritten by the latest poll, never merged with a previous one, so a status can never survive
 /// alongside a newer head commit than the one it was actually fetched for.</summary>
