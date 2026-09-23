@@ -207,6 +207,15 @@ public interface ITaskStore
     /// been recorded.</summary>
     Task<AgentQuotaStatus?> GetAgentQuotaStatusAsync(string agent, CancellationToken cancellationToken);
 
+    /// <summary>Operator override for a stale quota-detected status: clears <see cref="AgentQuotaStatus.Detected"/>
+    /// and <see cref="AgentQuotaStatus.ResetAt"/> for this agent so <see cref="IsAgentAtQuotaAsync"/> returns
+    /// <see langword="false"/> immediately, without waiting for the persisted (possibly wrong) reset time to pass
+    /// or for another failed invocation to overwrite it. Exists because a detected reset time can be a bounded
+    /// <see cref="QuotaResetKind.Estimated"/> guess that outlives the provider's real, shorter reset — previously
+    /// the only way to recover was editing <c>factory.agent_availability</c> directly. Returns <see
+    /// langword="false"/> if no quota status has ever been recorded for this agent (nothing to clear).</summary>
+    Task<bool> ClearAgentQuotaAsync(string agent, CancellationToken cancellationToken);
+
     /// <summary>Cancels a task's <see cref="FactoryTaskStatus.Pending"/> request for the given GitHub issue
     /// (never a task that is already active), with an explicit reason, because the issue was closed or lost its
     /// <c>factory:ready</c> label on GitHub. Returns whether a task was actually cancelled.</summary>

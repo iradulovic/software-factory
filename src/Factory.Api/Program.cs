@@ -136,6 +136,16 @@ app.MapPost("/api/agents/{agent}/resume", async (string agent, ITaskStore tasks,
     return Results.NoContent();
 });
 
+// Operator override for a stale quota-detected status: a detected reset time is at best a bounded
+// estimate (see QuotaResetPattern in README.md), and one that outlives the provider's real, shorter reset used
+// to be recoverable only by editing factory.agent_availability directly. This gives that same recovery a proper,
+// audited operator control, matching how pause/resume already replaced ad hoc database edits.
+app.MapPost("/api/agents/{agent}/clear-quota", async (string agent, ITaskStore tasks, CancellationToken ct) =>
+{
+    var cleared = await tasks.ClearAgentQuotaAsync(agent, ct);
+    return cleared ? Results.NoContent() : Results.NotFound(new { error = $"No quota status recorded for agent '{agent}'." });
+});
+
 app.MapGet("/api/tasks", async (string? status, string? repository, string? agent, string? q, string? sort, string? direction, int? page, int? pageSize, NpgsqlDataSource db, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);

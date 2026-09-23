@@ -212,6 +212,19 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<AgentQuotaStatus?> GetAgentQuotaStatusAsync(string agent, CancellationToken cancellationToken) =>
         Task.FromResult(RecordedQuotaStatuses.LastOrDefault(s => s.Agent == agent));
 
+    public List<string> ClearedQuotaAgents { get; } = [];
+    public Task<bool> ClearAgentQuotaAsync(string agent, CancellationToken cancellationToken)
+    {
+        var removedFromQuota = AgentsAtQuota.Remove(agent);
+        var lastStatus = RecordedQuotaStatuses.LastOrDefault(s => s.Agent == agent);
+        if (!removedFromQuota && lastStatus is null) return Task.FromResult(false);
+
+        ClearedQuotaAgents.Add(agent);
+        if (lastStatus is not null)
+            RecordedQuotaStatuses.Add(lastStatus with { Detected = false, ResetAt = null, ResetKind = QuotaResetKind.None, Window = QuotaWindow.None });
+        return Task.FromResult(true);
+    }
+
     public bool DispatchPaused { get; set; }
     public HashSet<string> PausedAgents { get; } = [];
     public Dictionary<string, DispatchPauseState> DispatchPauses { get; } = [];
