@@ -6,7 +6,10 @@ using Microsoft.Extensions.Options;
 namespace Factory.Orchestrator;
 
 /// <summary>
-/// Runs SF-703's opt-in local browser smoke tests: starts the repository's configured local application, waits
+/// Runs SF-703's opt-in local browser smoke tests: optionally installs the local application's untracked
+/// dependencies (SF-712's <c>installCommand</c> — a task's Git worktree only ever contains tracked files, so a
+/// gitignored <c>node_modules</c> a <c>startCommand</c> needs is never already present there), then starts the
+/// repository's configured local application, waits
 /// for it to report healthy, runs each configured browser check against it, then always stops the application
 /// regardless of outcome. A repository with no <c>smokeTest</c> configured (<see cref="RepositoryConfiguration.SmokeTest"/>
 /// is <see langword="null"/>) skips this step entirely — it never starts a server or a browser by default.
@@ -26,6 +29,20 @@ public sealed class SmokeTestStep(ITaskStore tasks, IProcessRunner processes, IB
         var stepId = await tasks.StartStepAsync(context.RunId, "SmokeTest", 1, cancellationToken);
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
         var artifactsDirectory = Path.Combine(Path.GetDirectoryName(logPath)!, $"{stepId}-screenshots");
+
+        if (configuration.InstallCommand is not null)
+        {
+            var installLogPath = Path.Combine(Path.GetDirectoryName(logPath)!, $"{stepId}-install.log");
+            var installResult = await processes.RunAsync(
+                new ProcessRequest(configuration.InstallCommand.Executable, configuration.InstallCommand.Arguments, context.Worktree!.Path, LogPath: installLogPath, Timeout: TimeSpan.FromMinutes(10)),
+                cancellationToken);
+            if (!installResult.Succeeded)
+            {
+                var reason = $"Smoke test dependency install failed: {installResult.StandardError.Trim()}";
+                await tasks.CompleteStepAsync(stepId, ExecutionStatus.Failed, reason, null, cancellationToken);
+                return PipelineStepResult.Failed(reason, repairable: true);
+            }
+        }
 
         using var serverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var serverTask = processes.RunAsync(

@@ -30,6 +30,11 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
 
 ## In progress
 
+- [ ] **SF-713 — Fix SmokeTestStep so it can actually run in a real per-task worktree**
+  - Dependencies: SF-703, SF-619 (both complete).
+  - Scope: PR #89 found that `smokeTest.startCommand` launches `web/Factory.Web` via its own `node_modules/next` binary, but `node_modules` is gitignored and a freshly created per-task Git worktree only ever contains tracked files — so `SmokeTestStep` structurally could not pass for any real orchestrator-run task, only for SF-619's manual run against the main checkout (which was never actually exercised through a real per-task worktree). Add an optional `installCommand` to the `smokeTest` config (same `ValidationCommand` shape as `startCommand`), run once by `SmokeTestStep` before `startCommand` when configured, and configure this repository's `smokeTest` to run `npm ci --prefix web/Factory.Web` first. Re-enable/confirm `smokeTest` in `.factory/config.json` (PR #89's removal never merged to `main`, so this repo's `smokeTest` block stayed present) and prove it live against a real orchestrator-created worktree, not a manual run.
+  - Acceptance: a real `GitWorktreeManager.CreateAsync`-created worktree (not the main checkout) has no `node_modules` immediately after creation; a live `SmokeTestStep` run against that same worktree runs `installCommand` first, then `startCommand`, polls healthy, passes its browser checks, and stops the server. Evidence (install/server logs, screenshots) recorded in this task's completion note.
+
 - [ ] **SF-618 — Demonstrate the unattended three-issue milestone**
   - Dependencies: SF-608, SF-609, SF-610, SF-611, SF-612, SF-613, SF-614, SF-615, SF-616, SF-617.
   - Scope: queue three small independent issues before leaving the desk, with both providers configured and the intended publication policy. Review results after the unattended interval. SF-619, SF-620, and SF-621 below are the three issues to queue for this run — each is a real, small, independent quick win found by inspecting the current codebase and docs, not a synthetic no-op task.

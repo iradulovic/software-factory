@@ -2,6 +2,7 @@
   "requireHumanMerge": false,
   "publish": "auto-draft",
   "smokeTest": {
+    "installCommand": ["C:\\Program Files\\nodejs\\npm.cmd", "ci", "--prefix", "web/Factory.Web"],
     "startCommand": ["node.exe", "web/Factory.Web/node_modules/next/dist/bin/next", "dev", "web/Factory.Web", "--hostname", "127.0.0.1", "--port", "3210"],
     "healthCheckUrl": "http://127.0.0.1:3210/",
     "checkPaths": ["/", "/tasks"],
