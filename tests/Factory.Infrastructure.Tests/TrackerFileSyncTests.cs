@@ -38,6 +38,51 @@ public sealed class TrackerFileSyncTests
     }
 
     [Fact]
+    public async Task A_TASKS_md_larger_than_the_process_runner_preview_bound_still_reads_in_full()
+    {
+        // IProcessRunner.RunAsync returns a bounded 64 KB preview of stdout (ProcessRunner.PreviewLimit) — meant
+        // for a human-facing log excerpt, not a correctness-critical read. ReadAsync must not rely on that bounded
+        // buffer for TASKS.md's actual content, or a file past that size (this repository's own TASKS.md already
+        // is) silently loses everything before the tail, including its "## Next up" section.
+        var root = Directory.CreateTempSubdirectory("factory-tracker-");
+        try
+        {
+            var padding = string.Concat(Enumerable.Repeat("padding line to grow this file past the preview bound\n", 2000));
+            var largeTasksMd = $"""
+                # Tracker
+
+                ## In progress
+
+                ## Next up
+
+                - [ ] **SF-100 — First item**
+                  - Dependencies: SF-090.
+
+                ## Blocked
+
+                ## Completed
+
+                {padding}
+                """;
+            Assert.True(largeTasksMd.Length > 64 * 1024);
+
+            var git = new TestGit(root.FullName);
+            var upstream = await git.CreateUpstreamAsync("readme content");
+            await git.AddFileAsync(upstream, "TASKS.md", largeTasksMd);
+            var sync = NewSync(git, root.FullName);
+            var repository = new GitHubRepository(1, "acme", "billing", upstream, "main", true);
+
+            var content = await sync.ReadAsync(repository, "main", CancellationToken.None);
+
+            Assert.NotNull(content);
+            Assert.Equal(largeTasksMd, content);
+            var item = TasksMdParser.Parse(content!).Single(i => i.Id == "SF-100");
+            Assert.Equal(TrackerSection.NextUp, item.Section);
+        }
+        finally { TestGit.DeleteRecursively(root); }
+    }
+
+    [Fact]
     public async Task Applying_a_transition_pushes_a_commit_that_moves_the_item()
     {
         var root = Directory.CreateTempSubdirectory("factory-tracker-");

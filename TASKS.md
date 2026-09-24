@@ -30,6 +30,11 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
 
 ## In progress
 
+- [ ] **SF-618 — Demonstrate the unattended three-issue milestone**
+  - Dependencies: SF-608, SF-609, SF-610, SF-611, SF-612, SF-613, SF-614, SF-615, SF-616, SF-617.
+  - Scope: queue three small independent issues before leaving the desk, with both providers configured and the intended publication policy. Review results after the unattended interval. SF-619, SF-620, and SF-621 below are the three issues to queue for this run — each is a real, small, independent quick win found by inspecting the current codebase and docs, not a synthetic no-op task.
+  - Acceptance: each issue has validated draft-PR/CI evidence or an actionable blocker; provider waiting/fallback and a worker restart recover without database intervention. Exercise simulated quota events separately when real limits are not encountered; label simulation evidence explicitly. Record human review effort and any remaining failure paths before declaring the milestone complete. Manual tests and merges stay with the developer.
+
 ## Next up
 
 The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
@@ -53,11 +58,6 @@ SF-615 is complete; see **Completed** below. SF-616 (depends on SF-610, SF-615 �
 SF-616 and SF-701 are complete; see **Completed** below.
 
 SF-617 and SF-608 are complete; see **Completed** below. SF-615 (depends on SF-608, SF-610 — both complete) and SF-701 (depends on SF-608, SF-613 — both complete) are now eligible. SF-616 still depends on SF-615, which is not yet done.
-
-- [ ] **SF-618 — Demonstrate the unattended three-issue milestone**
-  - Dependencies: SF-608, SF-609, SF-610, SF-611, SF-612, SF-613, SF-614, SF-615, SF-616, SF-617.
-  - Scope: queue three small independent issues before leaving the desk, with both providers configured and the intended publication policy. Review results after the unattended interval. SF-619, SF-620, and SF-621 below are the three issues to queue for this run — each is a real, small, independent quick win found by inspecting the current codebase and docs, not a synthetic no-op task.
-  - Acceptance: each issue has validated draft-PR/CI evidence or an actionable blocker; provider waiting/fallback and a worker restart recover without database intervention. Exercise simulated quota events separately when real limits are not encountered; label simulation evidence explicitly. Record human review effort and any remaining failure paths before declaring the milestone complete. Manual tests and merges stay with the developer.
 
 - [ ] **SF-619 — Verify Playwright browser smoke tests against a real local run**
   - Dependencies: SF-703 (complete).
