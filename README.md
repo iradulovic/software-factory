@@ -104,6 +104,8 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
 
 `requireHumanMerge` controls whether a task's pull request opens as a draft and waits for a human to merge it (`true`, the default), or opens ready for review and merges automatically once CI passes (`false`). Either way, a GitHub issue that carries a `HUMAN REVIEW` marker (in its title, body, or a `human-review` label) always waits on a human merge, overriding a repository's own `false` — this decision is computed once, when the task is first published, and never re-derived if the issue changes afterward.
 
+Automatic merge is scoped to pull requests the factory itself opened for one of its own tasks (`Factory.GitHubSync.Worker.ResolvePublishedTasksAsync` only iterates tasks resting in `Published`, i.e. `factory.publication` rows created by `PublicationExecutor`). A pull request opened by hand — `gh pr create`, the GitHub web UI, or any other path that does not go through the factory's own publish flow — has no associated factory task and no `requireHumanMerge`/`HUMAN REVIEW` policy to evaluate, so the factory never discovers or acts on it. Merging that pull request, CI-green or not, remains entirely the operator's own responsibility.
+
 Each entry in `buildCommands`/`testCommands` is an executable plus its arguments, run directly through `IProcessRunner` — never through a shell, and never split on whitespace at run time, so an argument containing a space (a quoted test filter, a path) needs no escaping:
 
 ```json
