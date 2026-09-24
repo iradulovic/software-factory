@@ -13,6 +13,7 @@ appsettings.Local.json
 factory-data/
 logs/
 scripts/.run/
+.worktrees/
 backups/
 *.user
 *.suo
