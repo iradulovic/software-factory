@@ -40,6 +40,11 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
   - Scope: SF-703 shipped `PlaywrightSmokeTestRunner` and the `smokeTest` config key but explicitly documented that `playwright install chromium` was never run and the runner was never exercised against a real running application — only unit-tested behind fakes. Run `playwright install chromium` locally, configure `smokeTest` on a real repository (this one, using the dashboard, is fine), and execute a live `SmokeTestStep` end-to-end.
   - Acceptance: a real unattended or manual run shows `SmokeTestStep` starting the app, polling `healthCheckUrl` to healthy, visiting `checkPaths` in headless Chromium, saving pass screenshots, and stopping the process — with no `PageGotoOptions`/`PageScreenshotOptions` API mismatches. Fix any such mismatch found. Record the evidence (log paths, screenshots) in the completion note.
 
+- [ ] **SF-620 — Fix the OpenTelemetry restore/NuGet gap from the 2026-09-22 review**
+  - Dependencies: none.
+  - Scope: the 2026-09-22 functionality review recorded that the broader test invocation hit missing OpenTelemetry references in the existing restore state, and a fresh `dotnet restore` was separately blocked by access to the user-level NuGet configuration. `Factory.Infrastructure.csproj` depends on OpenTelemetry packages; root-cause and fix whichever of these (stale lock file, missing package source, NuGet.Config scope) actually causes a clean-environment `dotnet restore && dotnet build && dotnet test` to fail.
+  - Acceptance: a `dotnet restore` from a clean NuGet cache (or an equivalent documented clean-environment reproduction) succeeds, followed by a warning-free `dotnet build` and a full `dotnet test` pass across all projects. Document the root cause and fix in the completion note so it does not silently recur.
+
 ## Next up
 
 The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
@@ -65,10 +70,6 @@ SF-616 and SF-701 are complete; see **Completed** below.
 SF-617 and SF-608 are complete; see **Completed** below. SF-615 (depends on SF-608, SF-610 — both complete) and SF-701 (depends on SF-608, SF-613 — both complete) are now eligible. SF-616 still depends on SF-615, which is not yet done.
 
 
-- [ ] **SF-620 — Fix the OpenTelemetry restore/NuGet gap from the 2026-09-22 review**
-  - Dependencies: none.
-  - Scope: the 2026-09-22 functionality review recorded that the broader test invocation hit missing OpenTelemetry references in the existing restore state, and a fresh `dotnet restore` was separately blocked by access to the user-level NuGet configuration. `Factory.Infrastructure.csproj` depends on OpenTelemetry packages; root-cause and fix whichever of these (stale lock file, missing package source, NuGet.Config scope) actually causes a clean-environment `dotnet restore && dotnet build && dotnet test` to fail.
-  - Acceptance: a `dotnet restore` from a clean NuGet cache (or an equivalent documented clean-environment reproduction) succeeds, followed by a warning-free `dotnet build` and a full `dotnet test` pass across all projects. Document the root cause and fix in the completion note so it does not silently recur.
 
 - [ ] **SF-621 — Surface each task's merge policy (auto-merge vs. HUMAN REVIEW) in the dashboard**
   - Dependencies: SF-709 (complete).
