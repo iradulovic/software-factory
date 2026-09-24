@@ -40,10 +40,6 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
   - Scope: SF-703 shipped `PlaywrightSmokeTestRunner` and the `smokeTest` config key but explicitly documented that `playwright install chromium` was never run and the runner was never exercised against a real running application — only unit-tested behind fakes. Run `playwright install chromium` locally, configure `smokeTest` on a real repository (this one, using the dashboard, is fine), and execute a live `SmokeTestStep` end-to-end.
   - Acceptance: a real unattended or manual run shows `SmokeTestStep` starting the app, polling `healthCheckUrl` to healthy, visiting `checkPaths` in headless Chromium, saving pass screenshots, and stopping the process — with no `PageGotoOptions`/`PageScreenshotOptions` API mismatches. Fix any such mismatch found. Record the evidence (log paths, screenshots) in the completion note.
 
-- [ ] **SF-620 — Fix the OpenTelemetry restore/NuGet gap from the 2026-09-22 review**
-  - Dependencies: none.
-  - Scope: the 2026-09-22 functionality review recorded that the broader test invocation hit missing OpenTelemetry references in the existing restore state, and a fresh `dotnet restore` was separately blocked by access to the user-level NuGet configuration. `Factory.Infrastructure.csproj` depends on OpenTelemetry packages; root-cause and fix whichever of these (stale lock file, missing package source, NuGet.Config scope) actually causes a clean-environment `dotnet restore && dotnet build && dotnet test` to fail.
-  - Acceptance: a `dotnet restore` from a clean NuGet cache (or an equivalent documented clean-environment reproduction) succeeds, followed by a warning-free `dotnet build` and a full `dotnet test` pass across all projects. Document the root cause and fix in the completion note so it does not silently recur.
 
 - [ ] **SF-621 — Surface each task's merge policy (auto-merge vs. HUMAN REVIEW) in the dashboard**
   - Dependencies: SF-709 (complete).
@@ -189,3 +185,9 @@ Multi-machine execution, multiple concurrent coding workers, additional agent pr
 - [x] **SF-009 — Overview, Tasks, and Task Details dashboard** — Completed 2026-09-16. Frontend lint, type-check, production build, and dependency audit passed.
 - [x] **SF-010 — Docker and local-development documentation** — Completed 2026-09-16. PostgreSQL, API, web, configuration, authentication, and first-issue setup are documented.
 - [x] **SF-011 — API startup landing response** — Completed 2026-09-16. `/` and `/health` return 200, launch ports match frontend defaults, and an API regression test covers the root response.
+
+- [x] **SF-620 — Fix the OpenTelemetry restore/NuGet gap from the 2026-09-22 review**
+  - Dependencies: none.
+  - Scope: the 2026-09-22 functionality review recorded that the broader test invocation hit missing OpenTelemetry references in the existing restore state, and a fresh `dotnet restore` was separately blocked by access to the user-level NuGet configuration. `Factory.Infrastructure.csproj` depends on OpenTelemetry packages; root-cause and fix whichever of these (stale lock file, missing package source, NuGet.Config scope) actually causes a clean-environment `dotnet restore && dotnet build && dotnet test` to fail.
+  - Acceptance: a `dotnet restore` from a clean NuGet cache (or an equivalent documented clean-environment reproduction) succeeds, followed by a warning-free `dotnet build` and a full `dotnet test` pass across all projects. Document the root cause and fix in the completion note so it does not silently recur.
+  - Completed 2026-09-24 by Software Factory; see task f55397dd-8867-459d-b8e9-e5a52d66eaa9 in the dashboard for full verification evidence.
