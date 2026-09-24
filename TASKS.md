@@ -37,10 +37,6 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
 
 
 
-- [ ] **SF-621 — Surface each task's merge policy (auto-merge vs. HUMAN REVIEW) in the dashboard**
-  - Dependencies: SF-709 (complete).
-  - Scope: `Factory.Core.HumanReviewMarker` already determines whether a task's GitHub issue opts into human-controlled merge, and `PreparePublicationStep` already acts on it, but `Factory.Api` does not expose this on any task DTO and the `web/` dashboard has no indication anywhere of which tasks will auto-merge versus wait for a human. Add the computed flag to the relevant API response(s) and show it as a clear badge on the task list and task detail views.
-  - Acceptance: the task list and task detail pages show an explicit "Auto-merge" or "Human review" badge per task, backed by a real API field (not inferred client-side from label text); covered by a backend test for the new field and a frontend check that the badge renders for both states.
 
 ## Next up
 
@@ -192,3 +188,9 @@ Multi-machine execution, multiple concurrent coding workers, additional agent pr
   - Scope: SF-703 shipped `PlaywrightSmokeTestRunner` and the `smokeTest` config key but explicitly documented that `playwright install chromium` was never run and the runner was never exercised against a real running application — only unit-tested behind fakes. Run `playwright install chromium` locally, configure `smokeTest` on a real repository (this one, using the dashboard, is fine), and execute a live `SmokeTestStep` end-to-end.
   - Acceptance: a real unattended or manual run shows `SmokeTestStep` starting the app, polling `healthCheckUrl` to healthy, visiting `checkPaths` in headless Chromium, saving pass screenshots, and stopping the process — with no `PageGotoOptions`/`PageScreenshotOptions` API mismatches. Fix any such mismatch found. Record the evidence (log paths, screenshots) in the completion note.
   - Completed 2026-09-24 by Software Factory; see task 913cff2c-d2f2-4767-8062-8288934686db in the dashboard for full verification evidence.
+
+- [x] **SF-621 — Surface each task's merge policy (auto-merge vs. HUMAN REVIEW) in the dashboard**
+  - Dependencies: SF-709 (complete).
+  - Scope: `Factory.Core.HumanReviewMarker` already determines whether a task's GitHub issue opts into human-controlled merge, and `PreparePublicationStep` already acts on it, but `Factory.Api` does not expose this on any task DTO and the `web/` dashboard has no indication anywhere of which tasks will auto-merge versus wait for a human. Add the computed flag to the relevant API response(s) and show it as a clear badge on the task list and task detail views.
+  - Acceptance: the task list and task detail pages show an explicit "Auto-merge" or "Human review" badge per task, backed by a real API field (not inferred client-side from label text); covered by a backend test for the new field and a frontend check that the badge renders for both states.
+  - Completed 2026-09-24 by Software Factory; see task 37cb3289-3a73-463d-963d-c96036637bc5 in the dashboard for full verification evidence.
