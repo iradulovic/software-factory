@@ -101,9 +101,9 @@ public sealed class TasksMdParserTests
         // unattended milestone actually runs (SF-707's own writeback), so pinning an assertion to one of their
         // current sections makes this test fail on every real, correct state transition rather than on an actual
         // parser regression. The structural assertions below (parses, finds real items, ids are well-formed) are
-        // what this test's own name promises: parseable without throwing. (Two separate in-flight tasks each
-        // independently patched this same assertion to unblock their own `dotnet test` run — this is the
-        // consolidated fix; neither of those narrower patches needs to survive.)
+        // what this test's own name promises: parseable without throwing. (Every one of SF-618/619/620/621's own
+        // task runs independently patched this same assertion to unblock its own `dotnet test` run — this is the
+        // consolidated fix; none of those narrower patches needs to survive.)
         Assert.NotEmpty(items);
         Assert.All(items, i => Assert.Matches(@"^SF-\d+$", i.Id));
         Assert.Contains(items, i => i.Id == "SF-710" && i.Checked && i.Section == TrackerSection.Completed);

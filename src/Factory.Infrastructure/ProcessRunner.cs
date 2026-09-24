@@ -58,10 +58,12 @@ public sealed class ProcessRunner(IClock clock) : IProcessRunner
         {
             var stdoutBuffer = new StringBuilder();
             var stderrBuffer = new StringBuilder();
-            // Not linked.Token: a timeout kills the process but must never itself cancel these reads, so a killed
-            // process's already-buffered output still drains to completion once its streams close.
-            var stdoutTask = PumpAsync(process.StandardOutput, stdoutBuffer, log, logLock, cancellationToken);
-            var stderrTask = PumpAsync(process.StandardError, stderrBuffer, log, logLock, cancellationToken);
+            // Process cancellation (whether requested by the caller or by a timeout) kills the process but must
+            // never cancel these reads, so a killed process's already-buffered output drains to completion once
+            // its streams close. This is especially important for SmokeTestStep: stopping its local server is an
+            // expected cleanup action, not an error that should mask a completed browser check.
+            var stdoutTask = PumpAsync(process.StandardOutput, stdoutBuffer, log, logLock, CancellationToken.None);
+            var stderrTask = PumpAsync(process.StandardError, stderrBuffer, log, logLock, CancellationToken.None);
 
             using var timeout = request.Timeout is null ? null : new CancellationTokenSource(request.Timeout.Value);
             using var linked = timeout is null
