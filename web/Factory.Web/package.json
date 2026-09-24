@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint .",
-    "test": "tsx --test tests/merge-policy-badge.test.tsx",
+    "test": "node ./tests/run-merge-policy-badge-test.cjs",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
