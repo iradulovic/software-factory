@@ -1,4 +1,4 @@
-# Software Factory Task Tracker
+﻿# Software Factory Task Tracker
 
 This file is the ordered handoff queue for feature work. `BOOTSTRAP_SPEC.md` describes the architecture; this file records what to build next.
 
@@ -35,6 +35,17 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
   - Scope: queue three small independent issues before leaving the desk, with both providers configured and the intended publication policy. Review results after the unattended interval. SF-619, SF-620, and SF-621 below are the three issues to queue for this run — each is a real, small, independent quick win found by inspecting the current codebase and docs, not a synthetic no-op task.
   - Acceptance: each issue has validated draft-PR/CI evidence or an actionable blocker; provider waiting/fallback and a worker restart recover without database intervention. Exercise simulated quota events separately when real limits are not encountered; label simulation evidence explicitly. Record human review effort and any remaining failure paths before declaring the milestone complete. Manual tests and merges stay with the developer.
 
+- [ ] **SF-619 — Verify Playwright browser smoke tests against a real local run**
+  - Dependencies: SF-703 (complete).
+  - Scope: SF-703 shipped `PlaywrightSmokeTestRunner` and the `smokeTest` config key but explicitly documented that `playwright install chromium` was never run and the runner was never exercised against a real running application — only unit-tested behind fakes. Run `playwright install chromium` locally, configure `smokeTest` on a real repository (this one, using the dashboard, is fine), and execute a live `SmokeTestStep` end-to-end.
+  - Acceptance: a real unattended or manual run shows `SmokeTestStep` starting the app, polling `healthCheckUrl` to healthy, visiting `checkPaths` in headless Chromium, saving pass screenshots, and stopping the process — with no `PageGotoOptions`/`PageScreenshotOptions` API mismatches. Fix any such mismatch found. Record the evidence (log paths, screenshots) in the completion note.
+
+
+- [ ] **SF-621 — Surface each task's merge policy (auto-merge vs. HUMAN REVIEW) in the dashboard**
+  - Dependencies: SF-709 (complete).
+  - Scope: `Factory.Core.HumanReviewMarker` already determines whether a task's GitHub issue opts into human-controlled merge, and `PreparePublicationStep` already acts on it, but `Factory.Api` does not expose this on any task DTO and the `web/` dashboard has no indication anywhere of which tasks will auto-merge versus wait for a human. Add the computed flag to the relevant API response(s) and show it as a clear badge on the task list and task detail views.
+  - Acceptance: the task list and task detail pages show an explicit "Auto-merge" or "Human review" badge per task, backed by a real API field (not inferred client-side from label text); covered by a backend test for the new field and a frontend check that the badge renders for both states.
+
 ## Next up
 
 The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
@@ -58,16 +69,6 @@ SF-615 is complete; see **Completed** below. SF-616 (depends on SF-610, SF-615 �
 SF-616 and SF-701 are complete; see **Completed** below.
 
 SF-617 and SF-608 are complete; see **Completed** below. SF-615 (depends on SF-608, SF-610 — both complete) and SF-701 (depends on SF-608, SF-613 — both complete) are now eligible. SF-616 still depends on SF-615, which is not yet done.
-
-- [ ] **SF-620 — Fix the OpenTelemetry restore/NuGet gap from the 2026-09-22 review**
-  - Dependencies: none.
-  - Scope: the 2026-09-22 functionality review recorded that the broader test invocation hit missing OpenTelemetry references in the existing restore state, and a fresh `dotnet restore` was separately blocked by access to the user-level NuGet configuration. `Factory.Infrastructure.csproj` depends on OpenTelemetry packages; root-cause and fix whichever of these (stale lock file, missing package source, NuGet.Config scope) actually causes a clean-environment `dotnet restore && dotnet build && dotnet test` to fail.
-  - Acceptance: a `dotnet restore` from a clean NuGet cache (or an equivalent documented clean-environment reproduction) succeeds, followed by a warning-free `dotnet build` and a full `dotnet test` pass across all projects. Document the root cause and fix in the completion note so it does not silently recur.
-
-- [ ] **SF-621 — Surface each task's merge policy (auto-merge vs. HUMAN REVIEW) in the dashboard**
-  - Dependencies: SF-709 (complete).
-  - Scope: `Factory.Core.HumanReviewMarker` already determines whether a task's GitHub issue opts into human-controlled merge, and `PreparePublicationStep` already acts on it, but `Factory.Api` does not expose this on any task DTO and the `web/` dashboard has no indication anywhere of which tasks will auto-merge versus wait for a human. Add the computed flag to the relevant API response(s) and show it as a clear badge on the task list and task detail views.
-  - Acceptance: the task list and task detail pages show an explicit "Auto-merge" or "Human review" badge per task, backed by a real API field (not inferred client-side from label text); covered by a backend test for the new field and a frontend check that the badge renders for both states.
 
 ### Priority 4 — Remove the developer as the default merge bottleneck
 
@@ -183,3 +184,9 @@ Multi-machine execution, multiple concurrent coding workers, additional agent pr
 - [x] **SF-009 — Overview, Tasks, and Task Details dashboard** — Completed 2026-09-16. Frontend lint, type-check, production build, and dependency audit passed.
 - [x] **SF-010 — Docker and local-development documentation** — Completed 2026-09-16. PostgreSQL, API, web, configuration, authentication, and first-issue setup are documented.
 - [x] **SF-011 — API startup landing response** — Completed 2026-09-16. `/` and `/health` return 200, launch ports match frontend defaults, and an API regression test covers the root response.
+
+- [x] **SF-620 — Fix the OpenTelemetry restore/NuGet gap from the 2026-09-22 review**
+  - Dependencies: none.
+  - Scope: the 2026-09-22 functionality review recorded that the broader test invocation hit missing OpenTelemetry references in the existing restore state, and a fresh `dotnet restore` was separately blocked by access to the user-level NuGet configuration. `Factory.Infrastructure.csproj` depends on OpenTelemetry packages; root-cause and fix whichever of these (stale lock file, missing package source, NuGet.Config scope) actually causes a clean-environment `dotnet restore && dotnet build && dotnet test` to fail.
+  - Acceptance: a `dotnet restore` from a clean NuGet cache (or an equivalent documented clean-environment reproduction) succeeds, followed by a warning-free `dotnet build` and a full `dotnet test` pass across all projects. Document the root cause and fix in the completion note so it does not silently recur.
+  - Completed 2026-09-24 by Software Factory; see task f55397dd-8867-459d-b8e9-e5a52d66eaa9 in the dashboard for full verification evidence.
