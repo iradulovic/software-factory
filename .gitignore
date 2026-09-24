@@ -25,3 +25,8 @@ backups/
 # ignored here.
 .factory/result.json
 .factory/task.md
+
+# Written fresh by `next dev` on every startup (Next.js 16's own AI-agent breaking-change notice,
+# node_modules/next/dist/server/lib/generate-agent-files.js) — not project documentation.
+web/Factory.Web/AGENTS.md
+web/Factory.Web/CLAUDE.md
