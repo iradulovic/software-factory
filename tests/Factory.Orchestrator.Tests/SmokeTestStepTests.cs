@@ -52,12 +52,18 @@ public sealed class SmokeTestStepTests
 
         Assert.Equal(PipelineOutcome.Succeeded, result.Outcome);
         Assert.Equal(ExecutionStatus.Succeeded, store.Step("SmokeTest").Status);
-        var started = Assert.Single(processes.Started);
-        Assert.Equal("npm", started.FileName);
-        Assert.Equal(["run", "start"], started.Arguments);
+        Assert.Equal(3, processes.Started.Count);
+        Assert.Equal("npm", processes.Started[0].FileName);
+        Assert.Equal(["run", "start"], processes.Started[0].Arguments);
         // "Stop": the server's own RunAsync call is cancelled once checks finish, mirroring how ProcessRunner
         // itself kills the process tree on cancellation (see FakeProcessRunner below).
         Assert.True(processes.AllCancelledBeforeCompletion);
+        // The worktree is restored afterward regardless of outcome - starting the local application can leave it
+        // dirty (an auto-regenerated tracked file, a tool-scaffolded untracked file) even on a clean pass.
+        Assert.Equal("git", processes.Started[1].FileName);
+        Assert.Equal(["checkout", "--", "."], processes.Started[1].Arguments);
+        Assert.Equal("git", processes.Started[2].FileName);
+        Assert.Equal(["clean", "-fd"], processes.Started[2].Arguments);
     }
 
     [Fact]
@@ -96,9 +102,11 @@ public sealed class SmokeTestStepTests
         var result = await step.ExecuteAsync(Context(withInstall), CancellationToken.None);
 
         Assert.Equal(PipelineOutcome.Succeeded, result.Outcome);
-        Assert.Equal(2, processes.Started.Count);
+        Assert.Equal(4, processes.Started.Count);
         Assert.Equal(["ci"], processes.Started[0].Arguments);
         Assert.Equal(["run", "start"], processes.Started[1].Arguments);
+        Assert.Equal("git", processes.Started[2].FileName);
+        Assert.Equal("git", processes.Started[3].FileName);
     }
 
     [Fact]
@@ -115,7 +123,12 @@ public sealed class SmokeTestStepTests
         Assert.Equal(PipelineOutcome.Failed, result.Outcome);
         Assert.True(result.Repairable);
         Assert.Contains("npm ci failed", result.Reason);
-        Assert.Single(processes.Started);
+        // The server never starts, but the worktree is still restored: `npm ci` can leave partial changes even
+        // when it exits non-zero.
+        Assert.Equal(3, processes.Started.Count);
+        Assert.Equal("npm", processes.Started[0].FileName);
+        Assert.Equal("git", processes.Started[1].FileName);
+        Assert.Equal("git", processes.Started[2].FileName);
         Assert.Equal(ExecutionStatus.Failed, store.Step("SmokeTest").Status);
     }
 
@@ -173,7 +186,9 @@ public sealed class SmokeTestStepTests
         {
             Started.Add(request);
             var start = DateTimeOffset.UtcNow;
-            if (hangs is not null && !hangs(request))
+            // The post-run worktree cleanup (`git checkout`/`git clean`) is always short-lived, unlike the
+            // long-running server process this fake otherwise defaults to hanging until cancelled.
+            if (request.FileName == "git" || (hangs is not null && !hangs(request)))
                 return new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, DateTimeOffset.UtcNow, installExitCode, "", installStandardError, false, false);
             try { await Task.Delay(Timeout.Infinite, cancellationToken); completedBeforeCancellation.Add(true); }
             catch (OperationCanceledException) { completedBeforeCancellation.Add(false); }
