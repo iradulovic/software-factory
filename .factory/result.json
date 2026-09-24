@@ -1,33 +1,18 @@
 {
   "status": "completed",
-  "summary": "Exposed each task's persisted merge policy through the API and rendered Auto-merge or Human review badges in both task views. Added backend serialization coverage and a frontend rendering check for both states.",
+  "summary": "Added an invariant compact percentage formatter in Factory.Core with one-decimal precision when needed. Added unit coverage for zero, whole, and fractional percentage output.",
   "testsRun": [
+    "dotnet restore SoftwareFactory.slnx",
     "dotnet build SoftwareFactory.slnx --no-restore",
-    "dotnet test SoftwareFactory.slnx --no-build",
-    "npm run lint",
-    "npm run type-check",
-    "npm run test",
-    "npm run build"
+    "dotnet test tests/Factory.Core.Tests/Factory.Core.Tests.csproj --no-build --no-restore",
+    "dotnet test SoftwareFactory.slnx --no-build --no-restore"
   ],
   "testsPassed": true,
   "filesChanged": [
-    "src/Factory.Api/Program.cs",
-    "src/Factory.Api/TaskResponse.cs",
-    "tests/Factory.Api.Tests/RootEndpointTests.cs",
-    "tests/Factory.Core.Tests/TasksMdParserTests.cs",
-    "web/Factory.Web/app/tasks/page.tsx",
-    "web/Factory.Web/app/tasks/[id]/page.tsx",
-    "web/Factory.Web/components/merge-policy-badge.tsx",
-    "web/Factory.Web/lib/api.ts",
-    "web/Factory.Web/tests/merge-policy-badge.test.tsx",
-    "web/Factory.Web/tests/run-merge-policy-badge-test.cjs",
-    "web/Factory.Web/tests/tsx-preload.cjs",
-    "web/Factory.Web/package.json",
-    "web/Factory.Web/package-lock.json"
+    "src/Factory.Core/PercentageFormatter.cs",
+    "tests/Factory.Core.Tests/PercentageFormatterTests.cs"
   ],
-  "risks": [
-    "A repeated .NET build after successful validation encountered transient access locks in generated bin artifacts from other local dotnet processes."
-  ],
+  "risks": [],
   "needsHuman": false,
   "humanReason": null
 }
