@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint .",
+    "test": "node ./tests/run-merge-policy-badge-test.cjs",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
@@ -51,6 +52,7 @@
     "eslint": "9.35.0",
     "eslint-config-next": "16.3.5",
     "tailwindcss": "4.1.12",
+    "tsx": "^4.23.15",
     "typescript": "5.9.2"
   }
 }

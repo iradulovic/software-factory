@@ -6,6 +6,7 @@ import { useQueryState } from "nuqs";
 import { Suspense } from "react";
 import { z } from "zod";
 import { Badge, Duration, Empty } from "@/components/ui";
+import { MergePolicyBadge } from "@/components/merge-policy-badge";
 import { FactoryTask, getJson, taskSchema } from "@/lib/api";
 
 const responseSchema = z.object({items:z.array(taskSchema),total:z.number(),page:z.number(),pageSize:z.number()});
@@ -16,6 +17,7 @@ const columns = [
   column.accessor("title",{header:"Task",cell:i=><Link className="font-medium hover:text-emerald-400" href={`/tasks/${i.row.original.id}`}>{i.getValue()}</Link>}),
   column.accessor("repository",{header:"Repository"}), column.accessor("issueNumber",{header:"Issue",cell:i=>i.getValue()?`#${i.getValue()}`:"—"}),
   column.accessor("status",{header:"Status",cell:i=><Badge value={i.getValue()}/>}), column.accessor("agent",{header:"Agent"}),
+  column.accessor("requireHumanMerge",{header:"Merge policy",cell:i=><MergePolicyBadge requireHumanMerge={i.getValue()}/>}),
   column.accessor("priority",{header:"Priority",cell:i=>i.getValue()?<span className="tabular-nums">{i.getValue()}</span>:<span className="text-muted-foreground/60">—</span>}),
   column.accessor("createdAt",{header:"Created",cell:i=>new Date(i.getValue()).toLocaleString()}),
   column.accessor("startedAt",{header:"Started",cell:i=>i.getValue()?new Date(i.getValue()!).toLocaleString():"—"}),
