@@ -1,14 +1,29 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Factory.Infrastructure;
+using Microsoft.Extensions.Options;
 
 namespace Factory.Api.Tests;
 
-public sealed class DatabaseEndpointTests : IClassFixture<RootEndpointTests.FactoryApplication>
+// The "Testing" environment WebApplicationFactory.ConfigureWebHost puts the app in (RootEndpointTests.FactoryApplication)
+// deliberately skips Program.cs's own startup migration, so this class runs it itself before exercising endpoints that
+// actually touch factory.*/github.* tables — mirroring the pattern every Factory.IntegrationTests test already uses.
+// Idempotent (DatabaseMigrator only applies a migration file once), so this is safe to run against an already-migrated
+// local database too.
+public sealed class DatabaseEndpointTests : IClassFixture<RootEndpointTests.FactoryApplication>, IAsyncLifetime
 {
     private readonly HttpClient client;
 
     public DatabaseEndpointTests(RootEndpointTests.FactoryApplication application) => client = application.CreateClient();
+
+    public async Task InitializeAsync()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING") ?? new FactoryOptions().ConnectionString;
+        await new DatabaseMigrator(Options.Create(new FactoryOptions { ConnectionString = connectionString })).MigrateAsync(CancellationToken.None);
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Tables_endpoint_lists_factory_and_github_schema_tables()
