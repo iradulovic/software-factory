@@ -21,11 +21,24 @@ public sealed class TrackerFileSync(IRepositoryCache cache, IProcessRunner runne
     public async Task<string?> ReadAsync(GitHubRepository repository, string baseBranch, CancellationToken cancellationToken)
     {
         var cachePath = await cache.PrepareAsync(repository, cancellationToken);
-        var result = await runner.RunAsync(new ProcessRequest("git", ["show", $"origin/{baseBranch}:{FilePath}"], cachePath, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
-        if (result.Succeeded) return result.StandardOutput;
-        if (result.ExitCode == 128 && (result.StandardError.Contains("does not exist in", StringComparison.Ordinal) || result.StandardError.Contains("exists on disk, but not in", StringComparison.Ordinal)))
-            return null;
-        throw new InvalidOperationException($"Reading {FilePath} from origin/{baseBranch} failed: {result.StandardError.Trim()}");
+        // IProcessRunner.RunAsync's returned StandardOutput is a bounded preview (ProcessRunner.PreviewLimit, 64
+        // KB) meant for a human-facing log excerpt, not a correctness-critical read: this repository's own
+        // TASKS.md already exceeds that bound, which silently truncated away everything before the tail (the
+        // "## Next up" section itself) and made SF-707 ingestion see zero eligible items. Routing through LogPath
+        // captures the real, complete blob to a scratch file instead of relying on the bounded in-memory buffer.
+        var logPath = Path.Combine(Path.GetTempPath(), $"factory-tasksmd-read-{Guid.NewGuid():N}.log");
+        try
+        {
+            var result = await runner.RunAsync(new ProcessRequest("git", ["show", $"origin/{baseBranch}:{FilePath}"], cachePath, Timeout: TimeSpan.FromMinutes(1), LogPath: logPath), cancellationToken);
+            if (result.Succeeded) return await File.ReadAllTextAsync(logPath, cancellationToken);
+            if (result.ExitCode == 128 && (result.StandardError.Contains("does not exist in", StringComparison.Ordinal) || result.StandardError.Contains("exists on disk, but not in", StringComparison.Ordinal)))
+                return null;
+            throw new InvalidOperationException($"Reading {FilePath} from origin/{baseBranch} failed: {result.StandardError.Trim()}");
+        }
+        finally
+        {
+            if (File.Exists(logPath)) File.Delete(logPath);
+        }
     }
 
     public async Task<bool> ApplyTransitionAsync(GitHubRepository repository, string baseBranch, string trackerItemId, TrackerSection targetSection, string? note, CancellationToken cancellationToken)
