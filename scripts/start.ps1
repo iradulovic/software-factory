@@ -41,6 +41,75 @@ $pidFile = Join-Path $runDir 'pids.json'
 $apiUrl = 'http://localhost:5080'
 New-Item -ItemType Directory -Force -Path $logsDir, $runDir | Out-Null
 
+# ---------------------------------------------------------------------------------------------
+# Dedicated services worktree (SF-716) - every live service is started from a fixed worktree
+# pinned to origin/main, never from $repoRoot directly. $repoRoot is the operator's own
+# interactive checkout: an operator (or another Claude Code session) switching it to a feature
+# branch to review or edit code must never change what the *running* services execute - that
+# was a real bug (the ui/mono-theme-drift scenario: switching the shared checkout's branch
+# silently changed the dashboard the running dev server served). Compose's project name is
+# pinned explicitly to the shared checkout's own directory name so Postgres keeps using the
+# exact same container/volume regardless of which worktree's docker-compose.yml started it.
+# ---------------------------------------------------------------------------------------------
+$servicesWorktreeDir = Join-Path $repoRoot '.worktrees/services'
+$composeProjectName = Split-Path -Leaf $repoRoot
+$composeFile = Join-Path $servicesWorktreeDir 'docker-compose.yml'
+
+function Invoke-Native {
+    # git and docker compose both write routine progress (git's "Preparing worktree...", compose's
+    # "Container ... Running") to stderr on plain success; under this script's own
+    # $ErrorActionPreference = 'Stop', PowerShell 5.1 promotes any stderr line from a native
+    # command into a terminating NativeCommandError regardless of where it's redirected, even
+    # though $LASTEXITCODE is 0. Only the *preference* being 'Stop' at the moment the command runs
+    # causes the promotion, so relax it for the duration of the call (the function-local change
+    # doesn't leak to the caller) and check the real exit code instead.
+    param([string]$Exe, [string[]]$ExeArgs)
+    $prevPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Exe @ExeArgs 2>$null
+    } finally {
+        $ErrorActionPreference = $prevPreference
+    }
+    if ($LASTEXITCODE -ne 0) {
+        & $Exe @ExeArgs
+        throw "$Exe $($ExeArgs -join ' ') failed (exit $LASTEXITCODE)"
+    }
+    return $output
+}
+
+function Invoke-Git { Invoke-Native -Exe 'git' -ExeArgs $args }
+
+function Sync-ServicesWorktree {
+    Write-Section 'Dedicated services worktree (pinned to origin/main)'
+    Push-Location $repoRoot
+    try {
+        Invoke-Git fetch origin main --quiet | Out-Null
+        Invoke-Git worktree prune | Out-Null
+        if (-not (Test-Path $servicesWorktreeDir)) {
+            Invoke-Git worktree add --detach $servicesWorktreeDir origin/main | Out-Null
+        } else {
+            $resolved = (Resolve-Path -LiteralPath $servicesWorktreeDir).Path.Replace('\', '/')
+            $worktrees = Invoke-Git worktree list --porcelain
+            $registered = ($worktrees -join "`n").Replace('\', '/').Contains($resolved)
+            if (-not $registered) {
+                # Path exists but isn't a registered worktree (e.g. left over from a manual delete) - recreate cleanly.
+                Remove-Item -Recurse -Force $servicesWorktreeDir
+                Invoke-Git worktree add --detach $servicesWorktreeDir origin/main | Out-Null
+            } else {
+                Invoke-Git -C $servicesWorktreeDir checkout --detach --quiet origin/main | Out-Null
+                Invoke-Git -C $servicesWorktreeDir reset --hard --quiet origin/main | Out-Null
+                Invoke-Git -C $servicesWorktreeDir clean -fd --quiet -e node_modules -e bin -e obj -e .next | Out-Null
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+    $sha = (Invoke-Git -C $servicesWorktreeDir rev-parse --short HEAD).Trim()
+    $subject = (Invoke-Git -C $servicesWorktreeDir log -1 --format='%s').Trim()
+    Write-Ok "services worktree at $servicesWorktreeDir -> origin/main @ $sha ($subject)"
+}
+
 function Write-Section($text) { Write-Host "`n== $text ==" -ForegroundColor Cyan }
 function Write-Ok($text) { Write-Host "  [OK]   $text" -ForegroundColor Green }
 function Write-WarnLine($text) { Write-Host "  [WARN] $text" -ForegroundColor Yellow }
@@ -102,8 +171,19 @@ function Show-Status {
         }
     }
 
+    Write-Section 'Dedicated services worktree (SF-716 - what''s actually running)'
+    if (Test-Path $servicesWorktreeDir) {
+        $sha = (git -C $servicesWorktreeDir rev-parse --short HEAD).Trim()
+        $subject = (git -C $servicesWorktreeDir log -1 --format='%s').Trim()
+        Write-Ok "$servicesWorktreeDir @ $sha ($subject)"
+    } else {
+        Write-WarnLine "$servicesWorktreeDir does not exist yet - run ./scripts/start.ps1 (without -StatusOnly) to create it."
+    }
+    $shared = (git -C $repoRoot branch --show-current).Trim()
+    Write-Ok "shared interactive checkout ($repoRoot) is on '$shared' - irrelevant to what's running, shown for reference only"
+
     Write-Section 'PostgreSQL (Docker Compose)'
-    $pg = docker compose -f (Join-Path $repoRoot 'docker-compose.yml') ps postgres --format json 2>$null
+    $pg = docker compose -f $composeFile -p $composeProjectName ps postgres --format json 2>$null
     if ($pg) { Write-Ok 'postgres container reported by Docker Compose' } else { Write-FailLine 'postgres container not found - run docker compose up -d postgres' }
 
     Write-Section 'Factory.Api health (actually checks database connectivity, not just process liveness)'
@@ -132,17 +212,22 @@ if ($StatusOnly) {
     return
 }
 
+Sync-ServicesWorktree
+
 # ---------------------------------------------------------------------------------------------
-# PostgreSQL
+# PostgreSQL - started from the dedicated worktree's docker-compose.yml (same pin as every other
+# service), with the Compose project name fixed to the shared checkout's directory name so this
+# always resolves to the exact same container/volume regardless of which worktree provided the
+# compose file.
 # ---------------------------------------------------------------------------------------------
 Write-Section 'PostgreSQL'
-Push-Location $repoRoot
+Push-Location $servicesWorktreeDir
 try {
-    docker compose up -d postgres
+    Invoke-Native -Exe 'docker' -ExeArgs @('compose', '-f', $composeFile, '-p', $composeProjectName, 'up', '-d', 'postgres') | Out-Null
     $deadline = (Get-Date).AddSeconds(60)
     $healthy = $false
     while ((Get-Date) -lt $deadline) {
-        $status = docker compose ps postgres --format json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+        $status = docker compose -f $composeFile -p $composeProjectName ps postgres --format json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
         if ($status -and $status.Health -eq 'healthy') { $healthy = $true; break }
         Start-Sleep -Seconds 2
     }
@@ -152,18 +237,35 @@ try {
 }
 
 # ---------------------------------------------------------------------------------------------
-# .NET services - each runs from the repo root explicitly so RootDirectory/LogsDirectory (both
-# configured as relative paths) always resolve to the same place regardless of which project's
-# own subdirectory an operator might otherwise have `cd`-ed into (a real footgun today: a
-# `dotnet run` invoked from inside src/Factory.Orchestrator lands its factory-data/ there
-# instead of at the repo root, silently splitting state across three separate copies).
+# Build once, synchronously, before starting any service - Sync/Orchestrator/Api share several
+# project references (Factory.Core, Factory.Infrastructure). Launching three concurrent
+# `dotnet run` processes against a worktree with no prior build output makes each one try to
+# build those shared projects at once, and MSBuild's concurrent writes to the same obj/ output
+# race and fail (observed live the first time the dedicated worktree was created: Sync's build
+# failed outright, and Api's Kestrel bound port 5080 then crashed shortly after with
+# "address already in use" from a second, concurrently-building instance). A warm build already
+# on disk (the common case after the very first run, since bin/obj survive Sync-ServicesWorktree's
+# cleanup) makes this a fast no-op; it only costs real time on a brand-new worktree.
+# ---------------------------------------------------------------------------------------------
+Write-Section 'Building services worktree'
+Invoke-Native -Exe 'dotnet' -ExeArgs @('build', $servicesWorktreeDir, '--nologo') | Out-Null
+Write-Ok 'dotnet build succeeded'
+
+# ---------------------------------------------------------------------------------------------
+# .NET services - each runs from the dedicated services worktree (SF-716), never from $repoRoot,
+# so RootDirectory/LogsDirectory (both configured as relative paths) always resolve to one
+# consistent place tied to origin/main, regardless of what branch an operator happens to have
+# the shared interactive checkout on, or which project's own subdirectory they might otherwise
+# have `cd`-ed into (a real footgun: a `dotnet run` invoked from inside src/Factory.Orchestrator
+# lands its factory-data/ there instead of at the repo root, silently splitting state across
+# three separate copies).
 # ---------------------------------------------------------------------------------------------
 function Start-DotnetService {
     param([string]$Name, [string]$Project, [string[]]$ExtraArgs = @())
     $log = Join-Path $logsDir "$Name.log"
     $errLog = Join-Path $logsDir "$Name.err.log"
     $arguments = @('run', '--project', $Project) + $ExtraArgs
-    $proc = Start-Process -FilePath 'dotnet' -ArgumentList $arguments -WorkingDirectory $repoRoot `
+    $proc = Start-Process -FilePath 'dotnet' -ArgumentList $arguments -WorkingDirectory $servicesWorktreeDir `
         -RedirectStandardOutput $log -RedirectStandardError $errLog -PassThru -WindowStyle Hidden
     Write-Ok "$Name started (pid $($proc.Id)) - stdout/stderr: $log / $errLog"
     return $proc.Id
@@ -177,16 +279,19 @@ $recordedPids['api'] = Start-DotnetService -Name 'api' -Project 'src/Factory.Api
 
 if (-not $SkipDashboard) {
     Write-Section 'Dashboard (Factory.Web)'
-    $webDir = Join-Path $repoRoot 'web/Factory.Web'
+    $webDir = Join-Path $servicesWorktreeDir 'web/Factory.Web'
+    $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
+    if (-not $npmCmd) { $npmCmd = (Get-Command npm -ErrorAction SilentlyContinue).Source }
     if (-not (Test-Path (Join-Path $webDir 'node_modules'))) {
-        Write-WarnLine 'node_modules not found - running npm install first (one-time).'
+        # The dedicated worktree (SF-716) is a fresh checkout every time it's (re)created, so this
+        # runs on the worktree's first use even if an operator's own checkout already has
+        # node_modules elsewhere - node_modules is never git-tracked, so worktrees don't share it.
+        Write-WarnLine 'node_modules not found in the services worktree - running npm install first (one-time).'
         Push-Location $webDir
-        try { npm install } finally { Pop-Location }
+        try { Invoke-Native -Exe $npmCmd -ExeArgs @('install') | Out-Null } finally { Pop-Location }
     }
     $log = Join-Path $logsDir 'dashboard.log'
     $errLog = Join-Path $logsDir 'dashboard.err.log'
-    $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
-    if (-not $npmCmd) { $npmCmd = (Get-Command npm -ErrorAction SilentlyContinue).Source }
     $proc = Start-Process -FilePath $npmCmd -ArgumentList @('run', 'dev') -WorkingDirectory $webDir `
         -RedirectStandardOutput $log -RedirectStandardError $errLog -PassThru -WindowStyle Hidden
     Write-Ok "dashboard started (pid $($proc.Id)) - stdout/stderr: $log / $errLog"

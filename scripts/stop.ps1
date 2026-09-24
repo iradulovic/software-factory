@@ -26,9 +26,37 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $runDir = Join-Path $PSScriptRoot '.run'
 $pidFile = Join-Path $runDir 'pids.json'
+# Same dedicated worktree/Compose pin as start.ps1 (SF-716) - stopping Postgres must target the
+# exact container start.ps1 started, not a differently-named project derived from $repoRoot.
+$servicesWorktreeDir = Join-Path $repoRoot '.worktrees/services'
+$composeProjectName = Split-Path -Leaf $repoRoot
+$composeFile = Join-Path $servicesWorktreeDir 'docker-compose.yml'
+if (-not (Test-Path $composeFile)) { $composeFile = Join-Path $repoRoot 'docker-compose.yml' }
 
 function Write-Ok($text) { Write-Host "  [OK]   $text" -ForegroundColor Green }
 function Write-WarnLine($text) { Write-Host "  [WARN] $text" -ForegroundColor Yellow }
+
+function Invoke-Native {
+    # docker compose writes routine progress ("Container ... Stopping") to stderr on plain
+    # success; under this script's own $ErrorActionPreference = 'Stop', PowerShell 5.1 promotes
+    # any stderr line from a native command into a terminating NativeCommandError regardless of
+    # where it's redirected, even though $LASTEXITCODE is 0. Relax the preference for the
+    # duration of the call (the function-local change doesn't leak to the caller) and check the
+    # real exit code instead.
+    param([string]$Exe, [string[]]$ExeArgs)
+    $prevPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Exe @ExeArgs 2>$null
+    } finally {
+        $ErrorActionPreference = $prevPreference
+    }
+    if ($LASTEXITCODE -ne 0) {
+        & $Exe @ExeArgs
+        throw "$Exe $($ExeArgs -join ' ') failed (exit $LASTEXITCODE)"
+    }
+    return $output
+}
 
 if (-not (Test-Path $pidFile)) {
     Write-WarnLine "No $pidFile found - nothing recorded to stop. If services are still running, they weren't started by start.ps1, or were already stopped."
@@ -45,11 +73,6 @@ if (-not (Test-Path $pidFile)) {
 }
 
 if ($StopPostgres) {
-    Push-Location $repoRoot
-    try {
-        docker compose stop postgres
-        Write-Ok 'postgres container stopped (data volume preserved)'
-    } finally {
-        Pop-Location
-    }
+    Invoke-Native -Exe 'docker' -ExeArgs @('compose', '-f', $composeFile, '-p', $composeProjectName, 'stop', 'postgres') | Out-Null
+    Write-Ok 'postgres container stopped (data volume preserved)'
 }
