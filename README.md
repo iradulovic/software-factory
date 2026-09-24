@@ -97,7 +97,8 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
   "maxReviewAttempts": 1,
   "requireHumanMerge": true,
   "publish": "manual",
-  "maxQuotaInterruptions": 20
+  "maxQuotaInterruptions": 20,
+  "serializeSameBatchTrackerTasks": false
 }
 ```
 
@@ -252,6 +253,8 @@ A greenfield repository with a hand-written `TASKS.md` tracker (this repository'
 - An optional nested `- Dependencies: SF-1, SF-2.` line — the only machine-readable dependency form; a `Depends on SF-1` clause folded into an item's own prose is deliberately not parsed.
 
 Every unchecked item under `## Next up` becomes a `Pending` factory task on the next sync cycle, without requiring a `factory:ready`-labeled issue first; a task it produces carries its own `tracker_item_id` (never a `github_issue_id`), so a repository that uses both sources at once runs them side by side without double-claiming the same work. As a task's status moves it into a different section — claimed work into `## In progress`, a merged pull request into `## Completed` (with a short trailing note pointing back at the task for full evidence), a failure or a needs-human outcome into `## Blocked` (with the task's own failure reason as the unblock condition) — `Factory.GitHubSync` writes that back into `TASKS.md` on the base branch directly, the same way it already writes a GitHub issue's own labels and comments. That write is always a plain (never forced) push: if the base branch moved since the file was last read — a human's own edit, most commonly — the push is simply rejected and retried fresh on the next sync cycle, so a human editing the tracker file is never overwritten or raced.
+
+Several items queued in the same batch with no `Dependencies:` line between them are independently claimable by default, so they can start implementing in parallel against the same stale base branch and collide with each other on publication. Declaring an explicit `Dependencies:` chain between them is the direct fix. A repository that queues tasks in batches and would rather not hand-author that chain every time can instead opt into `.factory/config.json`'s `"serializeSameBatchTrackerTasks": true` (default `false`): every task `Factory.GitHubSync` creates from the same `TASKS.md` sync pass is then automatically chained to the one it created immediately before it, in file order — tagged its own dependency `source` (`tracker-batch`) so it never interferes with a hand-authored `Dependencies:` line's own reconciliation.
 
 ## 6. Back up and restore local state
 

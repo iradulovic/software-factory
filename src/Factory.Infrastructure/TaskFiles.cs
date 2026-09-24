@@ -38,7 +38,8 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
             file?.RequireHumanMerge ?? defaults.RequireHumanMerge,
             string.IsNullOrWhiteSpace(file?.Publish) ? defaults.Publish : file.Publish.Trim(),
             file?.MaxQuotaInterruptions ?? defaults.MaxQuotaInterruptions,
-            ParseSmokeTest(file?.SmokeTest, source));
+            ParseSmokeTest(file?.SmokeTest, source),
+            file?.SerializeSameBatchTrackerTasks ?? defaults.SerializeSameBatchTrackerTasks);
 
         if (configuration.MaxImplementationAttempts < 1 || configuration.MaxReviewAttempts < 0)
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxImplementationAttempts must be at least 1 and maxReviewAttempts must not be negative.");
@@ -80,6 +81,7 @@ internal sealed class RepositoryConfigurationFile
     public string? Publish { get; init; }
     public int? MaxQuotaInterruptions { get; init; }
     public SmokeTestConfigurationFile? SmokeTest { get; init; }
+    public bool? SerializeSameBatchTrackerTasks { get; init; }
 }
 
 internal sealed class SmokeTestConfigurationFile

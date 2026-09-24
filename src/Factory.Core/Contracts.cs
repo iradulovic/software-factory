@@ -348,6 +348,16 @@ public interface ITaskStore
     /// task has at most one origin, but kept independent regardless).</summary>
     Task<IssueDependencyReconciliation> ReconcileTrackerDependenciesAsync(Guid taskId, IReadOnlyList<Guid> parsedDependsOnTaskIds, CancellationToken cancellationToken);
 
+    /// <summary>Records that <paramref name="taskId"/> must wait for <paramref name="dependsOnTaskId"/>, tagged
+    /// <c>source='tracker-batch'</c> (SF-618's opt-in <c>serializeSameBatchTrackerTasks</c> repository setting) —
+    /// used to chain a tracker-file task to whichever one <c>Factory.GitHubSync.Worker</c> created immediately
+    /// before it in the same <c>SyncTrackerFileAsync</c> pass. Reuses <see cref="AddDependencyAsync"/>'s same
+    /// self-dependency/not-found/cycle checks and idempotent insert, but under its own distinct source so this
+    /// edge is never read or removed by <see cref="ReconcileTrackerDependenciesAsync"/> (which only ever touches
+    /// <c>source='tracker'</c> edges parsed from the item's own <c>Dependencies:</c> line) nor by a manual
+    /// dashboard edit (<c>source IS NULL</c>).</summary>
+    Task<AddDependencyOutcome> AddTrackerBatchDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken);
+
     /// <summary>Every <c>task_type='TrackerFile'</c> task for one repository (SF-707), with enough state for
     /// <c>Factory.GitHubSync.Worker</c> to decide whether that repository's <c>TASKS.md</c> still needs to be
     /// updated to reflect each one's current status.</summary>

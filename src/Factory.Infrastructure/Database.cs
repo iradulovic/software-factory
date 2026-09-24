@@ -979,6 +979,12 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return await InsertDependencyEdgeAsync(c, taskId, dependsOnTaskId, source: null, cancellationToken);
     }
 
+    public async Task<AddDependencyOutcome> AddTrackerBatchDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        return await InsertDependencyEdgeAsync(c, taskId, dependsOnTaskId, "tracker-batch", cancellationToken);
+    }
+
     /// <summary>Shared by the manual SF-611 dashboard path (<see cref="AddDependencyAsync"/>, <paramref name="source"/>
     /// <see langword="null"/>) and SF-710's issue-body reconciliation (<paramref name="source"/> <c>"issue"</c>).</summary>
     private static async Task<AddDependencyOutcome> InsertDependencyEdgeAsync(NpgsqlConnection c, Guid taskId, Guid dependsOnTaskId, string? source, CancellationToken cancellationToken)

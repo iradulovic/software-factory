@@ -713,6 +713,13 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Contains(firstTaskId.Value, removed.Removed);
             Assert.Empty(await tasks.GetDependenciesAsync(secondTaskId.Value, CancellationToken.None));
 
+            // SF-618: a same-batch chain edge is tagged 'tracker-batch' and survives a 'tracker' reconciliation
+            // pass untouched, since that pass only ever reads/removes its own source's edges.
+            Assert.Equal(AddDependencyOutcome.Added, await tasks.AddTrackerBatchDependencyAsync(secondTaskId.Value, firstTaskId.Value, CancellationToken.None));
+            Assert.Equal("tracker-batch", Assert.Single(await tasks.GetDependenciesAsync(secondTaskId.Value, CancellationToken.None)).Source);
+            await tasks.ReconcileTrackerDependenciesAsync(secondTaskId.Value, [], CancellationToken.None);
+            Assert.Equal("tracker-batch", Assert.Single(await tasks.GetDependenciesAsync(secondTaskId.Value, CancellationToken.None)).Source);
+
             // Write-back state: newly created tasks start baselined at NextUp (no file write needed yet); moving
             // a task's status forward is reflected only once SetTrackerWritebackSectionAsync is actually called.
             var trackerTasks = await tasks.GetTrackerFileTasksAsync(repositoryId, CancellationToken.None);

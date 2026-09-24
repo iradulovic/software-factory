@@ -182,6 +182,14 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.FromResult(NextAddDependencyOutcome);
     }
 
+    public List<(Guid TaskId, Guid DependsOnTaskId)> TrackerBatchDependenciesAdded { get; } = [];
+    public AddDependencyOutcome NextAddTrackerBatchDependencyOutcome { get; set; } = AddDependencyOutcome.Added;
+    public Task<AddDependencyOutcome> AddTrackerBatchDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
+    {
+        TrackerBatchDependenciesAdded.Add((taskId, dependsOnTaskId));
+        return Task.FromResult(NextAddTrackerBatchDependencyOutcome);
+    }
+
     public List<(Guid TaskId, Guid DependsOnTaskId)> DependenciesRemoved { get; } = [];
     public Task RemoveDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
     {
