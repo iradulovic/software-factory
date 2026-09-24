@@ -17,7 +17,10 @@ public enum AddDependencyOutcome { Added, AlreadyExists, WouldCreateCycle, TaskN
 /// before <paramref name="TaskId"/> becomes claimable — <see cref="DependsOnTitle"/>/<see cref="DependsOnStatus"/>
 /// are read alongside the edge so the operator can see what is blocking a task without a second lookup.
 /// <paramref name="Source"/> is <c>"issue"</c> when SF-710 parsed this edge from the dependent task's GitHub issue
-/// body, or <see langword="null"/> when an operator added it manually through the dashboard (SF-611).</summary>
+/// body, <c>"tracker"</c> when SF-707 parsed it from a TASKS.md item's own <c>Dependencies:</c> line,
+/// <c>"tracker-batch"</c> when SF-618's <c>serializeSameBatchTrackerTasks</c> option chained it to the previous
+/// task created in the same tracker-file sync pass, or <see langword="null"/> when an operator added it manually
+/// through the dashboard (SF-611).</summary>
 public sealed record TaskDependency(Guid TaskId, Guid DependsOnTaskId, string DependsOnTitle, FactoryTaskStatus DependsOnStatus, string? Source = null);
 
 /// <summary>The result of reconciling a task's <c>source='issue'</c> dependency edges (SF-710) against the current
@@ -275,12 +278,17 @@ public static class StepLogPaths
 /// <c>.factory/config.json</c>'s <c>smokeTest</c> key. <see langword="null"/> (the default — absent from the
 /// file) means <c>SmokeTestStep</c> is skipped entirely; a repository must explicitly configure this to start a
 /// local server and launch a browser at all.</param>
+/// <param name="SerializeSameBatchTrackerTasks">Opt-in (SF-618): when <see langword="true"/>, every tracker-file
+/// task <c>Factory.GitHubSync.Worker</c> creates from the same <c>SyncTrackerFileAsync</c> pass is chained to the
+/// task created immediately before it in that same pass, in TASKS.md file order — without requiring each item to
+/// hand-author a <c>Dependencies:</c> line. Defaults to <see langword="false"/>: items queued in the same poll
+/// cycle are independently claimable, exactly as before this option existed.</param>
 public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<ValidationCommand> BuildCommands, IReadOnlyList<ValidationCommand> TestCommands,
     int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual", int MaxQuotaInterruptions = 20,
-    SmokeTestConfiguration? SmokeTest = null)
+    SmokeTestConfiguration? SmokeTest = null, bool SerializeSameBatchTrackerTasks = false)
 {
     public static RepositoryConfiguration Default { get; } =
-        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null);
+        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null, false);
 }
 
 /// <summary>Opt-in configuration for SF-703's local browser smoke tests. <paramref name="StartCommand"/> starts

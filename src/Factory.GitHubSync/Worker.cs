@@ -6,7 +6,8 @@ using Microsoft.Extensions.Options;
 namespace Factory.GitHubSync;
 
 public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHubClient client, IGitHubPublisher publisher,
-    ITaskStore tasks, ITrackerFileSync trackerFileSync, IClock clock, IOptions<GitHubSyncOptions> options, IOptions<FactoryOptions> factoryOptions, ILogger<Worker> logger) : BackgroundService
+    ITaskStore tasks, ITrackerFileSync trackerFileSync, IRepositoryCache repositoryCache, IRepositoryConfigurationReader configurationReader,
+    IClock clock, IOptions<GitHubSyncOptions> options, IOptions<FactoryOptions> factoryOptions, ILogger<Worker> logger) : BackgroundService
 {
     // Distinct from the orchestrator's own heartbeat (which shares the same FactoryOptions:WorkerId default,
     // {machine}-{pid}, unique per process) so GET /api/workers can tell the two apart at a glance (SF-615) — this
@@ -150,21 +151,67 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
         var trackedIds = tracked.Select(t => t.TrackerItemId).ToHashSet();
 
         var createdCount = 0;
+        var createdInThisPass = new List<string>();
         foreach (var item in items.Where(i => i.Section == TrackerSection.NextUp && !i.Checked && !trackedIds.Contains(i.Id)))
         {
             using var activity = FactoryTelemetry.Source.StartActivity("github.create_task_for_tracker_item");
             activity?.SetTag("factory.repository_id", repository.Id);
             activity?.SetTag("factory.tracker_item_id", item.Id);
             if (await tasks.CreateForTrackerItemIfEligibleAsync(repository.Id, repository.DefaultBranch, item.Id, item.Title, item.Description, cancellationToken))
+            {
                 createdCount++;
+                createdInThisPass.Add(item.Id);
+            }
         }
         if (createdCount > 0)
             logger.LogInformation("Synchronized TASKS.md for {Repository}; created {TaskCount} tracker-file tasks", $"{repository.Owner}/{repository.Name}", createdCount);
+
+        if (createdInThisPass.Count > 1)
+            await SerializeSameBatchTrackerTasksIfConfiguredAsync(repository, createdInThisPass, cancellationToken);
 
         foreach (var item in items)
             await ReconcileTrackerDependenciesAsync(repository, item, cancellationToken);
 
         await WritebackTrackerTransitionsAsync(repository, cancellationToken);
+    }
+
+    /// <summary>SF-618's opt-in fix for a same-poll-cycle batch of tracker-file tasks that would otherwise start
+    /// running in parallel against a stale base branch, each independently re-discovering and re-patching the
+    /// same pre-existing problem, and colliding with each other's changes on publication — the exact failure mode
+    /// SF-619/620/621 hit when queued without a hand-authored <c>Dependencies:</c> line between them. Reads the
+    /// repository's own <c>.factory/config.json</c> (never the item's own tracker text) and, only when
+    /// <see cref="RepositoryConfiguration.SerializeSameBatchTrackerTasks"/> is set, chains each task in
+    /// <paramref name="createdTrackerItemIdsInFileOrder"/> to the one created immediately before it, tagged
+    /// <c>source='tracker-batch'</c> so the edge survives independently of <see cref="ReconcileTrackerDependenciesAsync"/>'s
+    /// own <c>source='tracker'</c> reconciliation of each item's hand-authored <c>Dependencies:</c> line. A
+    /// repository with no such flag (the default) is entirely unaffected — same-batch tasks remain independently
+    /// claimable exactly as before this option existed.</summary>
+    private async Task SerializeSameBatchTrackerTasksIfConfiguredAsync(GitHubRepository repository, IReadOnlyList<string> createdTrackerItemIdsInFileOrder, CancellationToken cancellationToken)
+    {
+        RepositoryConfiguration configuration;
+        try
+        {
+            var cachePath = repositoryCache.GetPath(repository.Owner, repository.Name);
+            configuration = await configurationReader.ReadAsync(cachePath, $"origin/{repository.DefaultBranch}", cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Reading .factory/config.json failed for {Repository}; skipping same-batch tracker task serialization for this pass", $"{repository.Owner}/{repository.Name}");
+            return;
+        }
+        if (!configuration.SerializeSameBatchTrackerTasks) return;
+
+        for (var i = 1; i < createdTrackerItemIdsInFileOrder.Count; i++)
+        {
+            var dependentTaskId = await tasks.FindTaskIdForTrackerItemAsync(repository.Id, createdTrackerItemIdsInFileOrder[i], cancellationToken);
+            var prerequisiteTaskId = await tasks.FindTaskIdForTrackerItemAsync(repository.Id, createdTrackerItemIdsInFileOrder[i - 1], cancellationToken);
+            if (dependentTaskId is null || prerequisiteTaskId is null) continue; // Created moments ago by this same pass; absence here would be a bug elsewhere, not a real race.
+
+            var outcome = await tasks.AddTrackerBatchDependencyAsync(dependentTaskId.Value, prerequisiteTaskId.Value, cancellationToken);
+            if (outcome is not (AddDependencyOutcome.Added or AddDependencyOutcome.AlreadyExists))
+                logger.LogWarning("Could not chain tracker item {DependentItemId} to {PrerequisiteItemId} in {Repository}: {Outcome}",
+                    createdTrackerItemIdsInFileOrder[i], createdTrackerItemIdsInFileOrder[i - 1], $"{repository.Owner}/{repository.Name}", outcome);
+        }
     }
 
     /// <summary>Parses <paramref name="item"/>'s own <c>Dependencies:</c> line (SF-707) and reconciles the result

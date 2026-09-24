@@ -54,6 +54,16 @@ public sealed class RepositoryConfigurationReaderTests
         Assert.Equal(15, configuration.SmokeTest.CheckTimeoutSeconds);
     }
 
+    [Fact]
+    public void Serialize_same_batch_tracker_tasks_is_opt_in_and_read_when_set()
+    {
+        var defaulted = RepositoryConfigurationReader.Parse("{}", "origin/main");
+        var configured = RepositoryConfigurationReader.Parse("""{"serializeSameBatchTrackerTasks":true}""", "origin/main");
+
+        Assert.False(defaulted.SerializeSameBatchTrackerTasks);
+        Assert.True(configured.SerializeSameBatchTrackerTasks);
+    }
+
     [Theory]
     [InlineData("""{"smokeTest":{"healthCheckUrl":"http://localhost:3000"}}""")]
     [InlineData("""{"smokeTest":{"startCommand":"npm run start"}}""")]
