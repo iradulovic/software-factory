@@ -163,6 +163,20 @@ dotnet build SoftwareFactory.slnx --no-restore
 dotnet test SoftwareFactory.slnx --no-build
 ```
 
+`NuGet.Config` is intentionally repository-local: it clears inherited package sources and declares only `nuget.org`, including the OpenTelemetry packages used by `Factory.Infrastructure`. If a machine's user-level NuGet profile is inaccessible, reproduce a clean restore without reading it by redirecting both the user configuration location and package cache before running the same commands:
+
+```powershell
+$cleanNuGetRoot = Join-Path $env:TEMP ("software-factory-nuget-" + [guid]::NewGuid())
+$env:APPDATA = Join-Path $cleanNuGetRoot "appdata"
+$env:NUGET_PACKAGES = Join-Path $cleanNuGetRoot "packages"
+New-Item -ItemType Directory -Force -Path $env:APPDATA, $env:NUGET_PACKAGES | Out-Null
+dotnet restore SoftwareFactory.slnx --configfile NuGet.Config
+dotnet build SoftwareFactory.slnx --no-restore --configuration Release
+dotnet test SoftwareFactory.slnx --no-build --configuration Release
+```
+
+This separates a host-profile access failure from a stale package cache or missing project dependency; a normal clean user profile needs only the first command block.
+
 The PostgreSQL store test executes against a real database when `FACTORY_TEST_CONNECTION_STRING` is set (use a disposable test database). Without it, the portable SQL contract tests still verify the partial unique index and atomic `SKIP LOCKED` claim statement.
 
 ```powershell
