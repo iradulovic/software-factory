@@ -1,15 +1,16 @@
 {
   "status": "completed",
-  "summary": "Added a compact, invariant byte-size formatter to Factory.Core with focused boundary and large-value tests.",
+  "summary": "Added an invariant compact percentage formatter in Factory.Core with one-decimal precision when needed. Added unit coverage for zero, whole, and fractional percentage output.",
   "testsRun": [
-    "dotnet test tests/Factory.Core.Tests/Factory.Core.Tests.csproj",
-    "dotnet build SoftwareFactory.slnx",
-    "dotnet test SoftwareFactory.slnx --no-build"
+    "dotnet restore SoftwareFactory.slnx",
+    "dotnet build SoftwareFactory.slnx --no-restore",
+    "dotnet test tests/Factory.Core.Tests/Factory.Core.Tests.csproj --no-build --no-restore",
+    "dotnet test SoftwareFactory.slnx --no-build --no-restore"
   ],
   "testsPassed": true,
   "filesChanged": [
-    "src/Factory.Core/ByteSizeFormatter.cs",
-    "tests/Factory.Core.Tests/ByteSizeFormatterTests.cs"
+    "src/Factory.Core/PercentageFormatter.cs",
+    "tests/Factory.Core.Tests/PercentageFormatterTests.cs"
   ],
   "risks": [],
   "needsHuman": false,
