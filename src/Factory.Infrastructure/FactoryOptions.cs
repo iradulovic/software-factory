@@ -32,6 +32,14 @@ public sealed class FactoryOptions
     /// <summary>Where full agent and validation-command stdout/stderr are streamed while a step runs. Only
     /// bounded previews of this ever reach PostgreSQL; the API reads the full file from here on request.</summary>
     public string LogsDirectory { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".software-factory", "logs");
+
+    /// <summary>Server-side <c>statement_timeout</c> (seconds) applied to an operator's ad-hoc <c>/api/database/query</c>
+    /// SELECT (SF-717), so one runaway join can't hang the API.</summary>
+    public int DatabaseQueryTimeoutSeconds { get; set; } = 5;
+
+    /// <summary>Maximum rows returned from an ad-hoc <c>/api/database/query</c> SELECT (SF-717); the response reports
+    /// whether the result was truncated by this cap.</summary>
+    public int DatabaseQueryRowLimit { get; set; } = 500;
 }
 
 /// <summary>The configured set of CLI coding agents. Defaults to a single "Codex" profile matching the

@@ -508,6 +508,65 @@ app.MapPatch("/api/repositories/{id:long}", async (long id, SetRepositoryEnabled
     return updated ? Results.NoContent() : Results.NotFound(new { error = $"No repository with id {id}." });
 });
 
+// SF-717: a read-only schema browser plus ad-hoc SELECT queries so staying on top of what the factory is doing
+// doesn't require psql. The keyword check in SqlSelectValidator is only a first-pass rejection — the real
+// enforcement is the database session itself, which refuses any write inside a READ ONLY transaction.
+app.MapGet("/api/database/tables", async (NpgsqlDataSource db, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var rows = await c.QueryAsync<DatabaseColumnRow>(new CommandDefinition("""
+        SELECT table_schema AS "TableSchema", table_name AS "TableName", column_name AS "ColumnName", data_type AS "DataType"
+        FROM information_schema.columns
+        WHERE table_schema IN ('factory','github')
+        ORDER BY table_schema, table_name, ordinal_position
+        """, cancellationToken: ct));
+    var tables = rows.GroupBy(r => (r.TableSchema, r.TableName)).Select(g => new
+    {
+        schema = g.Key.TableSchema,
+        table = g.Key.TableName,
+        columns = g.Select(r => new { name = r.ColumnName, type = r.DataType })
+    });
+    return Results.Ok(tables);
+});
+
+app.MapPost("/api/database/query", async (DatabaseQueryRequest body, NpgsqlDataSource db, IOptions<FactoryOptions> options, ILogger<Program> logger, CancellationToken ct) =>
+{
+    if (!SqlSelectValidator.IsReadOnlySelect(body.Sql, out var validationError))
+        return Results.BadRequest(new { error = validationError });
+
+    logger.LogInformation("Executing ad-hoc database query: {Sql}", body.Sql);
+
+    var rowLimit = Math.Max(1, options.Value.DatabaseQueryRowLimit);
+    var timeoutSeconds = Math.Max(1, options.Value.DatabaseQueryTimeoutSeconds);
+
+    await using var connection = await db.OpenConnectionAsync(ct);
+    await connection.ExecuteAsync(new CommandDefinition("BEGIN TRANSACTION READ ONLY", cancellationToken: ct));
+    try
+    {
+        await connection.ExecuteAsync(new CommandDefinition($"SET LOCAL statement_timeout = {timeoutSeconds * 1000}", cancellationToken: ct));
+        await using var reader = await connection.ExecuteReaderAsync(new CommandDefinition(body.Sql, cancellationToken: ct));
+        var columns = Enumerable.Range(0, reader.FieldCount).Select(reader.GetName).ToArray();
+        var rows = new List<object?[]>();
+        var truncated = false;
+        while (await reader.ReadAsync(ct))
+        {
+            if (rows.Count >= rowLimit) { truncated = true; break; }
+            var values = new object?[reader.FieldCount];
+            for (var i = 0; i < reader.FieldCount; i++) values[i] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+            rows.Add(values);
+        }
+        return Results.Ok(new { columns, rows, rowCount = rows.Count, truncated });
+    }
+    catch (PostgresException ex)
+    {
+        return Results.BadRequest(new { error = ex.MessageText });
+    }
+    finally
+    {
+        await connection.ExecuteAsync(new CommandDefinition("ROLLBACK", cancellationToken: CancellationToken.None));
+    }
+});
+
 app.MapGet("/api/workers", async (NpgsqlDataSource db, IOptions<FactoryOptions> options, CancellationToken ct) =>
 {
     // A worker heartbeats at least every max(PollingIntervalSeconds, LeaseHeartbeatSeconds); tripling that bound

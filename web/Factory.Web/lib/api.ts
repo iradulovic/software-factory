@@ -69,6 +69,14 @@ export const digestRunSchema = z.object({
 export type DigestRun = z.infer<typeof digestRunSchema>;
 export const digestResponseSchema = z.object({ latest: digestRunSchema.nullable(), history: z.array(digestRunSchema) });
 
+export const databaseColumnSchema = z.object({ name: z.string(), type: z.string() });
+export const databaseTableSchema = z.object({ schema: z.string(), table: z.string(), columns: z.array(databaseColumnSchema) });
+export type DatabaseTable = z.infer<typeof databaseTableSchema>;
+export const databaseQueryResultSchema = z.object({
+  columns: z.array(z.string()), rows: z.array(z.array(z.unknown())), rowCount: z.number(), truncated: z.boolean()
+});
+export type DatabaseQueryResult = z.infer<typeof databaseQueryResultSchema>;
+
 export const apiBase = process.env.NEXT_PUBLIC_FACTORY_API_URL ?? "http://localhost:5080";
 
 export async function getJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {

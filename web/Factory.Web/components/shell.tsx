@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { z } from "zod";
-import { Activity, Boxes, CircleGauge, ListTodo, MessageSquareText, Moon, Newspaper, Sun } from "lucide-react";
+import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageSquareText, Moon, Newspaper, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, workerSchema, type Worker } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,7 +25,8 @@ import {
 
 const navigation = [
   ["Overview", "/", CircleGauge], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo],
-  ["Runs", "/runs", Activity], ["Repositories", "/repositories", Boxes], ["Digest", "/digest", Newspaper]
+  ["Runs", "/runs", Activity], ["Repositories", "/repositories", Boxes], ["Digest", "/digest", Newspaper],
+  ["Database", "/database", Database]
 ] as const;
 
 export function Shell({ children }: { children: React.ReactNode }) {
