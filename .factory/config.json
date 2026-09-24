@@ -1,3 +1,4 @@
 {
-  "requireHumanMerge": false
+  "requireHumanMerge": false,
+  "publish": "auto-draft"
 }
