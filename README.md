@@ -52,6 +52,11 @@ Edit `src/Factory.GitHubSync/appsettings.json` and replace the disabled sample e
 }
 ```
 
+A real repository is developer- or machine-specific, unlike the disabled placeholder above, which stays checked
+in as the shared template. Put your real values in `src/Factory.GitHubSync/appsettings.Local.json` instead (same
+shape, gitignored, loaded automatically after `appsettings.json` when present) rather than editing the tracked
+file directly.
+
 The main settings cover the PostgreSQL connection, factory root, polling intervals, task concurrency, task lease and heartbeat intervals, configured CLI coding agents, default branch, and configured repositories. Environment-variable examples are in `.env.example`; no real credentials belong in configuration.
 
 Every CLI coding agent — Codex, Claude Code, or anything else with a CLI and a prompt — is configured under `Agents:Profiles`, never a new class:
