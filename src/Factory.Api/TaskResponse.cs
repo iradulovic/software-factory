@@ -1,0 +1,18 @@
+public sealed record TaskResponse(
+    Guid Id,
+    string Title,
+    string Repository,
+    int? IssueNumber,
+    string Status,
+    int Priority,
+    string Agent,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? CompletedAt,
+    string? BranchName,
+    string? WorktreePath,
+    string? FailureReason,
+    int? ReviewMinutes,
+    string? Result,
+    double DurationSeconds,
+    bool RequireHumanMerge);

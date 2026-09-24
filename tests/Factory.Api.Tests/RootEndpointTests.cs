@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -84,6 +85,18 @@ public sealed class RootEndpointTests : IClassFixture<RootEndpointTests.FactoryA
         Assert.Equal("src/Feature.cs", Assert.Single(result.FilesChanged));
         Assert.Equal("Migration required", Assert.Single(result.Risks));
         Assert.Equal("Approve rollout", result.HumanReason);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Task_response_exposes_the_persisted_merge_policy(bool requireHumanMerge)
+    {
+        var response = new TaskResponse(Guid.NewGuid(), "Add invoice export", "acme/billing", 42, "Published", 0,
+            "Codex", DateTimeOffset.UtcNow, null, null, null, null, null, null, "Passed", 0, requireHumanMerge);
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(response, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        Assert.Equal(requireHumanMerge, document.RootElement.GetProperty("requireHumanMerge").GetBoolean());
     }
 
     public sealed class FactoryApplication : WebApplicationFactory<Program>
