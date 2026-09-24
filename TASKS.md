@@ -45,6 +45,11 @@ Subscription facts are time-sensitive. Before implementing provider handling, ve
   - Scope: the 2026-09-22 functionality review recorded that the broader test invocation hit missing OpenTelemetry references in the existing restore state, and a fresh `dotnet restore` was separately blocked by access to the user-level NuGet configuration. `Factory.Infrastructure.csproj` depends on OpenTelemetry packages; root-cause and fix whichever of these (stale lock file, missing package source, NuGet.Config scope) actually causes a clean-environment `dotnet restore && dotnet build && dotnet test` to fail.
   - Acceptance: a `dotnet restore` from a clean NuGet cache (or an equivalent documented clean-environment reproduction) succeeds, followed by a warning-free `dotnet build` and a full `dotnet test` pass across all projects. Document the root cause and fix in the completion note so it does not silently recur.
 
+- [ ] **SF-621 — Surface each task's merge policy (auto-merge vs. HUMAN REVIEW) in the dashboard**
+  - Dependencies: SF-709 (complete).
+  - Scope: `Factory.Core.HumanReviewMarker` already determines whether a task's GitHub issue opts into human-controlled merge, and `PreparePublicationStep` already acts on it, but `Factory.Api` does not expose this on any task DTO and the `web/` dashboard has no indication anywhere of which tasks will auto-merge versus wait for a human. Add the computed flag to the relevant API response(s) and show it as a clear badge on the task list and task detail views.
+  - Acceptance: the task list and task detail pages show an explicit "Auto-merge" or "Human review" badge per task, backed by a real API field (not inferred client-side from label text); covered by a backend test for the new field and a frontend check that the badge renders for both states.
+
 ## Next up
 
 The order below is the implementation sequence from the 2026-09-22 functionality review. Complete reliability fixes before expanding unattended operation. Each item is a separate scope; move only the selected item to **In progress**. Work listed under **Optional backlog** is not automatically eligible.
@@ -71,10 +76,6 @@ SF-617 and SF-608 are complete; see **Completed** below. SF-615 (depends on SF-6
 
 
 
-- [ ] **SF-621 — Surface each task's merge policy (auto-merge vs. HUMAN REVIEW) in the dashboard**
-  - Dependencies: SF-709 (complete).
-  - Scope: `Factory.Core.HumanReviewMarker` already determines whether a task's GitHub issue opts into human-controlled merge, and `PreparePublicationStep` already acts on it, but `Factory.Api` does not expose this on any task DTO and the `web/` dashboard has no indication anywhere of which tasks will auto-merge versus wait for a human. Add the computed flag to the relevant API response(s) and show it as a clear badge on the task list and task detail views.
-  - Acceptance: the task list and task detail pages show an explicit "Auto-merge" or "Human review" badge per task, backed by a real API field (not inferred client-side from label text); covered by a backend test for the new field and a frontend check that the badge renders for both states.
 
 ### Priority 4 — Remove the developer as the default merge bottleneck
 
