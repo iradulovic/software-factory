@@ -30,64 +30,77 @@ public sealed class SmokeTestStep(ITaskStore tasks, IProcessRunner processes, IB
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
         var artifactsDirectory = Path.Combine(Path.GetDirectoryName(logPath)!, $"{stepId}-screenshots");
 
-        if (configuration.InstallCommand is not null)
-        {
-            var installLogPath = Path.Combine(Path.GetDirectoryName(logPath)!, $"{stepId}-install.log");
-            var installResult = await processes.RunAsync(
-                new ProcessRequest(configuration.InstallCommand.Executable, configuration.InstallCommand.Arguments, context.Worktree!.Path, LogPath: installLogPath, Timeout: TimeSpan.FromMinutes(10)),
-                cancellationToken);
-            if (!installResult.Succeeded)
-            {
-                var reason = $"Smoke test dependency install failed: {installResult.StandardError.Trim()}";
-                await tasks.CompleteStepAsync(stepId, ExecutionStatus.Failed, reason, null, cancellationToken);
-                return PipelineStepResult.Failed(reason, repairable: true);
-            }
-        }
-
-        using var serverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var serverTask = processes.RunAsync(
-            new ProcessRequest(configuration.StartCommand.Executable, configuration.StartCommand.Arguments, context.Worktree!.Path, LogPath: logPath),
-            serverCts.Token);
-
         try
         {
-            var client = httpClientFactory.CreateClient(nameof(SmokeTestStep));
-            var healthy = await HealthCheckPoller.WaitUntilHealthyAsync(
-                async probeToken =>
+            if (configuration.InstallCommand is not null)
+            {
+                var installLogPath = Path.Combine(Path.GetDirectoryName(logPath)!, $"{stepId}-install.log");
+                var installResult = await processes.RunAsync(
+                    new ProcessRequest(configuration.InstallCommand.Executable, configuration.InstallCommand.Arguments, context.Worktree!.Path, LogPath: installLogPath, Timeout: TimeSpan.FromMinutes(10)),
+                    cancellationToken);
+                if (!installResult.Succeeded)
                 {
-                    try { return (await client.GetAsync(configuration.HealthCheckUrl, probeToken)).IsSuccessStatusCode; }
-                    catch (Exception ex) when (ex is not OperationCanceledException) { return false; }
-                },
-                TimeSpan.FromSeconds(configuration.StartupTimeoutSeconds), TimeSpan.FromSeconds(1), cancellationToken);
-
-            if (!healthy)
-            {
-                var reason = $"Local application did not become healthy at {configuration.HealthCheckUrl} within {configuration.StartupTimeoutSeconds}s.";
-                await tasks.CompleteStepAsync(stepId, ExecutionStatus.Failed, reason, null, cancellationToken);
-                return PipelineStepResult.Failed(reason, repairable: true);
+                    var reason = $"Smoke test dependency install failed: {installResult.StandardError.Trim()}";
+                    await tasks.CompleteStepAsync(stepId, ExecutionStatus.Failed, reason, null, cancellationToken);
+                    return PipelineStepResult.Failed(reason, repairable: true);
+                }
             }
 
-            var checks = await browser.RunAsync(configuration.HealthCheckUrl, configuration.CheckPaths, artifactsDirectory, TimeSpan.FromSeconds(configuration.CheckTimeoutSeconds), cancellationToken);
-            var failed = checks.Where(c => !c.Succeeded).ToList();
-            var summary = string.Join("; ", checks.Select(c => $"{c.Path}: {(c.Succeeded ? "ok" : c.Error)}"));
+            using var serverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var serverTask = processes.RunAsync(
+                new ProcessRequest(configuration.StartCommand.Executable, configuration.StartCommand.Arguments, context.Worktree!.Path, LogPath: logPath),
+                serverCts.Token);
 
-            if (failed.Count == 0)
+            try
             {
-                await tasks.CompleteStepAsync(stepId, ExecutionStatus.Succeeded, null, summary, cancellationToken);
-                return PipelineStepResult.Ok;
-            }
+                var client = httpClientFactory.CreateClient(nameof(SmokeTestStep));
+                var healthy = await HealthCheckPoller.WaitUntilHealthyAsync(
+                    async probeToken =>
+                    {
+                        try { return (await client.GetAsync(configuration.HealthCheckUrl, probeToken)).IsSuccessStatusCode; }
+                        catch (Exception ex) when (ex is not OperationCanceledException) { return false; }
+                    },
+                    TimeSpan.FromSeconds(configuration.StartupTimeoutSeconds), TimeSpan.FromSeconds(1), cancellationToken);
 
-            var error = string.Join("; ", failed.Select(c => $"{c.Path}: {c.Error}"));
-            await tasks.CompleteStepAsync(stepId, ExecutionStatus.Failed, error, summary, cancellationToken);
-            return PipelineStepResult.Failed($"Smoke test check(s) failed: {string.Join(", ", failed.Select(c => c.Path))}. Screenshots: {artifactsDirectory}.", repairable: true);
+                if (!healthy)
+                {
+                    var reason = $"Local application did not become healthy at {configuration.HealthCheckUrl} within {configuration.StartupTimeoutSeconds}s.";
+                    await tasks.CompleteStepAsync(stepId, ExecutionStatus.Failed, reason, null, cancellationToken);
+                    return PipelineStepResult.Failed(reason, repairable: true);
+                }
+
+                var checks = await browser.RunAsync(configuration.HealthCheckUrl, configuration.CheckPaths, artifactsDirectory, TimeSpan.FromSeconds(configuration.CheckTimeoutSeconds), cancellationToken);
+                var failed = checks.Where(c => !c.Succeeded).ToList();
+                var summary = string.Join("; ", checks.Select(c => $"{c.Path}: {(c.Succeeded ? "ok" : c.Error)}"));
+
+                if (failed.Count == 0)
+                {
+                    await tasks.CompleteStepAsync(stepId, ExecutionStatus.Succeeded, null, summary, cancellationToken);
+                    return PipelineStepResult.Ok;
+                }
+
+                var error = string.Join("; ", failed.Select(c => $"{c.Path}: {c.Error}"));
+                await tasks.CompleteStepAsync(stepId, ExecutionStatus.Failed, error, summary, cancellationToken);
+                return PipelineStepResult.Failed($"Smoke test check(s) failed: {string.Join(", ", failed.Select(c => c.Path))}. Screenshots: {artifactsDirectory}.", repairable: true);
+            }
+            finally
+            {
+                // This is "stop": cancelling the linked token makes ProcessRunner kill the whole process tree
+                // (see ProcessRunner.RunAsync) and return normally — it never throws on cancellation — so awaiting it
+                // here always completes and never leaves the local application running past this step.
+                await serverCts.CancelAsync();
+                await serverTask;
+            }
         }
         finally
         {
-            // This is "stop": cancelling the linked token makes ProcessRunner kill the whole process tree
-            // (see ProcessRunner.RunAsync) and return normally — it never throws on cancellation — so awaiting it
-            // here always completes and never leaves the local application running past this step.
-            await serverCts.CancelAsync();
-            await serverTask;
+            // Installing dependencies and/or starting the local application can leave the worktree dirty (Next.js
+            // regenerates the tracked next-env.d.ts on startup, and can scaffold new untracked files) even though
+            // nothing here is meant to be published — CollectDiff already captured everything the agent actually
+            // committed before this step ever runs, so restoring the worktree to that already-committed state
+            // afterward is always safe and required: PreparePublicationStep refuses to publish a dirty worktree.
+            await processes.RunAsync(new ProcessRequest("git", ["checkout", "--", "."], context.Worktree!.Path), CancellationToken.None);
+            await processes.RunAsync(new ProcessRequest("git", ["clean", "-fd"], context.Worktree!.Path), CancellationToken.None);
         }
     }
 }
