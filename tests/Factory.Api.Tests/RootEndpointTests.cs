@@ -93,7 +93,7 @@ public sealed class RootEndpointTests : IClassFixture<RootEndpointTests.FactoryA
     public void Task_response_exposes_the_persisted_merge_policy(bool requireHumanMerge)
     {
         var response = new TaskResponse(Guid.NewGuid(), "Add invoice export", "acme/billing", 42, "Published", 0,
-            "Codex", DateTimeOffset.UtcNow, null, null, null, null, null, null, "Passed", 0, requireHumanMerge);
+            "Codex", DateTimeOffset.UtcNow, null, null, null, null, null, null, requireHumanMerge, "Passed", 0);
 
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(response, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
         Assert.Equal(requireHumanMerge, document.RootElement.GetProperty("requireHumanMerge").GetBoolean());

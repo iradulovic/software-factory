@@ -1,14 +1,33 @@
+using Dapper;
 using Factory.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Factory.Infrastructure;
 
+/// <summary>Npgsql reads a <c>timestamptz</c> column as <see cref="DateTime"/>, but Dapper's constructor-based
+/// (record) materialization requires an exact type match and has no built-in <see cref="DateTime"/> -&gt;
+/// <see cref="DateTimeOffset"/> conversion for that path (only for mutable POCO property setters) - without this
+/// handler, any Dapper query into a record with a <see cref="DateTimeOffset"/> parameter throws "no matching
+/// constructor" for every row, regardless of its actual values.</summary>
+internal sealed class DateTimeOffsetTypeHandler : SqlMapper.TypeHandler<DateTimeOffset>
+{
+    public override DateTimeOffset Parse(object value) => value switch
+    {
+        DateTimeOffset offset => offset,
+        DateTime dateTime => new DateTimeOffset(DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)),
+        _ => throw new InvalidCastException($"Cannot convert {value.GetType()} to DateTimeOffset.")
+    };
+
+    public override void SetValue(System.Data.IDbDataParameter parameter, DateTimeOffset value) => parameter.Value = value;
+}
+
 public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddFactoryInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
+        SqlMapper.AddTypeHandler(new DateTimeOffsetTypeHandler());
         services.Configure<FactoryOptions>(configuration.GetSection("Factory"));
         services.Configure<GitHubSyncOptions>(configuration.GetSection("GitHub"));
         services.Configure<WorktreeCleanupOptions>(configuration.GetSection("WorktreeCleanup"));
