@@ -1,0 +1,5 @@
+ agent  | severity |                  file                   | line |                                                                                                                                                        description                                                                                                                                                        
+--------+----------+-----------------------------------------+------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Claude | low      | src/Factory.Core/PercentageFormatter.cs |    9 | No handling/documentation for out-of-range input (ratio < 0 or > 1) or NaN/Infinity; the task description scopes the input to 0.0-1.0 so this is likely acceptable, but a caller passing an out-of-range or non-finite ratio gets an unvalidated pass-through result (e.g. NaN -> "NaN%") with no explicit test coverage.
+(1 row)
+

@@ -1,0 +1,5 @@
+ agent |  status   | attempt_number 
+-------+-----------+----------------
+ Codex | Succeeded |              1
+(1 row)
+
