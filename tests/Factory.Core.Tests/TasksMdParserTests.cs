@@ -96,8 +96,16 @@ public sealed class TasksMdParserTests
 
         var items = TasksMdParser.Parse(content);
 
-        Assert.Contains(items, i => i.Id == "SF-618" && !i.Checked && i.Section == TrackerSection.InProgress);
-        Assert.Contains(items, i => i.Id == "SF-619" && !i.Checked && i.Section is TrackerSection.InProgress or TrackerSection.NextUp);
+        // Deliberately asserts only on items whose state can never legitimately change again (already Completed),
+        // not on an in-flight item's current section — SF-618/619/620/621 move between sections as the real
+        // unattended milestone actually runs (SF-707's own writeback), so pinning an assertion to one of their
+        // current sections makes this test fail on every real, correct state transition rather than on an actual
+        // parser regression. The structural assertions below (parses, finds real items, ids are well-formed) are
+        // what this test's own name promises: parseable without throwing. (Every one of SF-618/619/620/621's own
+        // task runs independently patched this same assertion to unblock its own `dotnet test` run — this is the
+        // consolidated fix; none of those narrower patches needs to survive.)
+        Assert.NotEmpty(items);
+        Assert.All(items, i => Assert.Matches(@"^SF-\d+$", i.Id));
         Assert.Contains(items, i => i.Id == "SF-710" && i.Checked && i.Section == TrackerSection.Completed);
         Assert.Contains(items, i => i.Id == "SF-703" && i.Checked && i.Section == TrackerSection.Completed);
     }
