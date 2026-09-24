@@ -298,6 +298,14 @@ The Orchestrator's `Worker` records a heartbeat (worker id, host, current task) 
 
 A separate `WorktreeCleanupWorker` sweeps for resting tasks' worktrees every `WorktreeCleanup:PollingIntervalSeconds` (default 5 minutes) and removes them, never touching a task that is still active or one whose status changes in the moment cleanup gets to it. By default it retains (never removes) worktrees for `Failed` and `NeedsHuman` tasks, so there's still something to inspect after a run needed a human; configure `WorktreeCleanup:RetainStatuses` to change that, or `WorktreeCleanup:Enabled: false` to turn cleanup off entirely. Every path is validated as living inside the configured worktrees directory before anything is deleted.
 
+## Database page (SF-717)
+
+The dashboard's Database page (`/database`) is a read-only schema browser plus ad-hoc SQL editor for the `factory.*`/`github.*` schema, so answering "what's actually in the database right now" doesn't require opening `psql`. `GET /api/database/tables` lists every table and column in both schemas from `information_schema.columns`; `POST /api/database/query` accepts one SELECT (or `WITH ... SELECT`) statement and returns its columns and rows as JSON, capped at `Factory:DatabaseQueryRowLimit` rows (default 500, response reports `truncated`) and bounded by a `Factory:DatabaseQueryTimeoutSeconds` server-side `statement_timeout` (default 5s).
+
+The read-only guarantee is enforced at the database session level: every submitted query runs inside a `BEGIN TRANSACTION READ ONLY` block on its own connection, then always rolls back — so a write is rejected by Postgres itself even if it slips past the lightweight keyword check that rejects `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`TRUNCATE`/`GRANT`/`CREATE`/`CALL` and multi-statement input up front. That check is only a fast first-pass rejection, never the actual security boundary.
+
+This endpoint is safe only because the API is not exposed beyond localhost/the operator's own machine — an ad-hoc SQL endpoint, even a read-only one, would need real authentication and stricter isolation before ever running the API reachable from outside the operator's own network (e.g. a future VPS deployment).
+
 ## Telemetry
 
 The API, Orchestrator, and GitHub Sync hosts all export OpenTelemetry traces through the same `Telemetry` configuration section, and all three tag spans with whichever of task, run, step, repository, and issue identifiers apply to that operation (never agent prompts, source content, stdout/stderr, or secrets):
