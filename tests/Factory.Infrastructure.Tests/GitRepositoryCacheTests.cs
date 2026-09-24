@@ -165,6 +165,55 @@ public sealed class GitRepositoryCacheTests
         finally { TestGit.DeleteRecursively(root); }
     }
 
+    // SF-715: RepositoryCache's info/exclude only ever hides *untracked* paths — it has no effect on a path that
+    // is already tracked in the upstream repository's history (as .factory/result.json genuinely was in this
+    // repository, committed by every task's own agent run before this fix). A tracked file's modifications
+    // always show up in `git status`/`git add -A` regardless of any ignore rule, so the previous "hide
+    // .factory/ via the cache" approach alone could never stop this file from being committed, and unrelated
+    // tasks whose branches both touched it kept colliding on pure bookkeeping. Untracking it from upstream and
+    // also gitignoring it (belt-and-suspenders for a plain manual clone that never goes through RepositoryCache)
+    // is what actually fixes it — reproduced end-to-end here.
+    [Fact]
+    public async Task Already_tracked_factory_result_keeps_conflicting_until_untracked_and_gitignored()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-git-");
+        try
+        {
+            var git = new TestGit(root.FullName);
+            var upstream = await git.CreateUpstreamAsync("first");
+            // Simulate this repository's real, pre-fix history: an earlier task's agent committed
+            // .factory/result.json straight into the base branch.
+            Directory.CreateDirectory(Path.Combine(upstream, ".factory"));
+            await File.WriteAllTextAsync(Path.Combine(upstream, ".factory", "result.json"), """{"status":"completed"}""");
+            await git.RunAsync(upstream, "add", ".factory/result.json");
+            await git.RunAsync(upstream, "commit", "--quiet", "-m", "stale committed result.json");
+
+            var options = Options.Create(new FactoryOptions { RootDirectory = Path.Combine(root.FullName, "factory") });
+            var repository = new GitHubRepository(1, "acme", "billing", upstream, "main", true);
+            var cache = new RepositoryCache(git.Runner, options);
+            var inspector = new GitWorktreeInspector(git.Runner);
+            var worktrees = new GitWorktreeManager(cache, git.Runner, options, NullLogger<GitWorktreeManager>.Instance);
+
+            var before = await worktrees.CreateAsync(repository, NewTask("Before fix", 1), CancellationToken.None);
+            await File.WriteAllTextAsync(Path.Combine(before.Path, ".factory", "result.json"), """{"status":"completed","summary":"task A"}""");
+            // The cache's info/exclude pattern is present, yet the file still reads as a real, committable
+            // change: it is a modification to an already-tracked path, which ignore rules cannot hide.
+            Assert.True(await inspector.HasChangesAsync(before.Path, "origin/main", CancellationToken.None));
+
+            // Apply the fix on upstream: untrack the file and record it as ignored going forward.
+            await git.RunAsync(upstream, "rm", "--cached", "--quiet", ".factory/result.json");
+            await File.WriteAllTextAsync(Path.Combine(upstream, ".gitignore"), ".factory/result.json\n");
+            await git.RunAsync(upstream, "add", ".gitignore");
+            await git.RunAsync(upstream, "commit", "--quiet", "-m", "SF-715: stop tracking .factory/result.json");
+
+            var after = await worktrees.CreateAsync(repository, NewTask("After fix", 2), CancellationToken.None);
+            Directory.CreateDirectory(Path.Combine(after.Path, ".factory"));
+            await File.WriteAllTextAsync(Path.Combine(after.Path, ".factory", "result.json"), """{"status":"completed","summary":"task B"}""");
+            Assert.False(await inspector.HasChangesAsync(after.Path, "origin/main", CancellationToken.None));
+        }
+        finally { TestGit.DeleteRecursively(root); }
+    }
+
     private static FactoryTask NewTask(string title, int issue) => new(Guid.NewGuid(), 1, 2, issue, title, "", "GitHubIssue", 0,
         FactoryTaskStatus.Pending, null, "main", null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);
 

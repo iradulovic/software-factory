@@ -16,3 +16,11 @@ scripts/.run/
 backups/
 *.user
 *.suo
+
+# Per-task agent context/result files (SF-715): RepositoryCache already excludes .factory/ via the cache's
+# info/exclude for every orchestrator-managed worktree, but that has no effect on a path already tracked in
+# history (ignore rules never hide modifications to a tracked file) and does nothing for a plain manual clone.
+# .factory/config.json is real repository configuration and stays tracked; only the per-run scratch files are
+# ignored here.
+.factory/result.json
+.factory/task.md
