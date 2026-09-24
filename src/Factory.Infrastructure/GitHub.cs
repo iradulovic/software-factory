@@ -324,6 +324,23 @@ public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
     }
 }
 
+/// <summary>Toggles the <c>factory:ready</c> label an operator applies through the dashboard (SF-717 follow-up).
+/// Kept separate from <see cref="GhCliPublisher"/>, which stays the orchestrator's exclusive writer, even though
+/// both shell out to the same <c>gh</c> CLI.</summary>
+public sealed class GhCliIssueReadyLabelWriter(IProcessRunner runner) : IIssueReadyLabelWriter
+{
+    public const string ReadyLabel = "factory:ready";
+
+    public async Task<GitHubWriteResult> SetReadyAsync(string owner, string name, int issueNumber, bool isReady, CancellationToken cancellationToken)
+    {
+        var flag = isReady ? "--add-label" : "--remove-label";
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["issue", "edit", issueNumber.ToString(), "--repo", $"{owner}/{name}", flag, ReadyLabel],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        return result.Succeeded ? new GitHubWriteResult(true, null) : new GitHubWriteResult(false, result.StandardError.Trim());
+    }
+}
+
 internal sealed class GitHubRepositoryRow
 {
     public long Id { get; init; }

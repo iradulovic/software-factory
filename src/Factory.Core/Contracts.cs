@@ -593,3 +593,14 @@ public interface IGitHubPublisher
     /// comes back as <c>Succeeded=false</c> with the real <c>gh</c> error text, never thrown.</summary>
     Task<MergeResult> MergePullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken);
 }
+
+/// <summary>The dashboard operator's own path to writing to GitHub — distinct from <see cref="IGitHubPublisher"/>,
+/// which stays the orchestrator's exclusive path for its own automatic publishing decisions. This covers the one
+/// operator action Software Factory exposes today: toggling the <c>factory:ready</c> label that makes an
+/// already-imported issue eligible for dispatch. That label is deliberately never applied automatically by
+/// GitHub Sync (see <c>BOOTSTRAP_GITHUB_ISSUE_GRAPH.md</c>'s "Applying it is dispatch, not decoration") — a human
+/// applies it through the dashboard instead of editing GitHub directly.</summary>
+public interface IIssueReadyLabelWriter
+{
+    Task<GitHubWriteResult> SetReadyAsync(string owner, string name, int issueNumber, bool isReady, CancellationToken cancellationToken);
+}
