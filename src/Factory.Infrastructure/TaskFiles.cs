@@ -66,7 +66,9 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
         var checkTimeoutSeconds = file.CheckTimeoutSeconds ?? 30;
         if (startupTimeoutSeconds < 1 || checkTimeoutSeconds < 1)
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: smokeTest.startupTimeoutSeconds and smokeTest.checkTimeoutSeconds must be at least 1.");
-        return new SmokeTestConfiguration(file.StartCommand, file.HealthCheckUrl.Trim(), file.CheckPaths ?? ["/"], startupTimeoutSeconds, checkTimeoutSeconds);
+        if (file.InstallCommand is not null && string.IsNullOrWhiteSpace(file.InstallCommand.Executable))
+            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: smokeTest.installCommand must have a non-empty executable.");
+        return new SmokeTestConfiguration(file.StartCommand, file.HealthCheckUrl.Trim(), file.CheckPaths ?? ["/"], startupTimeoutSeconds, checkTimeoutSeconds, file.InstallCommand);
     }
 }
 
@@ -91,6 +93,7 @@ internal sealed class SmokeTestConfigurationFile
     public IReadOnlyList<string>? CheckPaths { get; init; }
     public int? StartupTimeoutSeconds { get; init; }
     public int? CheckTimeoutSeconds { get; init; }
+    public ValidationCommand? InstallCommand { get; init; }
 }
 
 public sealed class TaskContextWriter : ITaskContextWriter

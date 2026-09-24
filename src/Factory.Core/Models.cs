@@ -291,18 +291,22 @@ public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<Va
         new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null, false);
 }
 
-/// <summary>Opt-in configuration for SF-703's local browser smoke tests. <paramref name="StartCommand"/> starts
-/// the repository's local application (the same <see cref="ValidationCommand"/> shape build/test commands already
-/// use); <paramref name="HealthCheckUrl"/> is polled until it responds successfully, or
-/// <paramref name="StartupTimeoutSeconds"/> elapses, before any check runs; each of <paramref name="CheckPaths"/>
-/// (resolved against <paramref name="HealthCheckUrl"/>'s origin) is then visited once, each capped at
-/// <paramref name="CheckTimeoutSeconds"/>.</summary>
+/// <summary>Opt-in configuration for SF-703's local browser smoke tests. <paramref name="InstallCommand"/>, when
+/// set, runs once before <paramref name="StartCommand"/> — a task's Git worktree only ever contains tracked files
+/// (e.g. a gitignored <c>node_modules</c> is never present in a freshly created worktree), so a repository whose
+/// <paramref name="StartCommand"/> depends on untracked, installable dependencies must configure this to restore
+/// them there first (SF-712). <paramref name="StartCommand"/> starts the repository's local application (the same
+/// <see cref="ValidationCommand"/> shape build/test commands already use); <paramref name="HealthCheckUrl"/> is
+/// polled until it responds successfully, or <paramref name="StartupTimeoutSeconds"/> elapses, before any check
+/// runs; each of <paramref name="CheckPaths"/> (resolved against <paramref name="HealthCheckUrl"/>'s origin) is
+/// then visited once, each capped at <paramref name="CheckTimeoutSeconds"/>.</summary>
 public sealed record SmokeTestConfiguration(
     ValidationCommand StartCommand,
     string HealthCheckUrl,
     IReadOnlyList<string> CheckPaths,
     int StartupTimeoutSeconds = 60,
-    int CheckTimeoutSeconds = 30);
+    int CheckTimeoutSeconds = 30,
+    ValidationCommand? InstallCommand = null);
 
 /// <summary>One browser check's outcome (SF-703) — a deterministic page-load check, not a full assertion
 /// framework: <paramref name="Succeeded"/> means the page navigated and finished loading within its timeout.

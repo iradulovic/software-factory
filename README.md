@@ -135,6 +135,7 @@ A repository can optionally opt into local browser smoke tests (SF-703) with a `
 ```json
 {
   "smokeTest": {
+    "installCommand": ["npm", "ci"],
     "startCommand": ["npm", "run", "start"],
     "healthCheckUrl": "http://localhost:3000/health",
     "checkPaths": ["/", "/orders"],
@@ -145,6 +146,8 @@ A repository can optionally opt into local browser smoke tests (SF-703) with a `
 ```
 
 `startCommand` starts the application (same array/string/`{"shell":...}` forms as `buildCommands`/`testCommands`); `healthCheckUrl` is polled every second until it responds successfully or `startupTimeoutSeconds` elapses; each of `checkPaths` (default `["/"]`, resolved against `healthCheckUrl`'s origin) is then visited once in a headless Chromium browser via [Playwright](https://playwright.dev/dotnet/), capped at `checkTimeoutSeconds`. A screenshot is always saved next to the step's log (pass or fail), so a failure has concrete evidence, not just an error message. The application is always stopped afterward, success or failure — its process is killed the same way a build/test command's timeout kills one. Requires Chromium to already be installed locally (`playwright install chromium`, run once per machine); if it is not, every check fails with a clear message rather than the step silently doing nothing. This never deploys or reaches a public URL — everything runs against `localhost`.
+
+`installCommand` (optional, absent by default) runs once, before `startCommand`. A task's Git worktree only ever contains tracked files, so a `startCommand` that depends on gitignored, installable dependencies (e.g. a Node app's `node_modules`) never finds them in a freshly created worktree without this — the fix for a real per-task run's `startCommand` structurally failing every time (SF-712). It fails the step (same repairable failure as a failed check) if it exits non-zero, and its own output is logged next to `startCommand`'s.
 
 A quota-interrupted invocation never got a real chance to implement anything, so it does not count toward `maxImplementationAttempts`, and the "previous attempt" context above always reflects the last invocation that actually tried, never a quota blip. Excluding quota interruptions from that budget is bounded separately by `maxQuotaInterruptions`: once a task has accumulated that many quota-interrupted invocations without a successful attempt, it moves to `NeedsHuman` instead of waiting again, so a persistently blocked provider cannot make a task wait forever.
 

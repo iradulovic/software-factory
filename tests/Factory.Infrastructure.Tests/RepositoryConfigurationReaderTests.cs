@@ -39,6 +39,17 @@ public sealed class RepositoryConfigurationReaderTests
         Assert.Equal(["/"], configuration.SmokeTest.CheckPaths);
         Assert.Equal(60, configuration.SmokeTest.StartupTimeoutSeconds);
         Assert.Equal(30, configuration.SmokeTest.CheckTimeoutSeconds);
+        Assert.Null(configuration.SmokeTest.InstallCommand);
+    }
+
+    [Fact]
+    public void Smoke_test_install_command_is_read_when_set()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("""
+            {"smokeTest":{"installCommand":"npm ci","startCommand":"npm run start","healthCheckUrl":"http://localhost:3000/health"}}
+            """, "origin/main");
+
+        Assert.Equal(new ValidationCommand("npm", ["ci"]), configuration.SmokeTest!.InstallCommand);
     }
 
     [Fact]
@@ -69,6 +80,7 @@ public sealed class RepositoryConfigurationReaderTests
     [InlineData("""{"smokeTest":{"startCommand":"npm run start"}}""")]
     [InlineData("""{"smokeTest":{"startCommand":"npm run start","healthCheckUrl":"http://localhost:3000","startupTimeoutSeconds":0}}""")]
     [InlineData("""{"smokeTest":{"startCommand":"npm run start","healthCheckUrl":"http://localhost:3000","checkTimeoutSeconds":0}}""")]
+    [InlineData("""{"smokeTest":{"startCommand":"npm run start","healthCheckUrl":"http://localhost:3000","installCommand":{"shell":""}}}""")]
     public void Invalid_smoke_test_configuration_fails_clearly(string json) =>
         Assert.Contains(".factory/config.json", Assert.Throws<InvalidOperationException>(() => RepositoryConfigurationReader.Parse(json, "origin/main")).Message);
 

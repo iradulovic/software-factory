@@ -82,6 +82,44 @@ public sealed class SmokeTestStepTests
     }
 
     [Fact]
+    public async Task Install_command_runs_before_the_server_starts_when_configured()
+    {
+        var store = new FakeTaskStore();
+        var processes = new FakeProcessRunner(hangs: request => request.FileName == "npm" && request.Arguments.SequenceEqual(new[] { "run", "start" }));
+        var browser = new FakeBrowserRunner([
+            new SmokeTestCheckResult("/", true, null, "/tmp/root.png", TimeSpan.FromMilliseconds(50)),
+            new SmokeTestCheckResult("/orders", true, null, "/tmp/orders.png", TimeSpan.FromMilliseconds(50))
+        ]);
+        var withInstall = Configuration with { InstallCommand = new ValidationCommand("npm", ["ci"]) };
+        var step = new SmokeTestStep(store, processes, browser, new FakeHttpClientFactory(_ => new(HttpStatusCode.OK)), Options.Create(new FactoryOptions()));
+
+        var result = await step.ExecuteAsync(Context(withInstall), CancellationToken.None);
+
+        Assert.Equal(PipelineOutcome.Succeeded, result.Outcome);
+        Assert.Equal(2, processes.Started.Count);
+        Assert.Equal(["ci"], processes.Started[0].Arguments);
+        Assert.Equal(["run", "start"], processes.Started[1].Arguments);
+    }
+
+    [Fact]
+    public async Task A_failing_install_command_fails_the_step_without_starting_the_server()
+    {
+        var store = new FakeTaskStore();
+        var processes = new FakeProcessRunner(hangs: _ => false, installExitCode: 1, installStandardError: "npm ci failed");
+        var browser = new FakeBrowserRunner([]) { ThrowIfCalled = true };
+        var withInstall = Configuration with { InstallCommand = new ValidationCommand("npm", ["ci"]) };
+        var step = new SmokeTestStep(store, processes, browser, new FakeHttpClientFactory(_ => new(HttpStatusCode.OK)), Options.Create(new FactoryOptions()));
+
+        var result = await step.ExecuteAsync(Context(withInstall), CancellationToken.None);
+
+        Assert.Equal(PipelineOutcome.Failed, result.Outcome);
+        Assert.True(result.Repairable);
+        Assert.Contains("npm ci failed", result.Reason);
+        Assert.Single(processes.Started);
+        Assert.Equal(ExecutionStatus.Failed, store.Step("SmokeTest").Status);
+    }
+
+    [Fact]
     public async Task The_application_never_becoming_healthy_fails_the_step_without_ever_running_browser_checks()
     {
         var store = new FakeTaskStore();
@@ -122,7 +160,10 @@ public sealed class SmokeTestStepTests
     /// throws when its own <see cref="CancellationToken"/> is cancelled — it simply returns a
     /// <see cref="ProcessResult"/> with <c>Cancelled=true</c>, exactly as the real tree-kill-then-return
     /// implementation does.</summary>
-    private sealed class FakeProcessRunner : IProcessRunner
+    /// <param name="hangs">Which calls behave like a long-running server (never complete on their own, only
+    /// return once cancelled) versus a short-lived command like an install step, which completes immediately.
+    /// Defaults to every call hanging, matching the original single-call ("start the server") tests above.</param>
+    private sealed class FakeProcessRunner(Func<ProcessRequest, bool>? hangs = null, int installExitCode = 0, string installStandardError = "") : IProcessRunner
     {
         public List<ProcessRequest> Started { get; } = [];
         private readonly List<bool> completedBeforeCancellation = [];
@@ -132,6 +173,8 @@ public sealed class SmokeTestStepTests
         {
             Started.Add(request);
             var start = DateTimeOffset.UtcNow;
+            if (hangs is not null && !hangs(request))
+                return new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, DateTimeOffset.UtcNow, installExitCode, "", installStandardError, false, false);
             try { await Task.Delay(Timeout.Infinite, cancellationToken); completedBeforeCancellation.Add(true); }
             catch (OperationCanceledException) { completedBeforeCancellation.Add(false); }
             return new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, DateTimeOffset.UtcNow, null, "", "", false, true);
