@@ -1,3 +1,10 @@
 {
-  "requireHumanMerge": false
+  "requireHumanMerge": false,
+  "smokeTest": {
+    "startCommand": ["node.exe", "web/Factory.Web/node_modules/next/dist/bin/next", "dev", "web/Factory.Web", "--hostname", "127.0.0.1", "--port", "3210"],
+    "healthCheckUrl": "http://127.0.0.1:3210/",
+    "checkPaths": ["/", "/tasks"],
+    "startupTimeoutSeconds": 60,
+    "checkTimeoutSeconds": 30
+  }
 }

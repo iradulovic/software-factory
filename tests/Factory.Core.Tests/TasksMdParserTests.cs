@@ -97,7 +97,7 @@ public sealed class TasksMdParserTests
         var items = TasksMdParser.Parse(content);
 
         Assert.Contains(items, i => i.Id == "SF-618" && !i.Checked && i.Section == TrackerSection.InProgress);
-        Assert.Contains(items, i => i.Id == "SF-619" && !i.Checked && i.Section == TrackerSection.NextUp);
+        Assert.Contains(items, i => i.Id == "SF-619" && i.Checked && i.Section == TrackerSection.Completed);
         Assert.Contains(items, i => i.Id == "SF-710" && i.Checked && i.Section == TrackerSection.Completed);
         Assert.Contains(items, i => i.Id == "SF-703" && i.Checked && i.Section == TrackerSection.Completed);
     }
