@@ -1,0 +1,7 @@
+{
+  "status": "completed",
+  "summary": "ElapsedDurationFormatter is a small, self-contained static class in Factory.Core matching the task scope exactly (one class plus matching unit tests, no other files touched aside from a result.json correction). Logic correctly handles ms/s/m/h/d ranges and negative durations, tests pass (9/9).",
+  "findings": [],
+  "needsHuman": false,
+  "humanReason": null
+}
