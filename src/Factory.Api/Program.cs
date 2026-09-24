@@ -362,6 +362,19 @@ app.MapGet("/api/issues/{id:long}", async (long id, NpgsqlDataSource db, Cancell
     return Results.Ok(new { issue, comments, tasks });
 });
 
+// The dashboard's own path to flipping `factory:ready`, so an operator never has to leave the UI to run
+// `gh issue edit`. Writes straight to GitHub via IIssueReadyLabelWriter; the imported issue's own `eligible`
+// flag catches up on the next Sync poll cycle, same latency as every other GitHub-sourced dashboard field.
+app.MapPatch("/api/issues/{id:long}/ready", async (long id, SetIssueReadyRequest body, IGitHubStore github, IIssueReadyLabelWriter labels, CancellationToken ct) =>
+{
+    var issue = await github.GetIssueAsync(id, ct);
+    if (issue is null) return Results.NotFound(new { error = $"No issue with id {id}." });
+    var repository = await github.GetRepositoryAsync(issue.RepositoryId, ct);
+    if (repository is null) return Results.NotFound(new { error = "This issue's repository is no longer configured." });
+    var result = await labels.SetReadyAsync(repository.Owner, repository.Name, issue.IssueNumber, body.IsReady, ct);
+    return result.Succeeded ? Results.NoContent() : Results.Problem(result.Error, statusCode: 502);
+});
+
 app.MapGet("/api/runs", async (string? status, string? worker, string? repository, DateOnly? from, DateOnly? to, int? page, int? pageSize, NpgsqlDataSource db, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
