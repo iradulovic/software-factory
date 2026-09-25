@@ -33,4 +33,22 @@ public sealed class OperatorChatTests
         Assert.True(OperatorActionEligibility.CanOffer("stop-repairs", "Published", false));
         Assert.False(OperatorActionEligibility.CanOffer("stop-repairs", "Published", true));
     }
+
+    [Fact]
+    public void Merge_proposal_matches_the_dashboard_control_for_auto_and_human_review()
+    {
+        var row = new AttentionTaskRow
+        {
+            Status = "Published", PullRequestNumber = 27, ValidatedHead = "abc",
+            CiStatus = "Success", CiHead = "abc", MergeHead = "abc", MergeStatus = "Mergeable"
+        };
+        Assert.True(OperatorMergeEligibility.CanOffer(row, "factory/issue-27"));
+        Assert.True(OperatorMergeEligibility.CanOffer(row.WithChanges(new AttentionTaskRow
+            { Status = "NeedsHuman", FailureReason = "Automatic merge failed" }), "factory/issue-27"));
+        Assert.False(OperatorMergeEligibility.CanOffer(row.WithChanges(new AttentionTaskRow
+            { Status = "NeedsHuman", FailureReason = "Unrelated failure" }), "factory/issue-27"));
+        Assert.False(OperatorMergeEligibility.CanOffer(row.WithChanges(new AttentionTaskRow
+            { CiHead = "stale" }), "factory/issue-27"));
+        Assert.False(OperatorMergeEligibility.CanOffer(row, null));
+    }
 }

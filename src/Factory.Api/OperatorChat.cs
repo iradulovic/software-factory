@@ -50,6 +50,21 @@ public static class OperatorActionEligibility
     };
 }
 
+public static class OperatorMergeEligibility
+{
+    // Mirrors the Task Details control; the merge endpoint rechecks live GitHub state before any write.
+    public static bool CanOffer(AttentionTaskRow row, string? branchName) =>
+        (row.Status == "Published" || row.Status == "NeedsHuman" &&
+            (row.FailureReason?.StartsWith("Automatic merge", StringComparison.Ordinal) == true ||
+             row.FailureReason?.StartsWith("On-demand merge failed:", StringComparison.Ordinal) == true))
+        && row.PullRequestNumber is not null && !string.IsNullOrWhiteSpace(branchName)
+        && !string.IsNullOrWhiteSpace(row.ValidatedHead)
+        && row.MergeRequestStatus is not ("Running" or "Succeeded")
+        && row.CiStatus == "Success" && row.CiHead == row.MergeHead
+        && row.MergeHead == row.ValidatedHead
+        && (row.MergeStatus == "Mergeable" || row.MergeStateStatus == "DRAFT" && row.Mergeable == "MERGEABLE");
+}
+
 public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, IOptions<GitHubSyncOptions> githubOptions,
     IOptions<FactoryOptions> factoryOptions)
 {
@@ -79,7 +94,7 @@ public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, 
             var task = await db.QuerySingleOrDefaultAsync<OperatorTaskRow>(new CommandDefinition("""
                 SELECT t.id,t.title,t.status,t.repair_paused AS "RepairPaused",
                   gr.owner AS "RepositoryOwner",gr.name AS "RepositoryName",i.issue_number AS "IssueNumber",
-                  p.pull_request_url AS "PullRequestUrl"
+                  p.pull_request_url AS "PullRequestUrl",t.branch_name AS "BranchName"
                 FROM factory.task t
                 JOIN github.repository gr ON gr.id=t.repository_id
                 LEFT JOIN github.issue i ON i.id=t.github_issue_id
@@ -110,7 +125,7 @@ public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, 
             var eligible = intent switch
             {
                 "cancel" or "stop-repairs" => OperatorActionEligibility.CanOffer(intent, task.Status, task.RepairPaused),
-                "merge" => await IsMergeReadyAsync(db, task.Id, now, githubOptions.Value.MaxCiRepairAttempts, ct),
+                "merge" => await IsMergeReadyAsync(db, task.Id, task.BranchName, ct),
                 _ => false
             };
             if (!eligible) return Reply($"{task.Title} is {task.Status}; the requested action is not currently eligible.",
@@ -215,18 +230,18 @@ public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, 
             now);
     }
 
-    private static async Task<bool> IsMergeReadyAsync(NpgsqlConnection db, Guid taskId, DateTimeOffset now, int maxCiRepairs, CancellationToken ct)
+    private static async Task<bool> IsMergeReadyAsync(NpgsqlConnection db, Guid taskId, string? branchName, CancellationToken ct)
     {
         var row = (await db.QueryAsync<AttentionTaskRow>(new CommandDefinition(AttentionQuery.Tasks + " AND t.id=@taskId",
             new { taskId }, cancellationToken: ct))).SingleOrDefault();
-        return row is not null && AttentionProjection.ForTasks([row], now, maxCiRepairs).Any(item => item.Action == "merge");
+        return row is not null && OperatorMergeEligibility.CanOffer(row, branchName);
     }
 
     private static OperatorReply Reply(string observed, string? explanation, string? suggestion, DateTimeOffset now,
         IReadOnlyList<OperatorEvidence>? evidence = null, OperatorAction? action = null) =>
         new(observed, explanation, suggestion, evidence ?? [], action, now);
 
-    private sealed class OperatorTaskRow { public Guid Id { get; init; } public string Title { get; init; } = ""; public string Status { get; init; } = ""; public bool RepairPaused { get; init; } public string RepositoryOwner { get; init; } = ""; public string RepositoryName { get; init; } = ""; public int? IssueNumber { get; init; } public string? PullRequestUrl { get; init; } }
+    private sealed class OperatorTaskRow { public Guid Id { get; init; } public string Title { get; init; } = ""; public string Status { get; init; } = ""; public bool RepairPaused { get; init; } public string RepositoryOwner { get; init; } = ""; public string RepositoryName { get; init; } = ""; public int? IssueNumber { get; init; } public string? PullRequestUrl { get; init; } public string? BranchName { get; init; } }
     private sealed class OperatorEventRow { public string? FromStatus { get; init; } public string ToStatus { get; init; } = ""; public string? Reason { get; init; } public DateTimeOffset OccurredAt { get; init; } }
     private sealed class OperatorChangeRow { public Guid TaskId { get; init; } public string Title { get; init; } = ""; public string Status { get; init; } = ""; public string? Reason { get; init; } public DateTimeOffset OccurredAt { get; init; } }
 }
