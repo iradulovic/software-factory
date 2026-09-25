@@ -121,6 +121,9 @@ app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentA
     return Results.Ok(await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct));
 });
 
+app.MapGet("/api/github/status", async (IGitHubAvailabilityChecker checker, CancellationToken ct) =>
+    Results.Ok(await GitHubStatusResolver.ResolveAsync(checker, ct)));
+
 // Durable pause/resume (SF-610). Pausing stops new dispatch only — a task already claimed and executing always
 // finishes, and publication of already-validated work is untouched, since it consumes no agent's subscription.
 app.MapGet("/api/control/pause", async (ITaskStore tasks, CancellationToken ct) =>

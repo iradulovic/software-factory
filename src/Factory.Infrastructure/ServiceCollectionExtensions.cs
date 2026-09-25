@@ -36,6 +36,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IAgentResultReader, AgentResultReader>();
         services.AddSingleton<IAgentReviewResultReader, AgentReviewResultReader>();
+        services.AddSingleton<IGitHubAvailabilityChecker, GitHubAvailabilityChecker>();
 
         // One IAgentRunner/IAgentAvailabilityChecker per configured agent profile: adding a CLI coding agent is
         // a configuration change (see AgentProfilesOptions), never a new class or a registration here.

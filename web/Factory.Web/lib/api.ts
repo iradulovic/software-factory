@@ -34,6 +34,8 @@ export const agentStatusSchema = z.object({
   quotaResetAt:z.string().nullable(),quotaWindow:z.string().nullable(),quotaResetKind:z.string().nullable(),pauseReason:z.string().nullable()
 });
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
+export const githubStatusSchema = z.object({ state:z.string(), error:z.string().nullable() });
+export type GitHubStatus = z.infer<typeof githubStatusSchema>;
 export const pauseStateSchema = z.object({
   scope:z.string(),paused:z.boolean(),reason:z.string().nullable(),pausedAt:z.string().nullable(),pausedBy:z.string().nullable()
 });

@@ -26,6 +26,11 @@ public interface IAgentAvailabilityChecker
     Task<AgentAvailability> CheckAsync(CancellationToken cancellationToken);
 }
 
+public interface IGitHubAvailabilityChecker
+{
+    Task<GitHubAvailability> CheckAsync(CancellationToken cancellationToken);
+}
+
 public interface ITaskStore
 {
     Task<FactoryTask?> ClaimNextAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken);

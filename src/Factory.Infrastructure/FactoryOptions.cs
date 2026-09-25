@@ -66,6 +66,7 @@ public sealed class AgentProfilesOptions
 public sealed class GitHubSyncOptions
 {
     public int PollingIntervalSeconds { get; set; } = 60;
+    public int AvailabilityTimeoutSeconds { get; set; } = 5;
     public List<ConfiguredRepository> Repositories { get; set; } = [];
 
     /// <summary>Caps how many times automatic CI repair (SF-706) will continue the same task across an unbounded

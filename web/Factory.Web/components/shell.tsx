@@ -6,7 +6,8 @@ import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageSquareText, Moon, Newspaper, Sun } from "lucide-react";
-import { agentStatusSchema, getJson, workerSchema, type Worker } from "@/lib/api";
+import { agentStatusSchema, getJson, githubStatusSchema, workerSchema, type Worker } from "@/lib/api";
+import { GitHubStatusPill } from "@/components/github-status-pill";
 import { Button } from "@/components/ui/button";
 import {
   Sidebar,
@@ -82,6 +83,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
+            <GitHubStatusIndicator />
             <AgentStatusPill />
           </div>
         </header>
@@ -116,6 +118,22 @@ function ThemeToggle() {
 }
 
 const agentDotTones: Record<string, string> = { Verified: "bg-emerald-500", Busy: "bg-sky-500", Unavailable: "bg-red-500" };
+
+function GitHubStatusIndicator() {
+  const { data, error, isLoading } = useQuery({
+    queryKey: ["github-status"],
+    queryFn: () => getJson("/api/github/status", githubStatusSchema),
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    staleTime: 30_000,
+    retry: 1
+  });
+  const status = data ?? {
+    state: "Unknown",
+    error: isLoading ? "Checking GitHub availability" : error ? "GitHub status endpoint unavailable" : "GitHub availability is unknown"
+  };
+  return <GitHubStatusPill status={status} />;
+}
 
 function AgentStatusPill() {
   const { data } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)) });
