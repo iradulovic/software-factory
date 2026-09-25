@@ -92,6 +92,11 @@ internal sealed class WorktreeCleanupCandidateRow
 public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock clock) : ITaskStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly HashSet<FactoryTaskStatus> CancellableRestingStatuses =
+    [
+        FactoryTaskStatus.Pending, FactoryTaskStatus.ReadyForPublish,
+        FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed
+    ];
 
     private NpgsqlConnection Connection() => new(options.Value.ConnectionString);
 
@@ -192,10 +197,96 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         const string sql = """
             UPDATE factory.task SET lease_until=now()+@lease
-            WHERE id=@taskId AND claimed_by=@workerId AND lease_until >= now()
+            WHERE id=@taskId AND claimed_by=@workerId AND lease_until >= now() AND status = ANY(@executingStatuses)
+            """;
+        var executingStatuses = TaskStateMachine.ExecutingStatuses.Select(s => s.ToString()).ToList();
+        await using var connection = Connection();
+        return await connection.ExecuteAsync(new CommandDefinition(sql, new { taskId, workerId, lease, executingStatuses }, cancellationToken: cancellationToken)) == 1;
+    }
+
+    public async Task<bool> IsCancellationRequestedAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        return await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT status IN ('Stopping','Cancelled') FROM factory.task WHERE id=@taskId", new { taskId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<int> FinalizeExpiredCancellationsAsync(CancellationToken cancellationToken)
+    {
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Stopping, FactoryTaskStatus.Cancelled);
+        const string sql = """
+            WITH candidates AS (
+              SELECT id FROM factory.task
+              WHERE status='Stopping' AND (lease_until IS NULL OR lease_until < now())
+              FOR UPDATE SKIP LOCKED
+            ), closed_steps AS (
+              UPDATE factory.step s SET status='Cancelled',completed_at=now(),
+                duration_ms=GREATEST(0,CAST(EXTRACT(EPOCH FROM (now()-s.started_at))*1000 AS BIGINT)),
+                error=COALESCE(s.error,'Cancellation acknowledged after the worker lease expired')
+              FROM factory.run r,candidates c
+              WHERE r.task_id=c.id AND s.run_id=r.id AND s.status='Running'
+            ), closed_runs AS (
+              UPDATE factory.run r SET status='Cancelled',completed_at=now()
+              FROM candidates c WHERE r.task_id=c.id AND r.status='Running'
+            ), updated AS (
+              UPDATE factory.task t SET status='Cancelled',failure_reason=COALESCE(failure_reason,'Cancelled by operator'),
+                claimed_by=NULL,claimed_at=NULL,lease_until=NULL,current_agent=NULL
+              FROM candidates c WHERE t.id=c.id AND t.status='Stopping'
+              RETURNING t.id
+            ), logged AS (
+              INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+              SELECT id,'Stopping','Cancelled','Worker lease expired before it acknowledged cancellation','orchestrator' FROM updated
+            )
+            SELECT count(*)::int FROM updated
             """;
         await using var connection = Connection();
-        return await connection.ExecuteAsync(new CommandDefinition(sql, new { taskId, workerId, lease }, cancellationToken: cancellationToken)) == 1;
+        return await connection.ExecuteScalarAsync<int>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+    }
+
+    public async Task<bool> FinalizeCancellationAsync(Guid taskId, Guid runId, string reason, CancellationToken cancellationToken)
+    {
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Stopping, FactoryTaskStatus.Cancelled);
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (currentText is null || !Enum.TryParse<FactoryTaskStatus>(currentText, out var current) ||
+            !TaskStateMachine.IsCancellationRequested(current)) return false;
+
+        await connection.ExecuteAsync(new CommandDefinition("""
+            UPDATE factory.step s SET status='Cancelled',completed_at=now(),
+              duration_ms=GREATEST(0,CAST(EXTRACT(EPOCH FROM (now()-s.started_at))*1000 AS BIGINT)),
+              error=COALESCE(s.error,@reason)
+            FROM factory.run r
+            WHERE r.id=@runId AND r.task_id=@taskId AND s.run_id=r.id AND s.status='Running';
+            UPDATE factory.run SET status='Cancelled',completed_at=now()
+            WHERE id=@runId AND task_id=@taskId AND status='Running';
+            """, new { taskId, runId, reason }, transaction, cancellationToken: cancellationToken));
+
+        if (current == FactoryTaskStatus.Stopping)
+        {
+            await connection.ExecuteAsync(new CommandDefinition("""
+                WITH updated AS (
+                  UPDATE factory.task SET status='Cancelled',failure_reason='Cancelled by operator',
+                    claimed_by=NULL,claimed_at=NULL,lease_until=NULL,current_agent=NULL
+                  WHERE id=@taskId AND status='Stopping'
+                  RETURNING id
+                )
+                INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+                SELECT id,'Stopping','Cancelled',@reason,'orchestrator' FROM updated
+                """, new { taskId, reason }, transaction, cancellationToken: cancellationToken));
+        }
+        else
+        {
+            await connection.ExecuteAsync(new CommandDefinition("""
+                UPDATE factory.task SET claimed_by=NULL,claimed_at=NULL,lease_until=NULL,current_agent=NULL
+                WHERE id=@taskId AND status='Cancelled'
+                """, new { taskId }, transaction, cancellationToken: cancellationToken));
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     public async Task ReleaseLeaseAsync(Guid taskId, string workerId, CancellationToken cancellationToken)
@@ -224,7 +315,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         // transition boundary, so a resting task's now-meaningless lease can never make ClaimNextAsync mistake it
         // for an abandoned execution (this is what keeps a validated ReadyForPublish task, for example, from being
         // implemented again while it waits for a human to publish it).
-        var releaseOwnership = TaskStateMachine.ExecutingStatuses.Contains(next) ? "" : ", claimed_by=NULL, claimed_at=NULL, lease_until=NULL";
+        var releaseOwnership = TaskStateMachine.RetainsWorkerOwnership(next) ? "" : ", claimed_by=NULL, claimed_at=NULL, lease_until=NULL";
         var sql = $"""
             WITH updated AS (
               UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion}{releaseOwnership}, current_agent=NULL WHERE id=@taskId AND status=@expected
@@ -243,11 +334,60 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken) =>
         TransitionFromCurrentAsync(taskId, [FactoryTaskStatus.Failed, FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Rejected], FactoryTaskStatus.Pending, true, "Retried by operator", cancellationToken);
 
-    public Task<bool> CancelAsync(Guid taskId, CancellationToken cancellationToken) =>
-        TransitionFromCurrentAsync(taskId, [FactoryTaskStatus.Pending, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing,
-            FactoryTaskStatus.Planning, FactoryTaskStatus.Validating, FactoryTaskStatus.Reviewing, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.Published,
-            FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed],
-            FactoryTaskStatus.Cancelled, false, "Cancelled by operator", cancellationToken);
+    public async Task<TaskCancellationOutcome> CancelAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (currentText is null || !Enum.TryParse<FactoryTaskStatus>(currentText, out var current))
+            return TaskCancellationOutcome.NotCancellable;
+        if (current == FactoryTaskStatus.Stopping) return TaskCancellationOutcome.Stopping;
+        if (current == FactoryTaskStatus.Cancelled) return TaskCancellationOutcome.Cancelled;
+
+        if (current == FactoryTaskStatus.ReadyForPublish)
+        {
+            var publicationInFlight = await connection.ExecuteScalarAsync<bool>(new CommandDefinition("""
+                SELECT EXISTS(
+                  SELECT 1 FROM factory.publication WHERE task_id=@taskId AND status IN ('Publishing','PullRequestCreated'))
+                """, new { taskId }, transaction, cancellationToken: cancellationToken));
+            if (publicationInFlight) return TaskCancellationOutcome.NotCancellable;
+        }
+
+        var isExecuting = TaskStateMachine.ExecutingStatuses.Contains(current);
+        if (!isExecuting && !CancellableRestingStatuses.Contains(current))
+            return TaskCancellationOutcome.NotCancellable;
+
+        var next = isExecuting ? FactoryTaskStatus.Stopping : FactoryTaskStatus.Cancelled;
+        TaskStateMachine.EnsureCanTransition(current, next);
+        var ownership = next == FactoryTaskStatus.Stopping
+            ? ""
+            : ", claimed_by=NULL, claimed_at=NULL, lease_until=NULL";
+        var reason = next == FactoryTaskStatus.Stopping ? "Cancellation requested by operator" : "Cancelled by operator";
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition($"""
+            WITH updated AS (
+              UPDATE factory.task SET status=@next,failure_reason=@reason{ownership},current_agent=CASE WHEN @next='Cancelled' THEN NULL ELSE current_agent END
+              WHERE id=@taskId AND status=@current
+              RETURNING id
+            ), logged AS (
+              INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+              SELECT id,@current,@next,@reason,'human' FROM updated
+            )
+            SELECT count(*)::int FROM updated
+            """, new { taskId, current = current.ToString(), next = next.ToString(), reason }, transaction, cancellationToken: cancellationToken));
+        if (count != 1) throw new InvalidOperationException($"Task {taskId} was not in expected state {current}.");
+        if (next == FactoryTaskStatus.Cancelled)
+        {
+            await connection.ExecuteAsync(new CommandDefinition("""
+                UPDATE factory.publication SET status='Cancelled',completed_at=now(),lease_until=NULL,
+                  error=COALESCE(error,'Task cancelled before publication was claimed')
+                WHERE task_id=@taskId AND status='Requested'
+                """, new { taskId }, transaction, cancellationToken: cancellationToken));
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return next == FactoryTaskStatus.Stopping ? TaskCancellationOutcome.Stopping : TaskCancellationOutcome.Cancelled;
+    }
 
     private static readonly IReadOnlyCollection<FactoryTaskStatus> ContinuableStatuses =
     [
@@ -388,7 +528,14 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 
     public async Task CompleteStepAsync(Guid stepId, ExecutionStatus status, string? error, string? output, CancellationToken cancellationToken)
     {
-        await using var c = Connection(); await c.ExecuteAsync(new CommandDefinition("UPDATE factory.step SET status=@status,completed_at=@now,duration_ms=CAST(EXTRACT(EPOCH FROM (@now-started_at))*1000 AS BIGINT),error=@error,output=@output WHERE id=@stepId", new { stepId, status = status.ToString(), now = clock.UtcNow, error, output }, cancellationToken: cancellationToken));
+        const string sql = """
+            UPDATE factory.step s SET status=@status,completed_at=@now,
+              duration_ms=CAST(EXTRACT(EPOCH FROM (@now-s.started_at))*1000 AS BIGINT),error=@error,output=@output
+            WHERE s.id=@stepId AND s.status='Running' AND EXISTS (
+              SELECT 1 FROM factory.run r JOIN factory.task t ON t.id=r.task_id
+              WHERE r.id=s.run_id AND t.status NOT IN ('Stopping','Cancelled'))
+            """;
+        await using var c = Connection(); await c.ExecuteAsync(new CommandDefinition(sql, new { stepId, status = status.ToString(), now = clock.UtcNow, error, output }, cancellationToken: cancellationToken));
     }
 
     public async Task SaveAgentRunAsync(AgentRunRecord r, CancellationToken cancellationToken)
@@ -423,7 +570,12 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 
     public async Task CompleteRunAsync(Guid runId, ExecutionStatus status, CancellationToken cancellationToken)
     {
-        await using var c = Connection(); await c.ExecuteAsync(new CommandDefinition("UPDATE factory.run SET status=@status,completed_at=@now WHERE id=@runId", new { runId, status = status.ToString(), now = clock.UtcNow }, cancellationToken: cancellationToken));
+        const string sql = """
+            UPDATE factory.run r SET status=@status,completed_at=@now
+            WHERE r.id=@runId AND r.status='Running' AND EXISTS (
+              SELECT 1 FROM factory.task t WHERE t.id=r.task_id AND t.status NOT IN ('Stopping','Cancelled'))
+            """;
+        await using var c = Connection(); await c.ExecuteAsync(new CommandDefinition(sql, new { runId, status = status.ToString(), now = clock.UtcNow }, cancellationToken: cancellationToken));
     }
 
     public async Task SetRunConfigurationAsync(Guid runId, RepositoryConfiguration configuration, CancellationToken cancellationToken)
@@ -461,14 +613,21 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 
     public async Task<Guid?> RequestPublicationAsync(Guid taskId, Guid? runId, string requestedBy, CancellationToken cancellationToken)
     {
-        const string sql = """
+        await using var c = Connection();
+        await c.OpenAsync(cancellationToken);
+        await using var transaction = await c.BeginTransactionAsync(cancellationToken);
+        var status = await c.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (status != nameof(FactoryTaskStatus.ReadyForPublish)) return null;
+
+        var id = await c.ExecuteScalarAsync<Guid?>(new CommandDefinition("""
             INSERT INTO factory.publication(id,task_id,run_id,status,requested_by)
             VALUES(@id,@taskId,@runId,'Requested',@requestedBy)
             ON CONFLICT (task_id) WHERE status IN ('Requested','Publishing') DO NOTHING
             RETURNING id
-            """;
-        await using var c = Connection();
-        return await c.ExecuteScalarAsync<Guid?>(new CommandDefinition(sql, new { id = Guid.NewGuid(), taskId, runId, requestedBy }, cancellationToken: cancellationToken));
+            """, new { id = Guid.NewGuid(), taskId, runId, requestedBy }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return id;
     }
 
     public async Task<PublicationRequest?> ClaimNextPublicationAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken)
@@ -480,9 +639,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         const string claimSql = """
             UPDATE factory.publication SET status='Publishing',claimed_by=@workerId,claimed_at=now(),lease_until=now()+@lease
             WHERE id = (
-              SELECT id FROM factory.publication
-              WHERE status='Requested' OR (status='Publishing' AND lease_until < now())
-              ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1
+              SELECT p.id FROM factory.publication p JOIN factory.task t ON t.id=p.task_id
+              WHERE (p.status='Requested' OR (p.status='Publishing' AND p.lease_until < now())) AND t.status='ReadyForPublish'
+              ORDER BY p.requested_at FOR UPDATE OF p,t SKIP LOCKED LIMIT 1
             )
             RETURNING id,task_id AS "TaskId"
             """;

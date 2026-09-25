@@ -35,11 +35,14 @@ public interface ITaskStore
 {
     Task<FactoryTask?> ClaimNextAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken);
     Task<bool> RenewLeaseAsync(Guid taskId, string workerId, TimeSpan lease, CancellationToken cancellationToken);
+    Task<bool> IsCancellationRequestedAsync(Guid taskId, CancellationToken cancellationToken);
+    Task<int> FinalizeExpiredCancellationsAsync(CancellationToken cancellationToken);
+    Task<bool> FinalizeCancellationAsync(Guid taskId, Guid runId, string reason, CancellationToken cancellationToken);
     Task ReleaseLeaseAsync(Guid taskId, string workerId, CancellationToken cancellationToken);
     Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken);
     Task TransitionAsync(Guid taskId, FactoryTaskStatus expected, FactoryTaskStatus next, string? failureReason, CancellationToken cancellationToken);
     Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken);
-    Task<bool> CancelAsync(Guid taskId, CancellationToken cancellationToken);
+    Task<TaskCancellationOutcome> CancelAsync(Guid taskId, CancellationToken cancellationToken);
 
     /// <summary>Records operator feedback (a correction, or a manual-test failure) and, atomically with that
     /// record, returns the task to <see cref="FactoryTaskStatus.Pending"/> for a fresh implementation attempt

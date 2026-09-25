@@ -27,14 +27,53 @@ internal sealed class FakeTaskStore : ITaskStore
     public (Guid RunId, ExecutionStatus Status, string Reason)? Closed { get; private set; }
     public (string Branch, string Path)? Workspace { get; private set; }
     public bool LeaseReleased { get; private set; }
+    public bool CancellationRequested { get; set; }
+    public int ExpiredCancellationsFinalized { get; set; }
     public Func<CancellationToken, Task<bool>> RenewLease { get; init; } = _ => Task.FromResult(true);
 
     public Task<FactoryTask?> ClaimNextAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken) => Task.FromResult<FactoryTask?>(null);
     public Task<bool> RenewLeaseAsync(Guid taskId, string workerId, TimeSpan lease, CancellationToken cancellationToken) => RenewLease(cancellationToken);
+    public Task<bool> IsCancellationRequestedAsync(Guid taskId, CancellationToken cancellationToken) =>
+        Task.FromResult(CancellationRequested || TaskStateMachine.IsCancellationRequested(Status));
+    public Task<int> FinalizeExpiredCancellationsAsync(CancellationToken cancellationToken) => Task.FromResult(ExpiredCancellationsFinalized);
+    public Task<bool> FinalizeCancellationAsync(Guid taskId, Guid runId, string reason, CancellationToken cancellationToken)
+    {
+        if (!TaskStateMachine.IsCancellationRequested(Status)) return Task.FromResult(false);
+        foreach (var (id, step) in Steps.Where(s => s.Value.RunId == runId && s.Value.Status == ExecutionStatus.Running).ToList())
+            Steps[id] = step with { Status = ExecutionStatus.Cancelled, Error = reason };
+        if (Runs.TryGetValue(runId, out var current) && current == ExecutionStatus.Running) Runs[runId] = ExecutionStatus.Cancelled;
+        if (Status == FactoryTaskStatus.Stopping)
+        {
+            Status = FactoryTaskStatus.Cancelled;
+            Transitions.Add((FactoryTaskStatus.Stopping, FactoryTaskStatus.Cancelled, reason));
+        }
+        Closed = (runId, ExecutionStatus.Cancelled, reason);
+        return Task.FromResult(true);
+    }
     public Task ReleaseLeaseAsync(Guid taskId, string workerId, CancellationToken cancellationToken) { LeaseReleased = true; return Task.CompletedTask; }
     public Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken) => Task.FromResult(false);
     public Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(false);
-    public Task<bool> CancelAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(false);
+    public Task<TaskCancellationOutcome> CancelAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        if (Status == FactoryTaskStatus.Stopping) return Task.FromResult(TaskCancellationOutcome.Stopping);
+        if (Status == FactoryTaskStatus.Cancelled) return Task.FromResult(TaskCancellationOutcome.Cancelled);
+        if (TaskStateMachine.ExecutingStatuses.Contains(Status))
+        {
+            Transitions.Add((Status, FactoryTaskStatus.Stopping, "Cancellation requested by operator"));
+            Status = FactoryTaskStatus.Stopping;
+            CancellationRequested = true;
+            return Task.FromResult(TaskCancellationOutcome.Stopping);
+        }
+        if (Status is FactoryTaskStatus.Pending or FactoryTaskStatus.ReadyForPublish or FactoryTaskStatus.Published or
+            FactoryTaskStatus.WaitingForQuota or FactoryTaskStatus.NeedsHuman or FactoryTaskStatus.Failed)
+        {
+            Transitions.Add((Status, FactoryTaskStatus.Cancelled, "Cancelled by operator"));
+            Status = FactoryTaskStatus.Cancelled;
+            CancellationRequested = true;
+            return Task.FromResult(TaskCancellationOutcome.Cancelled);
+        }
+        return Task.FromResult(TaskCancellationOutcome.NotCancellable);
+    }
     public List<string> FeedbackRecorded { get; } = [];
     public bool NextContinueWithFeedbackAllowed { get; set; } = true;
     public Task<bool> ContinueWithFeedbackAsync(Guid taskId, string feedback, CancellationToken cancellationToken)
@@ -68,7 +107,10 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task TransitionAsync(Guid taskId, FactoryTaskStatus expected, FactoryTaskStatus next, string? failureReason, CancellationToken cancellationToken)
     {
         TaskStateMachine.EnsureCanTransition(expected, next);
-        if (Status != expected) throw new InvalidOperationException($"Task {taskId} was not in expected state {expected}.");
+        if (Status != expected)
+        {
+            throw new InvalidOperationException($"Task {taskId} was not in expected state {expected}.");
+        }
         Status = next;
         Transitions.Add((expected, next, failureReason));
         return Task.CompletedTask;

@@ -96,6 +96,143 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Active_cancel_stays_stopping_until_worker_closes_the_run_then_allows_the_next_claim()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var claimed = await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "worker-a", CancellationToken.None);
+            var stepId = await fixture.Tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
+
+            Assert.Equal(TaskCancellationOutcome.Stopping, await fixture.Tasks.CancelAsync(fixture.TaskId, CancellationToken.None));
+            Assert.Equal("Stopping", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+            Assert.True(await fixture.Tasks.IsCancellationRequestedAsync(fixture.TaskId, CancellationToken.None));
+            Assert.False(await fixture.Tasks.RenewLeaseAsync(fixture.TaskId, "worker-a", TimeSpan.FromMinutes(2), CancellationToken.None));
+            Assert.Null(await fixture.Tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(2), CancellationToken.None));
+
+            Assert.True(await fixture.Tasks.FinalizeCancellationAsync(fixture.TaskId, runId, "Worker stopped the process", CancellationToken.None));
+            Assert.Equal("Cancelled", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+            var execution = await fixture.Connection.QuerySingleAsync<(string RunStatus, string StepStatus, string? Error)>("""
+                SELECT r.status AS "RunStatus",s.status AS "StepStatus",s.error
+                FROM factory.run r JOIN factory.step s ON s.run_id=r.id WHERE r.id=@runId
+                """, new { runId });
+            Assert.Equal("Cancelled", execution.RunStatus);
+            Assert.Equal("Cancelled", execution.StepStatus);
+            Assert.Equal("Worker stopped the process", execution.Error);
+            Assert.Equal(TaskCancellationOutcome.Cancelled, await fixture.Tasks.CancelAsync(fixture.TaskId, CancellationToken.None));
+
+            var nextTaskId = Guid.NewGuid();
+            await fixture.Connection.ExecuteAsync("INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES(@nextTaskId,@repositoryId,'Next task','Pending','main')",
+                new { nextTaskId, fixture.RepositoryId });
+            try
+            {
+                Assert.Equal(nextTaskId, (await fixture.Tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(2), CancellationToken.None))?.Id);
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.task WHERE id=@nextTaskId", new { nextTaskId });
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A_cancellation_that_wins_the_natural_completion_race_is_not_an_invalid_transition_or_publishable()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            Assert.NotNull(await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None));
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null, CancellationToken.None);
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null, CancellationToken.None);
+            await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null, CancellationToken.None);
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "worker-a", CancellationToken.None);
+
+            Assert.Equal(TaskCancellationOutcome.Stopping, await fixture.Tasks.CancelAsync(fixture.TaskId, CancellationToken.None));
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Validating, FactoryTaskStatus.ReadyForPublish, null, CancellationToken.None));
+            Assert.Null(await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, runId, "auto-draft", CancellationToken.None));
+            Assert.True(await fixture.Tasks.FinalizeCancellationAsync(fixture.TaskId, runId, "Worker stopped the process", CancellationToken.None));
+            Assert.Equal("Cancelled", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+        }
+    }
+
+    [Fact]
+    public async Task Cancelling_a_ready_task_cancels_its_unclaimed_publication_request()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                await fixture.Connection.ExecuteAsync("UPDATE factory.task SET status='ReadyForPublish' WHERE id=@TaskId", new { fixture.TaskId });
+                var publicationId = await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "auto-draft", CancellationToken.None);
+                Assert.NotNull(publicationId);
+
+                Assert.Equal(TaskCancellationOutcome.Cancelled, await fixture.Tasks.CancelAsync(fixture.TaskId, CancellationToken.None));
+                Assert.Equal("Cancelled", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+                Assert.Equal("Cancelled", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.publication WHERE id=@publicationId", new { publicationId }));
+                Assert.Null(await fixture.Tasks.ClaimNextPublicationAsync("publication-worker", TimeSpan.FromMinutes(5), CancellationToken.None));
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Cancelling_a_ready_task_is_refused_while_its_publication_is_claimed()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            try
+            {
+                await fixture.Connection.ExecuteAsync("""
+                    UPDATE factory.task SET status='ReadyForPublish',branch_name='factory/cancellation-test',
+                      worktree_path='/tmp/cancellation-test' WHERE id=@TaskId
+                    """, new { fixture.TaskId });
+                Assert.NotNull(await fixture.Tasks.RequestPublicationAsync(fixture.TaskId, null, "operator", CancellationToken.None));
+                Assert.NotNull(await fixture.Tasks.ClaimNextPublicationAsync("publication-worker", TimeSpan.FromMinutes(5), CancellationToken.None));
+
+                Assert.Equal(TaskCancellationOutcome.NotCancellable, await fixture.Tasks.CancelAsync(fixture.TaskId, CancellationToken.None));
+                Assert.Equal("ReadyForPublish", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
+        }
+    }
+
+    [Fact]
+    public async Task An_expired_stopping_task_is_finalized_instead_of_being_reclaimed_for_execution()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            Assert.NotNull(await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None));
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "worker-a", CancellationToken.None);
+            var stepId = await fixture.Tasks.StartStepAsync(runId, "Build", 1, CancellationToken.None);
+            Assert.Equal(TaskCancellationOutcome.Stopping, await fixture.Tasks.CancelAsync(fixture.TaskId, CancellationToken.None));
+            await fixture.Connection.ExecuteAsync("UPDATE factory.task SET lease_until=now()-interval '1 minute' WHERE id=@TaskId", new { fixture.TaskId });
+
+            Assert.Equal(1, await fixture.Tasks.FinalizeExpiredCancellationsAsync(CancellationToken.None));
+            Assert.Equal("Cancelled", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+            Assert.Equal("Cancelled", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.run WHERE id=@runId", new { runId }));
+            Assert.Equal("Cancelled", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.step WHERE id=@stepId", new { stepId }));
+            Assert.Null(await fixture.Tasks.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(2), CancellationToken.None));
+        }
+    }
+
+    [Fact]
     public async Task Claiming_transitioning_and_retrying_a_task_records_task_events()
     {
         var fixture = await LeaseFixture.CreateAsync();
@@ -330,6 +467,8 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Equal("publication-tests", published.RepositoryOwner);
             Assert.Equal(suffix, published.RepositoryName);
             Assert.Equal(42, published.PullRequestNumber);
+            Assert.Equal(TaskCancellationOutcome.NotCancellable, await tasks.CancelAsync(taskId, CancellationToken.None));
+            Assert.Equal("Published", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId }));
 
             await tasks.RecordGitHubWriteAsync(taskId, "comment", "Task started.", true, null, CancellationToken.None);
             await tasks.RecordGitHubWriteAsync(taskId, "label", "factory:in-progress", false, "gh: not found", CancellationToken.None);
@@ -343,8 +482,8 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Equal("Completed", await connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@taskId", new { taskId }));
             Assert.DoesNotContain(await tasks.GetPublishedTasksAsync(CancellationToken.None), p => p.TaskId == taskId);
 
-            // A completed attempt does not block a fresh request.
-            Assert.NotNull(await tasks.RequestPublicationAsync(taskId, null, "operator", CancellationToken.None));
+            // A completed task cannot be published again.
+            Assert.Null(await tasks.RequestPublicationAsync(taskId, null, "operator", CancellationToken.None));
         }
         finally
         {

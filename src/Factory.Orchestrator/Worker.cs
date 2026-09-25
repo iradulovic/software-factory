@@ -28,6 +28,11 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExec
                 var blocked = await tasks.BlockDependentsOnFailedPrerequisitesAsync(stoppingToken);
                 if (blocked > 0) logger.LogInformation("Moved {Count} task(s) to NeedsHuman: a prerequisite ended without merging", blocked);
 
+                // A worker that died before acknowledging an operator's stop request leaves a durable Stopping
+                // state. Once its lease expires, close that execution as Cancelled instead of reclaiming it.
+                var cancelled = await tasks.FinalizeExpiredCancellationsAsync(stoppingToken);
+                if (cancelled > 0) logger.LogInformation("Finalized {Count} task cancellation(s) after worker lease expiry", cancelled);
+
                 // Pausing stops new dispatch only, checked right here before claiming — never mid-task, so a task
                 // already claimed and executing always finishes undisturbed. Publication (PublicationWorker) is
                 // a separate, independently polling worker and is deliberately untouched by this: pushing and
@@ -59,8 +64,9 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExec
         {
             await executor.ExecuteAsync(task, runId, execution.Token);
         }
-        catch (OperationCanceledException) when (execution.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
+            if (!execution.IsCancellationRequested) await execution.CancelAsync();
             interrupted = true;
         }
         finally
@@ -70,6 +76,12 @@ public sealed class Worker(DatabaseMigrator migrator, ITaskStore tasks, TaskExec
             catch (OperationCanceledException) { }
         }
         if (!interrupted) return;
+
+        if (await tasks.FinalizeCancellationAsync(task.Id, runId, "Cancellation acknowledged by worker", CancellationToken.None))
+        {
+            logger.LogInformation("Stopped task {TaskId}; run {RunId} was closed as Cancelled", task.Id, runId);
+            return;
+        }
 
         // An interrupted execution is closed explicitly so no run or step stays "Running" forever. Only rows still
         // running are touched: a worker that already recovered the task has closed them itself.
