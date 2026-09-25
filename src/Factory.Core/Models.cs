@@ -476,14 +476,32 @@ public sealed record OutcomeMetrics(
 /// to decide whether to remove it and for <see cref="IWorktreeManager"/> to remove it.</summary>
 public sealed record WorktreeCleanupCandidate(Guid TaskId, FactoryTaskStatus Status, string WorktreePath, string RepositoryOwner, string RepositoryName);
 
-/// <summary>One task whose most recent settling transition (<c>Completed</c> or <c>Rejected</c>) fell inside a
-/// digest's time window (SF-705) — "finished work" is always reported exactly once, windowed by when it actually
-/// happened rather than deduplicated against a previous digest, since the window itself never overlaps a prior
-/// one.</summary>
-public sealed record DigestFinishedTask(Guid TaskId, string Title, string Repository, int? IssueNumber, string? PullRequestUrl, bool Merged, DateTimeOffset FinishedAt);
+/// <summary>One task's most recent settling transition (<c>Completed</c>, <c>Rejected</c>, or <c>Failed</c>) in a digest
+/// window — "finished work" is windowed by when a transition actually happened rather than deduplicated against a
+/// previous digest, since the window itself never overlaps a prior one.</summary>
+public sealed record DigestFinishedTask(Guid TaskId, string Title, string Repository, int? IssueNumber, string? PullRequestUrl, bool Merged, DateTimeOffset FinishedAt, bool Failed = false);
+
+/// <summary>The highest-priority task the orchestrator could claim at digest generation time: Pending, not repair-paused,
+/// with all dependencies complete, and below the configured review-backlog cap.</summary>
+public sealed record DigestNextTask(Guid TaskId, string Title, string Repository, int? IssueNumber, int Priority, DateTimeOffset CreatedAt, string? Url = null);
+
+/// <summary>Retry transitions during one half-open digest window, grouped by task for useful follow-up links.</summary>
+public sealed record DigestRetryTask(Guid TaskId, string Title, string Repository, int? IssueNumber, string Status, int RetryCount);
+public sealed record DigestRetrySummary(int TotalRetries, IReadOnlyList<DigestRetryTask> Tasks);
+
+/// <summary>One configured provider's live CLI availability and persisted quota state at the digest's generation time.</summary>
+public sealed record DigestProviderStatus(string Provider, string Availability, string? Version, string? Error,
+    bool QuotaDetected, DateTimeOffset? QuotaResetAt, string? QuotaWindow, string? ResetKind, DateTimeOffset CheckedAt);
+
+/// <summary>Counts for the completed time window, plus the net difference in currently open attention since the prior digest.</summary>
+public sealed record DigestChanges(int Merged, int Rejected, int Failed, int Retries, int? OpenAttentionDelta, int? ProviderStateChanges = null);
+
+/// <summary>A ranked, newly surfaced item requiring attention. Lower priority numbers are shown first.</summary>
+public sealed record DigestActionItem(string Key, string Kind, string Title, string Detail, Guid? TaskId, string? Url, int Priority, DateTimeOffset UpdatedAt);
 
 /// <summary>One currently-open, actionable condition a digest may surface (SF-705): a CI failure on a published
-/// pull request, a task resting in <see cref="FactoryTaskStatus.NeedsHuman"/>, or a quota/dispatch-pause blocker.
+/// pull request, a task resting in <see cref="FactoryTaskStatus.NeedsHuman"/>, a failed/rejected task, or an
+/// operational blocker.
 /// <paramref name="Key"/> identifies the same underlying condition across digest generations (e.g.
 /// <c>"ci:{taskId}"</c>, <c>"human:{taskId}"</c>, <c>"quota:{agent}"</c>, <c>"pause:{scope}"</c>) so
 /// <see cref="DigestBuilder"/> can tell a still-open, unchanged condition (suppressed — see
@@ -491,18 +509,24 @@ public sealed record DigestFinishedTask(Guid TaskId, string Title, string Reposi
 /// actually gets fingerprinted for that comparison.</summary>
 public sealed record DigestAlertCandidate(string Kind, string Key, string Title, string Detail, Guid? TaskId, string? Url, DateTimeOffset UpdatedAt);
 
-/// <summary>The digest <see cref="DigestBuilder"/> builds for one generation cycle (SF-705). Finished work is
-/// always the full <paramref name="WindowSince"/>–<paramref name="WindowUntil"/> window; each alert section lists
-/// only conditions that are new or have changed since the previous generation, while its accompanying <c>*Total</c>
-/// reports how many of that kind are currently open in total — so an operator reading only the section can still
-/// tell "nothing changed since last time" (empty list, non-zero total) apart from "nothing is wrong" (zero
-/// total), rather than either silently repeating unchanged alerts or silently dropping them from view.</summary>
+/// <summary>The deterministic operator briefing persisted for one digest generation. Outcomes and retry transitions
+/// use the half-open <paramref name="WindowSince"/>–<paramref name="WindowUntil"/> window; alert lists contain only
+/// new or changed conditions, while their totals describe current state. Summary, provider snapshot, next eligible
+/// task, ranked actions, and plain-text briefing are included for the dashboard and configured webhook.</summary>
 public sealed record DigestPayload(
     DateTimeOffset WindowSince, DateTimeOffset WindowUntil,
     IReadOnlyList<DigestFinishedTask> FinishedWork,
     IReadOnlyList<DigestAlertCandidate> CiFailures, int CiFailureTotal,
     IReadOnlyList<DigestAlertCandidate> NeedsHuman, int NeedsHumanTotal,
-    IReadOnlyList<DigestAlertCandidate> Blockers, int BlockerTotal);
+    IReadOnlyList<DigestAlertCandidate> Blockers, int BlockerTotal,
+    IReadOnlyList<DigestAlertCandidate>? FailedTasks = null,
+    int FailedTaskTotal = 0,
+    DigestNextTask? NextEligibleTask = null,
+    DigestRetrySummary? RetrySummary = null,
+    IReadOnlyList<DigestProviderStatus>? Providers = null,
+    DigestChanges? ChangesSincePrevious = null,
+    IReadOnlyList<DigestActionItem>? ActionItems = null,
+    string? BriefingText = null);
 
 /// <summary>One persisted digest generation (SF-705) — what <see cref="IDigestStore.SaveAsync"/> records and
 /// <see cref="IDigestStore.GetLatestAsync"/>/<see cref="IDigestStore.GetRecentAsync"/> read back.

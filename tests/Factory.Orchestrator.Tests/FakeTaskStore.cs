@@ -301,8 +301,16 @@ internal sealed class FakeTaskStore : ITaskStore
         Task.FromResult(OutstandingReviewWorkCount);
 
     public List<DigestFinishedTask> FinishedTasks { get; set; } = [];
-    public Task<IReadOnlyList<DigestFinishedTask>> GetRecentlyFinishedTasksAsync(DateTimeOffset since, CancellationToken cancellationToken) =>
+    public Task<IReadOnlyList<DigestFinishedTask>> GetRecentlyFinishedTasksAsync(DateTimeOffset since, DateTimeOffset until, CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<DigestFinishedTask>>(FinishedTasks);
+
+    public DigestRetrySummary DigestRetries { get; set; } = new(0, []);
+    public Task<DigestRetrySummary> GetDigestRetrySummaryAsync(DateTimeOffset since, DateTimeOffset until, CancellationToken cancellationToken) =>
+        Task.FromResult(DigestRetries);
+
+    public DigestNextTask? NextEligibleDigestTask { get; set; }
+    public Task<DigestNextTask?> GetNextEligibleTaskAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(NextEligibleDigestTask);
 
     public List<DigestAlertCandidate> OpenCiFailureAlerts { get; set; } = [];
     public Task<IReadOnlyList<DigestAlertCandidate>> GetOpenCiFailureAlertsAsync(CancellationToken cancellationToken) =>
@@ -311,6 +319,10 @@ internal sealed class FakeTaskStore : ITaskStore
     public List<DigestAlertCandidate> NeedsHumanAlerts { get; set; } = [];
     public Task<IReadOnlyList<DigestAlertCandidate>> GetNeedsHumanAlertsAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<DigestAlertCandidate>>(NeedsHumanAlerts);
+
+    public List<DigestAlertCandidate> FailedTaskAlerts { get; set; } = [];
+    public Task<IReadOnlyList<DigestAlertCandidate>> GetOpenFailedTaskAlertsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<DigestAlertCandidate>>(FailedTaskAlerts);
 
     public List<DigestAlertCandidate> ActiveBlockerAlerts { get; set; } = [];
     public Task<IReadOnlyList<DigestAlertCandidate>> GetActiveBlockerAlertsAsync(CancellationToken cancellationToken) =>

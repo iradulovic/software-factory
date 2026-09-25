@@ -2175,10 +2175,10 @@ public sealed class PostgresStoreIntegrationTests
         var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
         if (string.IsNullOrWhiteSpace(connectionString)) return;
 
-        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
+        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString, MaxOutstandingReviewWork = 0 });
         await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
         var tasks = new PostgresTaskStore(settings, new TestClock());
-        var digests = new PostgresDigestStore(settings, new TestClock());
+        var digests = new PostgresDigestStore(settings);
         var suffix = Guid.NewGuid().ToString("N");
         var agent = $"digest-tests-{suffix}";
 
@@ -2190,32 +2190,60 @@ public sealed class PostgresStoreIntegrationTests
             """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
 
         var completedTaskId = Guid.NewGuid();
+        var rejectedTaskId = Guid.NewGuid();
+        var failedTaskId = Guid.NewGuid();
+        var atWindowEndTaskId = Guid.NewGuid();
+        var retryTaskId = Guid.NewGuid();
         var publishedCiFailedId = Guid.NewGuid();
         var needsHumanId = Guid.NewGuid();
-        var allTaskIds = new[] { completedTaskId, publishedCiFailedId, needsHumanId };
+        var allTaskIds = new[] { completedTaskId, rejectedTaskId, failedTaskId, atWindowEndTaskId, retryTaskId, publishedCiFailedId, needsHumanId };
         var digestRunIds = new List<Guid>();
         try
         {
             var since = DateTimeOffset.UtcNow.AddDays(-1);
             var inWindow = DateTimeOffset.UtcNow.AddHours(-1);
+            var retryOneAt = inWindow.AddMinutes(1);
+            var retryTwoAt = inWindow.AddMinutes(2);
+            var until = DateTimeOffset.UtcNow.AddMinutes(1);
 
             await connection.ExecuteAsync("""
                 INSERT INTO factory.task(id,repository_id,title,status,base_branch) VALUES
                   (@completedTaskId,@repositoryId,'Digest finished task','Completed','main'),
+                  (@rejectedTaskId,@repositoryId,'Digest rejected task','Rejected','main'),
+                  (@failedTaskId,@repositoryId,'Digest failed task','Failed','main'),
+                  (@atWindowEndTaskId,@repositoryId,'Digest end-boundary task','Completed','main'),
+                  (@retryTaskId,@repositoryId,'Digest retried task','Pending','main'),
                   (@publishedCiFailedId,@repositoryId,'Digest CI failing task','Published','main'),
                   (@needsHumanId,@repositoryId,'Digest needs-human task','NeedsHuman','main')
-                """, new { completedTaskId, publishedCiFailedId, needsHumanId, repositoryId });
+                """, new { completedTaskId, rejectedTaskId, failedTaskId, atWindowEndTaskId, retryTaskId, publishedCiFailedId, needsHumanId, repositoryId });
+            await connection.ExecuteAsync("UPDATE factory.task SET priority=2147483647 WHERE id=@retryTaskId", new { retryTaskId });
             await connection.ExecuteAsync("""
                 INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor,occurred_at) VALUES
                   (@completedTaskId,'Published','Completed',NULL,'orchestrator',@inWindow),
+                  (@rejectedTaskId,'Published','Rejected',NULL,'orchestrator',@since),
+                  (@failedTaskId,'Validating','Failed','Tests failed','orchestrator',@inWindow),
+                  (@retryTaskId,'Validating','Failed','Tests failed before retry','orchestrator',@inWindow),
+                  (@atWindowEndTaskId,'Published','Completed',NULL,'orchestrator',@until),
+                  (@retryTaskId,'Failed','Pending','Retry one','human',@retryOneAt),
+                  (@retryTaskId,'Failed','Pending','Retry two','human',@retryTwoAt),
                   (@needsHumanId,'Planning','NeedsHuman','ambiguous requirement','orchestrator',@inWindow)
-                """, new { completedTaskId, needsHumanId, inWindow });
+                """, new { completedTaskId, rejectedTaskId, failedTaskId, atWindowEndTaskId, retryTaskId, needsHumanId, since, inWindow, retryOneAt, retryTwoAt, until });
             await tasks.SetCiStatusAsync(publishedCiFailedId, "Failure", "c1", [], "build step failed", CancellationToken.None);
             await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent, true, QuotaWindow.ShortTerm, QuotaResetKind.Estimated, DateTimeOffset.UtcNow.AddHours(2), DateTimeOffset.UtcNow, "usage limit"), CancellationToken.None);
             await tasks.SetDispatchPauseAsync(agent, true, "reserved for interactive use", "operator", CancellationToken.None);
 
-            var finished = await tasks.GetRecentlyFinishedTasksAsync(since, CancellationToken.None);
+            var finished = await tasks.GetRecentlyFinishedTasksAsync(since, until, CancellationToken.None);
             Assert.Contains(finished, t => t.TaskId == completedTaskId && t.Merged);
+            Assert.Contains(finished, t => t.TaskId == rejectedTaskId && !t.Merged && !t.Failed);
+            Assert.Contains(finished, t => t.TaskId == failedTaskId && t.Failed);
+            Assert.Contains(finished, t => t.TaskId == retryTaskId && t.Failed);
+            Assert.DoesNotContain(finished, t => t.TaskId == atWindowEndTaskId);
+
+            var retries = await tasks.GetDigestRetrySummaryAsync(since, until, CancellationToken.None);
+            Assert.Equal(2, retries.TotalRetries);
+            Assert.Equal(2, Assert.Single(retries.Tasks).RetryCount);
+            Assert.Equal(retryTaskId, Assert.Single(retries.Tasks).TaskId);
+            Assert.Equal(retryTaskId, (await tasks.GetNextEligibleTaskAsync(CancellationToken.None))?.TaskId);
 
             var ciFailures = await tasks.GetOpenCiFailureAlertsAsync(CancellationToken.None);
             var ciAlert = Assert.Single(ciFailures, a => a.TaskId == publishedCiFailedId);
@@ -2224,26 +2252,41 @@ public sealed class PostgresStoreIntegrationTests
             var needsHuman = await tasks.GetNeedsHumanAlertsAsync(CancellationToken.None);
             Assert.Contains(needsHuman, a => a.TaskId == needsHumanId);
 
+            var failedAlerts = await tasks.GetOpenFailedTaskAlertsAsync(CancellationToken.None);
+            Assert.Contains(failedAlerts, a => a.TaskId == failedTaskId && a.Kind == "Failed");
+            Assert.Contains(failedAlerts, a => a.TaskId == rejectedTaskId && a.Kind == "Rejected");
+
             var blockers = await tasks.GetActiveBlockerAlertsAsync(CancellationToken.None);
             Assert.Contains(blockers, a => a.Key == $"quota:{agent}");
             Assert.Contains(blockers, a => a.Key == $"pause:{agent}");
 
             // First generation: everything currently open is new, so every alert is surfaced.
-            var payload1 = DigestBuilder.Build(since, DateTimeOffset.UtcNow, finished, ciFailures, needsHuman, blockers, await digests.GetAlertFingerprintsAsync(CancellationToken.None));
-            var openAlerts = ciFailures.Concat(needsHuman).Concat(blockers).ToList();
+            var payload1 = DigestBuilder.Build(since, until, finished, ciFailures, needsHuman, blockers,
+                await digests.GetAlertFingerprintsAsync(CancellationToken.None), failedAlerts, retries,
+                await tasks.GetNextEligibleTaskAsync(CancellationToken.None));
+            var openAlerts = ciFailures.Concat(needsHuman).Concat(blockers).Concat(failedAlerts).ToList();
             var run1 = await digests.SaveAsync(payload1, openAlerts, CancellationToken.None);
             digestRunIds.Add(run1.Id);
+            Assert.Equal(until, run1.GeneratedAt);
             Assert.Contains(run1.Payload.CiFailures, a => a.TaskId == publishedCiFailedId);
             Assert.Equal(1, run1.Payload.CiFailureTotal);
+            Assert.Equal(1, run1.Payload.ChangesSincePrevious?.Merged);
+            Assert.Equal(1, run1.Payload.ChangesSincePrevious?.Rejected);
+            Assert.Equal(2, run1.Payload.ChangesSincePrevious?.Failed);
+            Assert.Equal(2, run1.Payload.RetrySummary?.TotalRetries);
+            Assert.Contains(run1.Payload.ActionItems!, item => item.TaskId == publishedCiFailedId && item.Url == $"http://localhost:3000/tasks/{publishedCiFailedId}");
 
             var latest = await digests.GetLatestAsync(CancellationToken.None);
             Assert.Equal(run1.Id, latest?.Id);
 
             // Second generation with nothing changed: totals stay the same, but the unchanged alerts are suppressed.
-            var payload2 = DigestBuilder.Build(since, DateTimeOffset.UtcNow, [], ciFailures, needsHuman, blockers, await digests.GetAlertFingerprintsAsync(CancellationToken.None));
+            var payload2 = DigestBuilder.Build(since, until, [], ciFailures, needsHuman, blockers,
+                await digests.GetAlertFingerprintsAsync(CancellationToken.None), failedAlerts,
+                new DigestRetrySummary(0, []), previousPayload: payload1);
             Assert.Empty(payload2.CiFailures);
             Assert.Empty(payload2.NeedsHuman);
             Assert.Empty(payload2.Blockers);
+            Assert.Empty(payload2.FailedTasks!);
             Assert.Equal(1, payload2.CiFailureTotal);
 
             // A resolved alert (no longer open) is dropped from dedup state, so if it recurs later it is treated as new again.
@@ -2258,7 +2301,7 @@ public sealed class PostgresStoreIntegrationTests
         }
         finally
         {
-            var alertKeys = new[] { $"ci:{publishedCiFailedId}", $"human:{needsHumanId}", $"quota:{agent}", $"pause:{agent}" };
+            var alertKeys = new[] { $"ci:{publishedCiFailedId}", $"human:{needsHumanId}", $"quota:{agent}", $"pause:{agent}", $"failed:{failedTaskId}", $"rejected:{rejectedTaskId}" };
             await connection.ExecuteAsync("DELETE FROM factory.digest_alert_state WHERE alert_key=ANY(@alertKeys)", new { alertKeys });
             await connection.ExecuteAsync("DELETE FROM factory.digest_run WHERE id=ANY(@digestRunIds)", new { digestRunIds });
             await connection.ExecuteAsync("DELETE FROM factory.task_ci_status WHERE task_id=ANY(@allTaskIds)", new { allTaskIds });

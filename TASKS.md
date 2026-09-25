@@ -103,6 +103,9 @@ Multi-machine execution, multiple concurrent coding workers, additional agent pr
 
 ## Completed
 
+- [x] **GitHub #123 — Later: turn the daily Digest into an operator briefing** — Completed 2026-09-25. The existing daily digest now includes merged, rejected, and failed outcomes; current blockers; the next claimable task; provider availability and persisted quota; retry counts; changes since the prior snapshot; and up to five ranked actions with links. A deterministic factual summary is included in the local UI and webhook JSON; unchanged alerts stay counted without repeating their details. Digest windows are half-open and the stored generation timestamp matches the window end. No coding-agent narrative is generated.
+  - Verification: `dotnet build` and `dotnet test --no-restore` passed (595 reported tests); frontend lint, type-check, and isolated production build passed. The PostgreSQL-backed integration method returns early because `FACTORY_TEST_CONNECTION_STRING` is not configured, so its SQL assertions were not executed against a database.
+
 - [x] **SF-720 — Expose a current-execution snapshot for Overview (GitHub issue #113)** — Completed 2026-09-25. Added `GET /api/execution/current`, a bounded read-only projection over persisted task, run, step, and agent-run records. It returns task and issue links, repository, the selected/fallback agent, task and execution status, current running step, implementation attempt and persisted limit, run/step IDs, and elapsed/last-progress timestamps. Starting, running, between-step, stopping, and idle states have no stale step or log reference. Added indexes for newest run/step/agent lookups.
   - Verification: `dotnet build --no-restore` passed with 0 warnings; full `dotnet test --no-restore` passed (560 tests: Core 206, Integration 55, API 55, Orchestrator 105, Infrastructure 139). API tests cover idle projection, retry/fallback, the restarted run, current step, and reference clearing between steps.
 
