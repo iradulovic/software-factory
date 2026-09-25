@@ -11,6 +11,7 @@ namespace Factory.Api.Tests;
 // actually touch factory.*/github.* tables — mirroring the pattern every Factory.IntegrationTests test already uses.
 // Idempotent (DatabaseMigrator only applies a migration file once), so this is safe to run against an already-migrated
 // local database too.
+[Collection("API PostgreSQL tests")]
 public sealed class DatabaseEndpointTests : IClassFixture<RootEndpointTests.FactoryApplication>, IAsyncLifetime
 {
     private readonly HttpClient client;
