@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Dapper;
 using Factory.Infrastructure;
@@ -193,6 +194,42 @@ public sealed class CurrentExecutionEndpointTests : IClassFixture<RootEndpointTe
         Assert.Equal(JsonValueKind.Null, starting.Document.RootElement.GetProperty("runId").ValueKind);
         Assert.Equal(JsonValueKind.Null, starting.Document.RootElement.GetProperty("stepId").ValueKind);
         starting.Document.Dispose();
+    }
+
+    [Fact]
+    public async Task Task_details_expose_persisted_operator_audit_history()
+    {
+        await SeedRetryAndFallbackExecutionAsync();
+        await using var c = await dataSource!.OpenConnectionAsync();
+        await c.ExecuteAsync("""
+            INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+            VALUES(@taskId,'Implementing','Implementing','Operator stopped further automatic attempts after current execution','operator')
+            """, new { taskId });
+
+        var response = await client.GetAsync($"/api/tasks/{taskId}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var events = document.RootElement.GetProperty("taskEvents");
+        Assert.Contains(events.EnumerateArray(), item => item.GetProperty("actor").GetString() == "operator"
+            && item.GetProperty("reason").GetString()!.Contains("stopped further automatic attempts"));
+    }
+
+    [Fact]
+    public async Task Operator_answer_cites_the_recorded_retry_reason()
+    {
+        await SeedRetryAndFallbackExecutionAsync();
+        await using var c = await dataSource!.OpenConnectionAsync();
+        await c.ExecuteAsync("""
+            INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+            VALUES(@taskId,'Failed','Pending','Validation failed; retry approved','operator')
+            """, new { taskId });
+
+        var response = await client.PostAsJsonAsync("/api/operator/ask", new { text = $"Why did task {taskId} retry?" });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Contains("Validation failed; retry approved", document.RootElement.GetProperty("observed").GetString());
+        Assert.Equal($"/tasks/{taskId}", document.RootElement.GetProperty("evidence")[0].GetProperty("href").GetString());
+        Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("action").ValueKind);
     }
 
     private async Task SeedRetryAndFallbackExecutionAsync()

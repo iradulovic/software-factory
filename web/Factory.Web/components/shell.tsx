@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { z } from "zod";
-import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageSquareText, Moon, Newspaper, Sun } from "lucide-react";
+import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageCircle, MessageSquareText, Moon, Newspaper, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, githubStatusSchema, workerSchema, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { agentStateDescription } from "@/components/ui";
@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/sidebar";
 
 const navigation = [
-  ["Overview", "/", CircleGauge], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo],
+  ["Overview", "/", CircleGauge], ["Ask", "/operator", MessageCircle], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo],
   ["Runs", "/runs", Activity], ["Repositories", "/repositories", Boxes], ["Digest", "/digest", Newspaper],
   ["Database", "/database", Database]
 ] as const;

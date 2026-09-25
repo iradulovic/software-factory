@@ -1264,16 +1264,35 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return rows.Select(r => r.ToModel()).ToList();
     }
 
-    public async Task SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor, CancellationToken cancellationToken)
+    public async Task<bool> SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor,
+        CancellationToken cancellationToken, bool? expectedPaused = null)
     {
-        const string sql = """
-            INSERT INTO factory.dispatch_pause(scope,paused,reason,paused_at,paused_by)
-            VALUES(@scope,@paused,@reason,CASE WHEN @paused THEN now() ELSE NULL END,CASE WHEN @paused THEN @actor ELSE NULL END)
-            ON CONFLICT(scope) DO UPDATE SET
-              paused=excluded.paused, reason=excluded.reason, paused_at=excluded.paused_at, paused_by=excluded.paused_by
-            """;
         await using var c = Connection();
-        await c.ExecuteAsync(new CommandDefinition(sql, new { scope, paused, reason, actor }, cancellationToken: cancellationToken));
+        await c.OpenAsync(cancellationToken);
+        await using var transaction = await c.BeginTransactionAsync(cancellationToken);
+        await c.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.dispatch_pause(scope,paused) VALUES(@scope,false) ON CONFLICT DO NOTHING
+            """, new { scope }, transaction, cancellationToken: cancellationToken));
+        var current = await c.QuerySingleAsync<bool>(new CommandDefinition("""
+            SELECT paused FROM factory.dispatch_pause WHERE scope=@scope FOR UPDATE
+            """, new { scope }, transaction, cancellationToken: cancellationToken));
+        if (expectedPaused is not null && current != expectedPaused.Value)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+        await c.ExecuteAsync(new CommandDefinition("""
+            UPDATE factory.dispatch_pause SET paused=@paused,reason=@reason,
+              paused_at=CASE WHEN @paused THEN now() ELSE NULL END,
+              paused_by=CASE WHEN @paused THEN @actor ELSE NULL END
+            WHERE scope=@scope
+            """, new { scope, paused, reason, actor }, transaction, cancellationToken: cancellationToken));
+        await c.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.dispatch_pause_event(scope,paused,reason,actor)
+            VALUES(@scope,@paused,@reason,@actor)
+            """, new { scope, paused, reason, actor }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     public async Task SetPriorityAsync(Guid taskId, int priority, CancellationToken cancellationToken)
