@@ -34,9 +34,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const { data } = useQuery({ queryKey: ["workers"], queryFn: () => getJson("/api/workers", z.array(workerSchema)) });
   const pathname = usePathname();
   return (
-    <SidebarProvider>
+    <SidebarProvider className="h-svh min-h-0 min-w-0 max-w-full overflow-hidden">
       <Sidebar collapsible="icon" className="border-[var(--border)]">
-        <SidebarHeader className="border-b border-[var(--border)] px-2 py-3">
+        <SidebarHeader className="h-16 shrink-0 border-b border-[var(--border)] px-2 py-3">
           <div className="flex items-center gap-3 px-1">
             <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-emerald-500 font-black text-slate-950">SF</div>
             <div className="min-w-0 group-data-[collapsible=icon]:hidden">
@@ -72,22 +72,22 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </div>
         </SidebarFooter>
       </Sidebar>
-      <SidebarInset>
-        <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-3 border-b border-[var(--border)] bg-[color:var(--background)/.85] px-5 backdrop-blur">
-          <div className="flex items-center gap-3">
+      <SidebarInset className="min-h-0 min-w-0 w-0 max-w-full overflow-hidden">
+        <header className="flex h-16 min-w-0 shrink-0 items-center justify-between gap-3 border-b border-[var(--border)] bg-[color:var(--background)/.85] px-5 backdrop-blur">
+          <div className="flex min-w-0 items-center gap-3">
             <SidebarTrigger />
-            <div>
+            <div className="min-w-0">
               <p className="text-xs uppercase tracking-[.16em] text-muted-foreground">Operations</p>
-              <p className="text-sm font-medium">Development orchestration</p>
+              <p className="truncate text-sm font-medium">Development orchestration</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <ThemeToggle />
             <GitHubStatusIndicator />
             <AgentStatusPill />
           </div>
         </header>
-        <div className="p-4 md:p-6">{children}</div>
+        <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">{children}</div>
       </SidebarInset>
     </SidebarProvider>
   );

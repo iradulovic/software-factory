@@ -64,7 +64,7 @@
   --radius-sm:calc(var(--radius) - 4px); --radius-md:calc(var(--radius) - 2px); --radius-lg:var(--radius); --radius-xl:calc(var(--radius) + 4px);
 }
 
-* { box-sizing:border-box; } body { margin:0; font-family:var(--font-geist-mono),ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--background); color:var(--foreground); }
+* { box-sizing:border-box; } html,body { height:100%; overflow:hidden; } body { margin:0; font-family:var(--font-geist-mono),ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--background); color:var(--foreground); }
 .panel { border:1px solid var(--border); background:var(--panel); border-radius:.65rem; }
 .eyebrow { font-size:.68rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted-foreground); font-weight:650; }
 .badge { display:inline-flex; align-items:center; border:1px solid; border-radius:999px; padding:.15rem .5rem; font-size:.68rem; font-weight:650; }
