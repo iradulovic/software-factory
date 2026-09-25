@@ -112,6 +112,20 @@ public sealed class DigestBuilderTests
     }
 
     [Fact]
+    public void Ci_action_without_pull_request_url_links_to_dashboard_task()
+    {
+        var taskId = Guid.NewGuid();
+        var ci = new DigestAlertCandidate("Ci", "ci:task", "CI is failing", "tests failed", taskId, null, Until);
+
+        var payload = DigestBuilder.Build(Since, Until, [], [ci], [], [], new Dictionary<string, string>(),
+            dashboardBaseUrl: "https://factory.example/");
+
+        var action = Assert.Single(payload.ActionItems!);
+        Assert.Equal(taskId, action.TaskId);
+        Assert.Equal($"https://factory.example/tasks/{taskId}", action.Url);
+    }
+
+    [Fact]
     public void Zero_work_day_produces_an_accurate_useful_idle_briefing()
     {
         var providers = new[] { new DigestProviderStatus("Codex", "Available", "1.2.3", null, false, null, null, null, Until) };

@@ -2274,7 +2274,6 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Equal(1, run1.Payload.ChangesSincePrevious?.Rejected);
             Assert.Equal(2, run1.Payload.ChangesSincePrevious?.Failed);
             Assert.Equal(2, run1.Payload.RetrySummary?.TotalRetries);
-            Assert.Contains(run1.Payload.ActionItems!, item => item.TaskId == publishedCiFailedId && item.Url == $"http://localhost:3000/tasks/{publishedCiFailedId}");
 
             var latest = await digests.GetLatestAsync(CancellationToken.None);
             Assert.Equal(run1.Id, latest?.Id);
