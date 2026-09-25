@@ -9,6 +9,7 @@ public sealed class AgentRunDetailsRow
     public string? Model { get; init; }
     public string? ReasoningEffort { get; init; }
     public string? SelectionReason { get; init; }
+    public string? TaskClass { get; init; }
     public DateTimeOffset StartedAt { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
     public double? DurationSeconds { get; init; }
@@ -33,7 +34,7 @@ public sealed record AgentRunDetails(
     DateTimeOffset StartedAt, DateTimeOffset? CompletedAt, double? DurationSeconds,
     int? ExitCode, string Status, string? Stdout, string? Stderr, bool QuotaDetected, int AttemptNumber, bool NeedsHuman,
     JsonElement? ResultJson, string? ResultSummary, IReadOnlyList<string> TestsRun, bool? TestsPassed,
-    IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, string? HumanReason);
+    IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, string? HumanReason, string? TaskClass = null);
 
 public static class AgentRunDetailsMapper
 {
@@ -42,7 +43,7 @@ public static class AgentRunDetailsMapper
         row.StartedAt, row.CompletedAt, row.DurationSeconds, row.ExitCode, row.Status,
         row.Stdout, row.Stderr, row.QuotaDetected, row.AttemptNumber, row.NeedsHuman,
         ParseDocument(row.ResultJson), row.ResultSummary, ParseList(row.TestsRunJson), row.TestsPassed,
-        ParseList(row.FilesChangedJson), ParseList(row.RisksJson), row.HumanReason);
+        ParseList(row.FilesChangedJson), ParseList(row.RisksJson), row.HumanReason, row.TaskClass);
 
     private static JsonElement? ParseDocument(string? json) =>
         string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<JsonElement>(json);

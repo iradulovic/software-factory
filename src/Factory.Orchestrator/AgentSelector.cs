@@ -13,10 +13,13 @@ public sealed class AgentSelector(IEnumerable<IAgentRunner> runners, ITaskStore 
     /// <see cref="FactoryTask.PreferredAgent"/> clearly instead of silently falling back as if none were set.</summary>
     public IReadOnlyCollection<string> KnownAgentNames { get; } = runners.Select(r => r.Name).ToList();
 
-    public async Task<IAgentRunner?> SelectAsync(string? preferredAgent, CancellationToken cancellationToken)
+    public bool HasSupportingAgent(string taskClass) => runners.Any(r => r.SupportsTaskClass(taskClass));
+
+    public async Task<IAgentRunner?> SelectAsync(string? preferredAgent, CancellationToken cancellationToken, string taskClass = "quick")
     {
         foreach (var runner in Order(preferredAgent))
         {
+            if (!runner.SupportsTaskClass(taskClass)) continue;
             // A paused agent reserves its capacity for interactive use, exactly like being at quota from
             // AgentSelector's point of view: skipped in favor of the next configured agent, never invoked. Keyed
             // by Provider, not Name, so pausing/quota on one preset (SF-704) correctly applies to every preset

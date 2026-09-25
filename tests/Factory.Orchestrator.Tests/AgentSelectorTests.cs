@@ -5,6 +5,18 @@ namespace Factory.Orchestrator.Tests;
 public sealed class AgentSelectorTests
 {
     [Fact]
+    public async Task Deep_request_skips_a_provider_that_only_supports_quick()
+    {
+        var store = new FakeTaskStore();
+        var quickOnly = new StubAgent("Codex", supportedClasses: ["quick"]);
+        var deep = new StubAgent("Claude", supportedClasses: ["deep"]);
+        var selector = new AgentSelector([quickOnly, deep], store);
+
+        Assert.Same(deep, await selector.SelectAsync("Codex", CancellationToken.None, "deep"));
+        Assert.Null(await new AgentSelector([quickOnly], store).SelectAsync("Codex", CancellationToken.None, "deep"));
+    }
+
+    [Fact]
     public async Task Prefers_the_tasks_preferred_agent_when_it_is_available()
     {
         var store = new FakeTaskStore();
@@ -143,11 +155,12 @@ public sealed class AgentSelectorTests
         Assert.Equal(["Codex", "Codex-High", "Claude"], selector.KnownAgentNames);
     }
 
-    private sealed class StubAgent(string name, string? provider = null, bool allowAutomaticFallback = true) : IAgentRunner
+    private sealed class StubAgent(string name, string? provider = null, bool allowAutomaticFallback = true, IReadOnlyList<string>? supportedClasses = null) : IAgentRunner
     {
         public string Name { get; } = name;
         public string Provider { get; } = provider ?? name;
         public bool AllowAutomaticFallback { get; } = allowAutomaticFallback;
+        public bool SupportsTaskClass(string taskClass) => supportedClasses is null || supportedClasses.Contains(taskClass);
         public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

@@ -63,6 +63,7 @@ public static class CurrentExecutionProjection
         var issueUrl = row.IssueNumber is null ? null
             : $"https://github.com/{Uri.EscapeDataString(row.RepositoryOwner)}/{Uri.EscapeDataString(row.RepositoryName)}/issues/{row.IssueNumber}";
         var agent = row.RunId is null ? null : row.CurrentAgent ?? row.LastAgent;
+        if (agent is "Codex-Luna" or "Codex-Sol") agent = "Codex";
 
         return new CurrentExecutionSnapshot(status, row.TaskStatus, row.TaskId, row.TaskTitle, taskUrl,
             $"{row.RepositoryOwner}/{row.RepositoryName}", row.IssueNumber, issueUrl,

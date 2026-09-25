@@ -111,7 +111,8 @@ public sealed record FactoryTask(
     string? ResumableSessionId = null,
     string? ResumableSessionAgent = null,
     string? PreferredAgentReason = null,
-    string? AgentRoutingError = null);
+    string? AgentRoutingError = null,
+    string? TaskClass = null);
 
 /// <param name="LastSyncedAt">The point in time through which this repository's issues are known to be fully
 /// synchronized, used as the incremental sync checkpoint; <see langword="null"/> before the first sync.</param>
@@ -137,7 +138,7 @@ public sealed record AgentRunRecord(Guid Id, Guid TaskId, Guid RunId, Guid StepI
     DateTimeOffset? CompletedAt, double? DurationSeconds, int? ExitCode, string Status, string? StandardOutput,
     string? StandardError, bool QuotaDetected, DateTimeOffset? QuotaResetAt, int AttemptNumber, bool NeedsHuman, AgentResult? Result,
     bool CountsAsImplementationAttempt = true, string? ProviderSessionId = null, string? Model = null,
-    string? ReasoningEffort = null, string? SelectionReason = null, string Purpose = "Implement");
+    string? ReasoningEffort = null, string? SelectionReason = null, string Purpose = "Implement", string? TaskClass = null);
 
 /// <param name="LogPath">When set, stdout and stderr are streamed to this file as the process runs, interleaved
 /// in arrival order, in addition to the bounded preview <see cref="ProcessResult"/> always returns.</param>
@@ -168,7 +169,7 @@ public enum AgentRunPurpose { Implement, Review }
 /// one <see cref="FactoryTask.ResumableSessionAgent"/> recorded and that agent's <see cref="AgentProfile.SupportsSessionResume"/>
 /// is enabled — <see langword="null"/> for a fresh session, exactly as before this task.</param>
 /// <param name="Purpose">Implement (default) or Review (SF-702) — see <see cref="AgentRunPurpose"/>.</param>
-public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null, string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement);
+public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null, string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement, string? TaskClass = null);
 
 /// <param name="Window">The classified reset window a detected quota signal falls into; <see cref="QuotaWindow.None"/>
 /// when <paramref name="QuotaDetected"/> is <see langword="false"/>. See <see cref="QuotaClassifier"/>.</param>
@@ -182,7 +183,8 @@ public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, strin
 /// was <see cref="AgentRunPurpose.Review"/> (SF-702) — always <see langword="null"/> for an implementation invocation.</param>
 public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, string? ValidationError, bool QuotaDetected,
     DateTimeOffset? QuotaResetAt = null, QuotaWindow Window = QuotaWindow.None, QuotaResetKind ResetKind = QuotaResetKind.None,
-    string? QuotaDetail = null, string? ProviderSessionId = null, AgentReviewResult? ReviewResult = null);
+    string? QuotaDetail = null, string? ProviderSessionId = null, AgentReviewResult? ReviewResult = null,
+    string? Model = null, string? ReasoningEffort = null);
 
 public sealed record AgentAvailability(string Agent, bool Available, string? Version, string? Error);
 
@@ -583,12 +585,8 @@ public sealed record PreviousAttemptSummary(
 /// matched against this invocation's stdout to extract the provider's own session/thread id. Only consulted when
 /// <see cref="SupportsSessionResume"/> is <see langword="true"/>.</param>
 /// <param name="Provider">The underlying subscription/CLI this profile draws from — e.g. "Codex" or "Claude"
-/// (SF-704). Defaults to <see cref="Name"/> when left unset, which is exactly today's one-profile-per-provider
-/// behavior. A model/reasoning-effort preset is configured as an additional profile with its own distinct
-/// <see cref="Name"/> (so it is selected and its per-invocation settings are recorded — <see cref="AgentRunRecord.Agent"/>
-/// — independently) but the *same* <see cref="Provider"/> as its base profile, so quota and pause state, which are
-/// always keyed by <see cref="Provider"/>, are correctly shared across every preset of one provider rather than
-/// each preset accumulating its own independent budget.</param>
+/// (SF-704). Defaults to <see cref="Name"/> when unset. Class-specific model settings stay within one provider
+/// profile, while quota and pause remain keyed by provider.</param>
 public sealed record AgentProfile(
     string Name,
     string Executable,
@@ -608,7 +606,8 @@ public sealed record AgentProfile(
     string? Provider = null,
     string? Model = null,
     string? ReasoningEffort = null,
-    bool AllowAutomaticFallback = true)
+    bool AllowAutomaticFallback = true,
+    IReadOnlyList<AgentClassProfile>? Classes = null)
 {
     /// <summary>Configuration binding constructor. Defaults let a profile omit optional settings such as quota
     /// signatures without the binder trying to construct the positional record from a missing constructor value.</summary>
@@ -619,3 +618,6 @@ public sealed record AgentProfile(
     /// otherwise <see cref="Name"/> (SF-704).</summary>
     public string EffectiveProvider => Provider ?? Name;
 }
+
+public sealed record AgentClassProfile(string TaskClass, string Model, string? ReasoningEffort,
+    IReadOnlyList<string> Arguments, IReadOnlyList<string>? ResumeArguments = null);

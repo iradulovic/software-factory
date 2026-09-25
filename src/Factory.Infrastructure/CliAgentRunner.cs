@@ -34,19 +34,32 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
     public string? Model => profile.Model;
     public string? ReasoningEffort => profile.ReasoningEffort;
     public bool AllowAutomaticFallback => profile.AllowAutomaticFallback;
+    public bool SupportsTaskClass(string taskClass) => profile.Classes is null || profile.Classes.Any(c =>
+        string.Equals(c.TaskClass, taskClass, StringComparison.OrdinalIgnoreCase));
 
     public async Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
     {
         var reviewing = request.Purpose == AgentRunPurpose.Review;
         var prompt = reviewing ? ReviewPrompt : Prompt;
+        var taskClass = request.TaskClass ?? "quick";
+        var selectedClass = profile.Classes?.FirstOrDefault(c => string.Equals(c.TaskClass, taskClass, StringComparison.OrdinalIgnoreCase));
+        if (profile.Classes is not null && selectedClass is null)
+            throw new InvalidOperationException($"Agent {profile.Name} has no configuration for coding class {taskClass}.");
+        var model = selectedClass?.Model ?? profile.Model;
+        var effort = selectedClass?.ReasoningEffort ?? profile.ReasoningEffort;
+        var normalArguments = selectedClass?.Arguments ?? profile.Arguments;
+        var resumeArguments = selectedClass?.ResumeArguments ?? profile.ResumeArguments;
+        if (selectedClass is not null && (string.IsNullOrWhiteSpace(model) || !normalArguments.Contains(model)
+            || (effort is not null && !normalArguments.Any(a => a.Contains(effort, StringComparison.Ordinal)))))
+            throw new InvalidOperationException($"Agent {profile.Name} coding class {taskClass} has inconsistent model or effort arguments.");
 
         // A resume is only ever attempted when the profile both opted in and this request actually carries a
         // session id (set by RunAgentStep only when the selected agent matches the task's own recorded one) —
         // otherwise every argument, and the resulting log format, is exactly what it was before SF-701.
-        var resuming = profile.SupportsSessionResume && request.ResumeSessionId is not null && profile.ResumeArguments is not null;
+        var resuming = profile.SupportsSessionResume && request.ResumeSessionId is not null && resumeArguments is not null;
         var arguments = resuming
-            ? profile.ResumeArguments!.Select(a => a.Replace("{SESSION_ID}", request.ResumeSessionId)).ToArray()
-            : profile.Arguments;
+            ? resumeArguments!.Select(a => a.Replace("{SESSION_ID}", request.ResumeSessionId)).ToArray()
+            : normalArguments;
 
         var invocation = profile.PromptDelivery == "argument"
             ? new ProcessRequest(profile.Executable, [.. arguments, prompt], request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), LogPath: request.LogPath)
@@ -58,9 +71,9 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         if (reviewing)
         {
             var (reviewResult, reviewError) = await reviewResultReader.ReadAsync(request.WorkingDirectory, cancellationToken);
-            return new AgentRunResult(process, null, reviewError, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail, sessionId, reviewResult);
+            return new AgentRunResult(process, null, reviewError, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail, sessionId, reviewResult, model, effort);
         }
         var (result, error) = await resultReader.ReadAsync(request.WorkingDirectory, cancellationToken);
-        return new AgentRunResult(process, result, error, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail, sessionId);
+        return new AgentRunResult(process, result, error, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail, sessionId, Model: model, ReasoningEffort: effort);
     }
 }

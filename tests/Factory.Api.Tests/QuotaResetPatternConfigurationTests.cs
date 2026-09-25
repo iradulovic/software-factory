@@ -28,7 +28,7 @@ public sealed class QuotaResetPatternConfigurationTests : IClassFixture<QuotaRes
     {
         var process = new ProcessResult("codex", [], ".", Now, Now, 1, "", "Error: usage limit reached. You can try again at 5:12 PM.", false, false);
 
-        var signal = QuotaClassifier.Classify(Profile("Codex-Luna"), process, Now);
+        var signal = QuotaClassifier.Classify(Profile("Codex"), process, Now);
 
         Assert.True(signal.Detected);
         Assert.Equal(QuotaResetKind.Reported, signal.ResetKind);
@@ -52,7 +52,7 @@ public sealed class QuotaResetPatternConfigurationTests : IClassFixture<QuotaRes
     {
         var process = new ProcessResult("codex", [], ".", Now, Now, 1, "", "Error: quota exceeded.", false, false);
 
-        var signal = QuotaClassifier.Classify(Profile("Codex-Luna"), process, Now);
+        var signal = QuotaClassifier.Classify(Profile("Codex"), process, Now);
 
         Assert.True(signal.Detected);
         Assert.Equal(QuotaResetKind.Estimated, signal.ResetKind);

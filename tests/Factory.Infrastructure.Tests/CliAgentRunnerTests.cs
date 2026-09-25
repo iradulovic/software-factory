@@ -9,6 +9,41 @@ public sealed class CliAgentRunnerTests
     private static AgentProfile Codex(int quotaCooldownHours = 5) =>
         new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, quotaCooldownHours);
 
+    [Theory]
+    [InlineData("quick", "gpt-5.6-luna", "max")]
+    [InlineData("deep", "gpt-5.6-sol", "medium")]
+    public async Task Configured_class_selects_the_actual_cli_model_and_effort(string taskClass, string model, string effort)
+    {
+        var profile = AgentProfilesOptions.DefaultProfiles.Single();
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "", "", false, false));
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            TaskClass: taskClass), CancellationToken.None);
+
+        Assert.Equal("Codex", agent.Name);
+        Assert.Contains(model, runner.Request!.Arguments);
+        Assert.Contains($"model_reasoning_effort=\"{effort}\"", runner.Request.Arguments);
+        Assert.Equal((model, effort), (result.Model, result.ReasoningEffort));
+    }
+
+    [Fact]
+    public async Task Model_release_swap_changes_only_configuration()
+    {
+        var original = AgentProfilesOptions.DefaultProfiles.Single();
+        var changed = original with { Classes = original.Classes!.Select(c => c.TaskClass == "deep"
+            ? c with { Model = "next-sol", Arguments = ["exec", "-m", "next-sol", "-c", "model_reasoning_effort=\"medium\"", "-"] }
+            : c).ToArray() };
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "", "", false, false));
+        var agent = new CliAgentRunner(changed, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            TaskClass: "deep"), CancellationToken.None);
+
+        Assert.Equal("next-sol", result.Model);
+        Assert.Contains("next-sol", runner.Request!.Arguments);
+    }
+
     [Fact]
     public async Task Quota_detection_records_a_reset_time_using_the_profiles_configured_cooldown()
     {
