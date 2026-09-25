@@ -93,7 +93,7 @@ app.MapGet("/health", async (NpgsqlDataSource db, CancellationToken ct) =>
     }
 });
 
-app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, IEnumerable<IAgentRunner> agents, ITaskStore tasks, IOptions<FactoryOptions> options, CancellationToken ct) =>
+app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, IEnumerable<IAgentRunner> agents, ITaskStore tasks, IOptions<FactoryOptions> options, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
     var metrics = await c.QuerySingleAsync<DashboardMetricsRow>(new CommandDefinition("""
@@ -109,6 +109,47 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvail
     var active = (await c.QueryAsync<TaskRow>(new CommandDefinition(TaskListSql + " WHERE t.status IN ('Claimed','Preparing','Implementing','Validating','Reviewing','Stopping') ORDER BY t.started_at DESC LIMIT 8", cancellationToken: ct))).Select(r => AddConfiguredAgentMetadata(r.ToResponse(), agents));
     var activity = await c.QueryAsync(new CommandDefinition("SELECT s.step_type AS type,s.status,s.completed_at AS \"occurredAt\",t.title FROM factory.step s JOIN factory.run r ON r.id=s.run_id JOIN factory.task t ON t.id=r.task_id WHERE s.completed_at IS NOT NULL ORDER BY s.completed_at DESC LIMIT 12", cancellationToken: ct));
     var throughput = await c.QueryAsync(new CommandDefinition("SELECT d::date AS day,count(t.id) AS completed FROM generate_series(CURRENT_DATE-6,CURRENT_DATE,'1 day') d LEFT JOIN factory.task t ON t.completed_at::date=d::date GROUP BY d ORDER BY d", cancellationToken: ct));
+    var mergeAlerts = await c.QueryAsync(new CommandDefinition("""
+        SELECT m.task_id AS "taskId",t.title,m.status,m.error,m.merge_state_status AS "mergeStateStatus",m.synced_at AS "syncedAt"
+        FROM factory.task_merge_status m JOIN factory.task t ON t.id=m.task_id
+        WHERE t.status IN ('Published','NeedsHuman') AND m.status IN ('Conflict','Requirements','Unavailable')
+        ORDER BY m.synced_at DESC LIMIT 20
+        """, cancellationToken: ct));
+    var mergeAttention = await c.QueryAsync(new CommandDefinition("""
+        SELECT t.id AS "taskId",t.title,t.status AS "taskStatus",t.failure_reason AS "failureReason",t.validated_head_commit AS "validatedHeadCommit",
+          p.pull_request_number AS "pullRequestNumber",p.pull_request_url AS "pullRequestUrl",
+          ci.overall_status AS "ciStatus",ci.head_commit AS "ciHead",m.status AS "mergeStatus",
+          m.merge_state_status AS "mergeStateStatus",m.mergeable,m.head_sha AS "mergeHead",
+          (SELECT mr.status FROM factory.manual_merge_request mr WHERE mr.task_id=t.id ORDER BY mr.requested_at DESC LIMIT 1) AS "requestStatus"
+        FROM factory.task t
+        JOIN LATERAL (SELECT pull_request_number,pull_request_url FROM factory.publication
+          WHERE task_id=t.id AND status='PullRequestCreated' ORDER BY completed_at DESC LIMIT 1) p ON true
+        LEFT JOIN factory.task_ci_status ci ON ci.task_id=t.id
+        LEFT JOIN factory.task_merge_status m ON m.task_id=t.id
+        WHERE (t.status='Published' AND t.require_human_merge)
+           OR (t.status='NeedsHuman' AND (t.failure_reason LIKE 'Automatic merge%' OR t.failure_reason LIKE 'On-demand merge failed:%'))
+        ORDER BY t.created_at DESC LIMIT 20
+        """, cancellationToken: ct));
+    var attemptAlerts = await c.QueryAsync(new CommandDefinition("""
+        SELECT t.id AS "taskId",t.title,t.status,t.failure_reason AS "failureReason",t.repair_paused AS "repairPaused",ci.overall_status AS "ciStatus",
+          (SELECT count(*)::int FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.counts_as_implementation_attempt
+            AND ar.started_at > COALESCE((SELECT max(created_at) FROM factory.task_feedback WHERE task_id=t.id),'-infinity'::timestamptz)) AS "implementation",
+          NULLIF(r.repository_configuration->>'maxImplementationAttempts','')::int AS "maxImplementation",
+          (SELECT count(*)::int FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.quota_detected AND NOT ar.counts_as_implementation_attempt) AS "quotaInterruptions",
+          NULLIF(r.repository_configuration->>'maxQuotaInterruptions','')::int AS "maxQuotaInterruptions",
+          (SELECT count(*)::int FROM factory.task_feedback f WHERE f.task_id=t.id AND f.created_by='ci-repair') AS "ciRepairs",
+          (SELECT reason FROM factory.task_event e WHERE e.task_id=t.id AND e.to_status='Pending' AND e.reason IS NOT NULL ORDER BY e.occurred_at DESC LIMIT 1) AS "latestRetryReason"
+        FROM factory.task t
+        LEFT JOIN factory.task_ci_status ci ON ci.task_id=t.id
+        LEFT JOIN LATERAL (SELECT repository_configuration FROM factory.run WHERE task_id=t.id AND repository_configuration IS NOT NULL ORDER BY started_at DESC LIMIT 1) r ON true
+        WHERE t.status IN ('Pending','Claimed','Preparing','Implementing','Validating','Reviewing','WaitingForQuota','Published','NeedsHuman')
+          AND (t.repair_paused
+            OR (ci.overall_status='Failure' AND EXISTS (SELECT 1 FROM factory.task_feedback f WHERE f.task_id=t.id AND f.created_by='ci-repair'))
+            OR (t.status IN ('Pending','Claimed','Preparing','Implementing','Validating','Reviewing','WaitingForQuota') AND EXISTS (SELECT 1 FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.counts_as_implementation_attempt
+              AND ar.started_at > COALESCE((SELECT max(created_at) FROM factory.task_feedback WHERE task_id=t.id),'-infinity'::timestamptz)))
+            OR (SELECT count(*) FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.quota_detected AND NOT ar.counts_as_implementation_attempt) >= 2)
+        ORDER BY t.created_at DESC LIMIT 20
+        """, cancellationToken: ct));
     var agentStatus = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct);
 
     // A cap on outstanding review work (SF-612) — ReadyForPublish + Published tasks — so unattended
@@ -126,7 +167,11 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvail
             ? "No configured agent is currently available to claim work."
         : "Waiting to claim the next pending task.";
 
-    return Results.Ok(new { metrics, active, activity, throughput, agentStatus, idleReason, reviewBacklog });
+    return Results.Ok(new { metrics, active, activity, throughput, agentStatus, idleReason, reviewBacklog, mergeAlerts, mergeAttention,
+        attemptAlerts = attemptAlerts.Select(row => new { row.taskId, row.title, row.status, row.failureReason, row.repairPaused, row.ciStatus,
+            row.implementation, row.maxImplementation, row.quotaInterruptions, row.maxQuotaInterruptions,
+            row.ciRepairs, maxCiRepairs = githubOptions.Value.MaxCiRepairAttempts,
+            row.latestRetryReason }) });
 });
 
 app.MapGet("/api/execution/current", async (NpgsqlDataSource db, CancellationToken ct) =>
@@ -203,7 +248,7 @@ app.MapGet("/api/tasks", async (string? status, string? repository, string? agen
     return Results.Ok(new { items, total, page = normalizedPage, pageSize = query.Size });
 });
 
-app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskStore tasks, IEnumerable<IAgentRunner> agents, CancellationToken ct) =>
+app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskStore tasks, IEnumerable<IAgentRunner> agents, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
 {
     using var activity = FactoryTelemetry.Source.StartActivity("api.get_task");
     activity?.SetTag("factory.task_id", id);
@@ -236,9 +281,78 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
         """, new { id }, cancellationToken: ct));
     var feedback = await tasks.GetFeedbackAsync(id, ct);
     var ciStatus = await tasks.GetCiStatusAsync(id, ct);
+    var mergeStatus = await tasks.GetMergeStatusAsync(id, ct);
+    var mergeRequests = await c.QueryAsync(new CommandDefinition("""
+        SELECT id,requested_by AS "requestedBy",requested_at AS "requestedAt",completed_at AS "completedAt",
+          status,head_sha AS "headSha",error
+        FROM factory.manual_merge_request WHERE task_id=@id ORDER BY requested_at DESC
+        """, new { id }, cancellationToken: ct));
+    var attemptRow = await c.QuerySingleAsync(new CommandDefinition("""
+        SELECT t.repair_paused AS "repairPaused",t.validated_head_commit AS "validatedHeadCommit",
+          (SELECT count(*)::int FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.counts_as_implementation_attempt
+            AND ar.started_at > COALESCE((SELECT max(created_at) FROM factory.task_feedback WHERE task_id=t.id),'-infinity'::timestamptz)) AS "implementation",
+          (SELECT count(*)::int FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.quota_detected AND NOT ar.counts_as_implementation_attempt) AS "quotaInterruptions",
+          (SELECT count(*)::int FROM factory.task_feedback f WHERE f.task_id=t.id AND f.created_by='ci-repair') AS "ciRepairs",
+          (SELECT NULLIF(r.repository_configuration->>'maxImplementationAttempts','')::int FROM factory.run r WHERE r.task_id=t.id AND r.repository_configuration IS NOT NULL ORDER BY r.started_at DESC LIMIT 1) AS "maxImplementation",
+          (SELECT NULLIF(r.repository_configuration->>'maxQuotaInterruptions','')::int FROM factory.run r WHERE r.task_id=t.id AND r.repository_configuration IS NOT NULL ORDER BY r.started_at DESC LIMIT 1) AS "maxQuotaInterruptions",
+          (SELECT reason FROM factory.task_event e WHERE e.task_id=t.id AND e.to_status='Pending' AND e.reason IS NOT NULL ORDER BY e.occurred_at DESC LIMIT 1) AS "latestRetryReason"
+        FROM factory.task t WHERE t.id=@id
+        """, new { id }, cancellationToken: ct));
+    var attempts = new { attemptRow.repairPaused, attemptRow.implementation, attemptRow.quotaInterruptions,
+        attemptRow.ciRepairs, attemptRow.maxImplementation, attemptRow.maxQuotaInterruptions,
+        maxCiRepairs = githubOptions.Value.MaxCiRepairAttempts, attemptRow.latestRetryReason };
     var reviewFindings = await tasks.GetReviewFindingsAsync(id, ct);
     var dependencyDtos = dependencies.Select(d => new { d.TaskId, d.DependsOnTaskId, d.DependsOnTitle, DependsOnStatus = d.DependsOnStatus.ToString(), d.Source });
-    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos, feedback, ciStatus, reviewFindings });
+    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos, feedback, ciStatus, mergeStatus, mergeRequests,
+        validatedHeadCommit = attemptRow.validatedHeadCommit, attempts, reviewFindings });
+});
+
+app.MapPost("/api/tasks/{id:guid}/stop-repairs", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
+    await tasks.SetRepairPausedAsync(id, true, "operator", ct)
+        ? Results.Accepted($"/api/tasks/{id}") : Results.Conflict(new { error = "Automatic attempts are already stopped or this task cannot be stopped." }));
+
+app.MapPost("/api/tasks/{id:guid}/resume-repairs", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
+    await tasks.SetRepairPausedAsync(id, false, "operator", ct)
+        ? Results.Accepted($"/api/tasks/{id}") : Results.Conflict(new { error = "Automatic attempts are already enabled or this task cannot be resumed." }));
+
+app.MapPost("/api/tasks/{id:guid}/merge", async (Guid id, ITaskStore tasks, IGitHubClient github, IGitHubPublisher publisher, CancellationToken ct) =>
+{
+    var request = await tasks.BeginManualMergeAsync(id, "operator", ct);
+    if (request is null) return Results.Conflict(new { error = "Task has no eligible factory-owned PR, or a merge request is already active or succeeded." });
+
+    async Task<IResult> Fail(string reason, int statusCode = 409, bool githubRejected = false)
+    {
+        await tasks.CompleteManualMergeAsync(request.Id, false, null, reason, githubRejected, ct);
+        return Results.Json(new { error = reason }, statusCode: statusCode);
+    }
+
+    try
+    {
+        var pr = await github.GetPullRequestMergeabilityAsync(request.RepositoryOwner, request.RepositoryName, request.PullRequestNumber, ct);
+        if (!pr.Succeeded) return await Fail($"GitHub PR read failed: {pr.Error}", 502);
+        var checks = await github.GetPullRequestChecksAsync(request.RepositoryOwner, request.RepositoryName, request.PullRequestNumber, ct);
+        if (!checks.Succeeded) return await Fail($"GitHub CI read failed: {checks.Error}", 502);
+        var refusal = ManualMergeGuard.Refusal(request, pr, checks);
+        if (refusal is not null) return await Fail(refusal);
+        if (pr.IsDraft)
+        {
+            var ready = await publisher.ReadyPullRequestAsync(request.RepositoryOwner, request.RepositoryName, request.PullRequestNumber, ct);
+            if (!ready.Succeeded) return await Fail($"GitHub could not mark the draft ready: {ready.Error}", 502);
+            pr = await github.GetPullRequestMergeabilityAsync(request.RepositoryOwner, request.RepositoryName, request.PullRequestNumber, ct);
+            refusal = ManualMergeGuard.Refusal(request, pr, checks);
+            if (refusal is not null) return await Fail($"Pull request changed after it was marked ready: {refusal}");
+        }
+        if (pr.IsDraft) return await Fail("Pull request is still a draft after GitHub accepted the ready request.");
+        var result = await publisher.MergePullRequestAtHeadAsync(request.RepositoryOwner, request.RepositoryName,
+            request.PullRequestNumber, checks.HeadSha!, ct);
+        if (!result.Succeeded) return await Fail($"GitHub rejected the merge: {result.Error}", 502, githubRejected: true);
+        await tasks.CompleteManualMergeAsync(request.Id, true, checks.HeadSha, null, false, ct);
+        return Results.Accepted($"/api/tasks/{id}", new { message = "Merge accepted. Task completion will reconcile on the next sync." });
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        return await Fail($"Merge request failed: {ex.Message}", 502);
+    }
 });
 
 app.MapPost("/api/tasks/{id:guid}/retry", async (Guid id, ITaskStore tasks, CancellationToken ct) =>

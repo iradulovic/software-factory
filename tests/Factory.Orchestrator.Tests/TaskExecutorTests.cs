@@ -558,7 +558,7 @@ public sealed class TaskExecutorTests
             (FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null),
             (FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null),
             (FactoryTaskStatus.Validating, FactoryTaskStatus.Failed, "Test failed: boom"),
-            (FactoryTaskStatus.Failed, FactoryTaskStatus.Pending, "Automatic repair scheduled: attempt 2 of 2.")
+            (FactoryTaskStatus.Failed, FactoryTaskStatus.Pending, "Automatic repair scheduled: attempt 2 of 2. Previous failure: Test failed: boom")
         }, harness.Store.Transitions);
     }
 
@@ -910,6 +910,8 @@ public sealed class TaskExecutorTests
             public Task<PullRequestResult?> FindExistingPullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, bool draft, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<MergeResult> MergePullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<MergeResult> MergePullRequestAtHeadAsync(string owner, string name, int number, string expectedHeadCommit, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<MergeResult> ReadyPullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken) => throw new NotSupportedException();
 
             public Task<GitHubWriteResult> CommentOnIssueAsync(string owner, string name, int issueNumber, string body, CancellationToken cancellationToken)
             {

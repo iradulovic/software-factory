@@ -300,13 +300,35 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
             try
             {
                 var state = await client.GetPullRequestStateAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
-                if (state is null) continue;
+                if (state is null)
+                {
+                    var failedRead = await client.GetPullRequestMergeabilityAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
+                    await tasks.SetMergeStatusAsync(published.TaskId, failedRead, cancellationToken);
+                    continue;
+                }
                 if (state.Merged)
-                    await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.Completed, null, cancellationToken);
+                {
+                    await tasks.ClearMergeStatusAsync(published.TaskId, cancellationToken);
+                    await tasks.TransitionAsync(published.TaskId, published.Status, FactoryTaskStatus.Completed, null, cancellationToken);
+                }
                 else if (state.Closed)
-                    await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.Rejected, "Pull request closed without merge.", cancellationToken);
+                {
+                    await tasks.ClearMergeStatusAsync(published.TaskId, cancellationToken);
+                    if (published.Status == FactoryTaskStatus.Published)
+                        await tasks.TransitionAsync(published.TaskId, FactoryTaskStatus.Published, FactoryTaskStatus.Rejected, "Pull request closed without merge.", cancellationToken);
+                }
                 else
                 {
+                    var merge = await client.GetPullRequestMergeabilityAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
+                    if (merge.Open) await tasks.SetMergeStatusAsync(published.TaskId, merge, cancellationToken);
+                    else if (merge.Succeeded) await tasks.ClearMergeStatusAsync(published.TaskId, cancellationToken);
+                    else await tasks.SetMergeStatusAsync(published.TaskId, merge, cancellationToken);
+                    if (published.Status != FactoryTaskStatus.Published)
+                    {
+                        var checks = await client.GetPullRequestChecksAsync(published.RepositoryOwner, published.RepositoryName, published.PullRequestNumber, cancellationToken);
+                        await tasks.SetCiStatusAsync(published.TaskId, PullRequestCiStatus.Overall(checks), checks.HeadSha, checks.Checks, checks.Error, cancellationToken);
+                        continue;
+                    }
                     // SF-708: a genuinely new reviewer comment or change request takes priority over CI/merge this
                     // cycle — it just moved the task back to Pending, so neither applies to it anymore this poll.
                     if (await SyncReviewCommentsAsync(published, cancellationToken) > 0) continue;
@@ -318,7 +340,7 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                     // SF-709: a task whose own policy allows automatic merge gets one merged the moment its exact
                     // head commit's CI is green — never on a pending or failing status. A HUMAN REVIEW task is
                     // never touched here; it waits on a human merge exactly as every task did before SF-709.
-                    if (!published.RequireHumanMerge && overallStatus == PullRequestCiStatus.Success)
+                    if (!published.RequireHumanMerge && overallStatus == PullRequestCiStatus.Success && merge.Status == "Mergeable")
                         await AttemptAutoMergeAsync(published, cancellationToken);
                 }
             }

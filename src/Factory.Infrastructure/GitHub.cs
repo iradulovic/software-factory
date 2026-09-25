@@ -145,6 +145,30 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
             string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase));
     }
 
+    public async Task<PullRequestMergeResult> GetPullRequestMergeabilityAsync(string owner, string name, int number, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "state,headRefOid,headRefName,baseRefOid,mergeable,mergeStateStatus,isDraft"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!result.Succeeded)
+            return new PullRequestMergeResult(false, false, null, null, null, null, result.StandardError.Trim());
+
+        try
+        {
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var pr = document.RootElement;
+            static string? Field(JsonElement value, string name) => value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString() : null;
+            return new PullRequestMergeResult(true, Field(pr, "state") == "OPEN", Field(pr, "headRefOid"),
+                Field(pr, "baseRefOid"), Field(pr, "mergeable"), Field(pr, "mergeStateStatus"), null, Field(pr, "headRefName"),
+                pr.TryGetProperty("isDraft", out var draft) && draft.ValueKind == JsonValueKind.True);
+        }
+        catch (JsonException ex)
+        {
+            return new PullRequestMergeResult(false, false, null, null, null, null, $"GitHub returned invalid PR data: {ex.Message}");
+        }
+    }
+
     public async Task<PullRequestChecksResult> GetPullRequestChecksAsync(string owner, string name, int number, CancellationToken cancellationToken)
     {
         var result = await runner.RunAsync(new ProcessRequest("gh",
@@ -295,6 +319,22 @@ public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
         var result = await runner.RunAsync(new ProcessRequest("gh",
             ["pr", "merge", number.ToString(), "--repo", $"{owner}/{name}", "--squash", "--delete-branch"],
             Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
+        return result.Succeeded ? new MergeResult(true, null) : new MergeResult(false, result.StandardError.Trim());
+    }
+
+    public async Task<MergeResult> MergePullRequestAtHeadAsync(string owner, string name, int number, string expectedHeadCommit, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "merge", number.ToString(), "--repo", $"{owner}/{name}", "--squash", "--delete-branch", "--match-head-commit", expectedHeadCommit],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
+        return result.Succeeded ? new MergeResult(true, null) : new MergeResult(false, result.StandardError.Trim());
+    }
+
+    public async Task<MergeResult> ReadyPullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "ready", number.ToString(), "--repo", $"{owner}/{name}"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
         return result.Succeeded ? new MergeResult(true, null) : new MergeResult(false, result.StandardError.Trim());
     }
 

@@ -49,6 +49,7 @@ public interface ITaskStore
     Task TransitionAsync(Guid taskId, FactoryTaskStatus expected, FactoryTaskStatus next, string? failureReason, CancellationToken cancellationToken);
     Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken);
     Task<TaskCancellationOutcome> CancelAsync(Guid taskId, CancellationToken cancellationToken);
+    Task<bool> SetRepairPausedAsync(Guid taskId, bool paused, string actor, CancellationToken cancellationToken);
 
     /// <summary>Records operator feedback (a correction, or a manual-test failure) and, atomically with that
     /// record, returns the task to <see cref="FactoryTaskStatus.Pending"/> for a fresh implementation attempt
@@ -225,6 +226,11 @@ public interface ITaskStore
     /// poll's, so a stale status can never be presented alongside a newer head commit than the one it actually
     /// describes.</summary>
     Task SetCiStatusAsync(Guid taskId, string overallStatus, string? headCommit, IReadOnlyList<PullRequestCheck> checks, string? error, CancellationToken cancellationToken);
+    Task SetMergeStatusAsync(Guid taskId, PullRequestMergeResult result, CancellationToken cancellationToken);
+    Task<TaskMergeStatus?> GetMergeStatusAsync(Guid taskId, CancellationToken cancellationToken);
+    Task ClearMergeStatusAsync(Guid taskId, CancellationToken cancellationToken);
+    Task<ManualMergeRequest?> BeginManualMergeAsync(Guid taskId, string requester, CancellationToken cancellationToken);
+    Task CompleteManualMergeAsync(Guid requestId, bool succeeded, string? headSha, string? error, bool githubRejected, CancellationToken cancellationToken);
 
     /// <summary>The most recently synchronized CI status for a task, or <see langword="null"/> if it has never
     /// been synchronized (never published, or not yet polled).</summary>
@@ -498,6 +504,7 @@ public interface IGitHubClient
 
     /// <summary>The current state of a pull request the factory opened, or <see langword="null"/> if it could not be read.</summary>
     Task<PullRequestState?> GetPullRequestStateAsync(string owner, string name, int number, CancellationToken cancellationToken);
+    Task<PullRequestMergeResult> GetPullRequestMergeabilityAsync(string owner, string name, int number, CancellationToken cancellationToken);
 
     /// <summary>CI check status for a pull request's current head commit (SF-614). Never throws or returns
     /// <see langword="null"/> on a read failure — reported explicitly via <see cref="PullRequestChecksResult.Error"/>
@@ -606,6 +613,8 @@ public interface IGitHubPublisher
     /// whenever checks eventually pass. A conflict, a protected-branch rejection, or an authentication failure
     /// comes back as <c>Succeeded=false</c> with the real <c>gh</c> error text, never thrown.</summary>
     Task<MergeResult> MergePullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken);
+    Task<MergeResult> MergePullRequestAtHeadAsync(string owner, string name, int number, string expectedHeadCommit, CancellationToken cancellationToken);
+    Task<MergeResult> ReadyPullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken);
 }
 
 /// <summary>The dashboard operator's own path to writing to GitHub — distinct from <see cref="IGitHubPublisher"/>,

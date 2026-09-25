@@ -9,6 +9,101 @@ namespace Factory.IntegrationTests;
 public sealed class PostgresStoreIntegrationTests
 {
     [Fact]
+    public async Task Repair_pause_is_durable_and_prevents_claim_until_operator_resumes()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            Assert.True(await fixture.Tasks.SetRepairPausedAsync(fixture.TaskId, true, "operator", CancellationToken.None));
+            Assert.Null(await fixture.Tasks.ClaimNextAsync("worker-a", TimeSpan.FromMinutes(2), CancellationToken.None));
+            Assert.False(await fixture.Tasks.SetRepairPausedAsync(fixture.TaskId, true, "operator", CancellationToken.None));
+            var restarted = new PostgresTaskStore(Options.Create(new FactoryOptions { ConnectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING")! }), new TestClock());
+            Assert.True(await restarted.SetRepairPausedAsync(fixture.TaskId, false, "operator", CancellationToken.None));
+            Assert.Equal(fixture.TaskId, (await restarted.ClaimNextAsync("worker-b", TimeSpan.FromMinutes(2), CancellationToken.None))?.Id);
+            var reasons = (await fixture.Connection.QueryAsync<string>("SELECT reason FROM factory.task_event WHERE task_id=@TaskId ORDER BY occurred_at", new { fixture.TaskId })).ToList();
+            Assert.Contains(reasons, reason => reason.Contains("stopped further automatic attempts"));
+            Assert.Contains(reasons, reason => reason.Contains("resumed automatic attempts"));
+        }
+    }
+
+    [Fact]
+    public async Task Merge_status_replaces_old_head_and_error_and_clears_on_close()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var ct = CancellationToken.None;
+            await fixture.Tasks.SetMergeStatusAsync(fixture.TaskId, new PullRequestMergeResult(true, true, "head1", "base1", "CONFLICTING", "DIRTY", null), ct);
+            Assert.Equal("Conflict", (await fixture.Tasks.GetMergeStatusAsync(fixture.TaskId, ct))?.Status);
+            await fixture.Tasks.SetMergeStatusAsync(fixture.TaskId, new PullRequestMergeResult(false, false, null, null, null, null, "GitHub unavailable"), ct);
+            Assert.Equal("GitHub unavailable", (await fixture.Tasks.GetMergeStatusAsync(fixture.TaskId, ct))?.Error);
+            await fixture.Tasks.SetMergeStatusAsync(fixture.TaskId, new PullRequestMergeResult(true, true, "head2", "base2", "MERGEABLE", "CLEAN", null), ct);
+            var clean = await fixture.Tasks.GetMergeStatusAsync(fixture.TaskId, ct);
+            Assert.Equal("Mergeable", clean?.Status);
+            Assert.Equal("head2", clean?.HeadSha);
+            Assert.Null(clean?.Error);
+            await fixture.Tasks.ClearMergeStatusAsync(fixture.TaskId, ct);
+            Assert.Null(await fixture.Tasks.GetMergeStatusAsync(fixture.TaskId, ct));
+        }
+    }
+
+    [Fact]
+    public async Task Paused_published_task_cannot_start_a_CI_repair()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var ct = CancellationToken.None;
+            await fixture.Connection.ExecuteAsync("UPDATE factory.task SET status='Published' WHERE id=@TaskId", new { fixture.TaskId });
+            await fixture.Tasks.SetRepairPausedAsync(fixture.TaskId, true, "operator", ct);
+            Assert.False(await fixture.Tasks.TriggerCiRepairAsync(fixture.TaskId, "head1", "CI failed", ct));
+            Assert.Equal("Published", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+            Assert.True(await fixture.Tasks.SetRepairPausedAsync(fixture.TaskId, false, "operator", ct));
+            Assert.True(await fixture.Tasks.TriggerCiRepairAsync(fixture.TaskId, "head1", "CI failed", ct));
+            Assert.Equal("Pending", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+        }
+    }
+
+    [Fact]
+    public async Task Manual_merge_reservation_requires_owned_published_pr_and_prevents_duplicate_click()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var ct = CancellationToken.None;
+            Assert.Null(await fixture.Tasks.BeginManualMergeAsync(fixture.TaskId, "operator", ct));
+            await fixture.Connection.ExecuteAsync("""
+                UPDATE factory.task SET status='Published',branch_name='factory/task',validated_head_commit='head1',require_human_merge=false WHERE id=@TaskId;
+                INSERT INTO factory.publication(id,task_id,status,requested_by,pull_request_number,pull_request_url,completed_at)
+                VALUES(@publicationId,@TaskId,'PullRequestCreated','operator',17,'https://example.invalid/pull/17',now());
+                """, new { fixture.TaskId, publicationId = Guid.NewGuid() });
+            try
+            {
+                var first = await fixture.Tasks.BeginManualMergeAsync(fixture.TaskId, "operator", ct);
+                Assert.NotNull(first);
+                Assert.Equal("head1", first.ValidatedHeadCommit);
+                Assert.Null(await fixture.Tasks.BeginManualMergeAsync(fixture.TaskId, "operator", ct));
+                await fixture.Tasks.CompleteManualMergeAsync(first.Id, false, "head1", "branch rule blocked merge", true, ct);
+                Assert.Equal("NeedsHuman", await fixture.Connection.ExecuteScalarAsync<string>("SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+                Assert.Contains(await fixture.Tasks.GetPublishedTasksAsync(ct), item => item.TaskId == fixture.TaskId && item.Status == FactoryTaskStatus.NeedsHuman);
+                Assert.NotNull(await fixture.Tasks.BeginManualMergeAsync(fixture.TaskId, "operator", ct));
+                var latest = await fixture.Connection.QuerySingleAsync<Guid>("SELECT id FROM factory.manual_merge_request WHERE task_id=@TaskId AND status='Running'", new { fixture.TaskId });
+                await fixture.Tasks.CompleteManualMergeAsync(latest, true, "head1", null, false, ct);
+                Assert.Null(await fixture.Tasks.BeginManualMergeAsync(fixture.TaskId, "operator", ct));
+                Assert.False(await fixture.Tasks.ContinueWithFeedbackAsync(fixture.TaskId, "too late after accepted merge", ct));
+                Assert.Equal(3, await fixture.Connection.ExecuteScalarAsync<int>("SELECT count(*)::int FROM factory.task_event WHERE task_id=@TaskId AND reason LIKE 'On-demand merge%'", new { fixture.TaskId }));
+            }
+            finally
+            {
+                await fixture.Connection.ExecuteAsync("DELETE FROM factory.publication WHERE task_id=@TaskId", new { fixture.TaskId });
+            }
+        }
+    }
+    [Fact]
     public async Task Active_worker_renews_its_lease_and_cannot_be_reclaimed()
     {
         var fixture = await LeaseFixture.CreateAsync();
@@ -2512,6 +2607,8 @@ public sealed class PostgresStoreIntegrationTests
         public async ValueTask DisposeAsync()
         {
             await Connection.ExecuteAsync("""
+                DELETE FROM factory.task_feedback WHERE task_id=@TaskId;
+                DELETE FROM factory.publication WHERE task_id=@TaskId;
                 DELETE FROM factory.agent_run WHERE task_id=@TaskId;
                 DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id=@TaskId);
                 DELETE FROM factory.run WHERE task_id=@TaskId;

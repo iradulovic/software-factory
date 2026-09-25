@@ -103,13 +103,18 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 
     private NpgsqlConnection Connection() => new(options.Value.ConnectionString);
 
+    private static Task<bool> HasActiveManualMergeAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid taskId, CancellationToken cancellationToken) =>
+        connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS(SELECT 1 FROM factory.manual_merge_request WHERE task_id=@taskId AND status IN ('Running','Succeeded'))",
+            new { taskId }, transaction, cancellationToken: cancellationToken));
+
     public async Task<FactoryTask?> ClaimNextAsync(string workerId, TimeSpan lease, CancellationToken cancellationToken)
     {
         const string sql = """
             WITH candidate AS (
               SELECT id,status AS old_status,status <> 'Pending' AS recovered
               FROM factory.task
-              WHERE (status='Pending' AND NOT EXISTS (
+              WHERE (status='Pending' AND NOT repair_paused AND NOT EXISTS (
                   -- SF-611: a task with an unmerged prerequisite is never claimable, however high its priority —
                   -- only an already-executing recovery (below) skips this, since that task already started.
                   SELECT 1 FROM factory.task_dependency td JOIN factory.task dep ON dep.id=td.depends_on_task_id
@@ -123,7 +128,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
                   -- rechecks the limit since that task already started before it could matter.
                   SELECT count(*) FROM factory.task WHERE status IN ('ReadyForPublish','Published')
                 ) < @maxOutstandingReviewWork))
-                OR (status = ANY(@executingStatuses) AND lease_until < now())
+                OR (status = ANY(@executingStatuses) AND NOT repair_paused AND lease_until < now())
               ORDER BY priority DESC, created_at FOR UPDATE SKIP LOCKED LIMIT 1
             ), failed_steps AS (
               UPDATE factory.step s
@@ -347,6 +352,29 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken) =>
         TransitionFromCurrentAsync(taskId, [FactoryTaskStatus.Failed, FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Rejected], FactoryTaskStatus.Pending, true, "Retried by operator", cancellationToken);
 
+    public async Task<bool> SetRepairPausedAsync(Guid taskId, bool paused, string actor, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var current = await connection.QuerySingleOrDefaultAsync<TaskRepairPauseRow>(new CommandDefinition(
+            "SELECT status,repair_paused AS \"RepairPaused\" FROM factory.task WHERE id=@taskId FOR UPDATE",
+            new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (current is null || !Enum.TryParse<FactoryTaskStatus>(current.Status, out var status) ||
+            !TaskStateMachine.CanPauseRepairs(status)) return false;
+        if (current.RepairPaused == paused) return false;
+        await connection.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET repair_paused=@paused WHERE id=@taskId",
+            new { taskId, paused }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+            VALUES(@taskId,@status,@status,@reason,@actor)
+            """, new { taskId, status = current.Status,
+                reason = paused ? "Operator stopped further automatic attempts after current execution" : "Operator resumed automatic attempts",
+                actor }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
     public async Task<TaskCancellationOutcome> CancelAsync(Guid taskId, CancellationToken cancellationToken)
     {
         await using var connection = Connection();
@@ -416,6 +444,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
             "SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
         if (currentText is null) return false;
+        if (await HasActiveManualMergeAsync(connection, transaction, taskId, cancellationToken)) return false;
         var current = Enum.Parse<FactoryTaskStatus>(currentText);
         if (!ContinuableStatuses.Contains(current)) return false;
         TaskStateMachine.EnsureCanTransition(current, FactoryTaskStatus.Pending);
@@ -504,6 +533,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition("SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
         if (currentText is null) return false;
+        if (await HasActiveManualMergeAsync(connection, transaction, taskId, cancellationToken)) return false;
         var current = Enum.Parse<FactoryTaskStatus>(currentText);
         if (!allowedSources.Contains(current)) return false;
         TaskStateMachine.EnsureCanTransition(current, next);
@@ -790,7 +820,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         const string sql = """
             SELECT t.id AS "TaskId", r.owner AS "RepositoryOwner", r.name AS "RepositoryName", p.pull_request_number AS "PullRequestNumber",
-              t.require_human_merge AS "RequireHumanMerge"
+              t.require_human_merge AS "RequireHumanMerge", t.status AS "Status"
             FROM factory.task t
             JOIN github.repository r ON r.id = t.repository_id
             JOIN LATERAL (
@@ -798,7 +828,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               WHERE task_id = t.id AND status = 'PullRequestCreated' AND pull_request_number IS NOT NULL
               ORDER BY completed_at DESC LIMIT 1
             ) p ON true
-            WHERE t.status = 'Published'
+            WHERE t.status = 'Published' OR (t.status = 'NeedsHuman' AND (t.failure_reason LIKE 'Automatic merge%' OR t.failure_reason LIKE 'On-demand merge failed:%'))
             """;
         await using var c = Connection();
         return (await c.QueryAsync<PublishedTaskRef>(new CommandDefinition(sql, cancellationToken: cancellationToken))).AsList();
@@ -818,6 +848,106 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         {
             taskId, headCommit, overallStatus, checksJson = JsonSerializer.Serialize(checks), error, syncedAt = clock.UtcNow
         }, cancellationToken: cancellationToken));
+    }
+
+    public async Task SetMergeStatusAsync(Guid taskId, PullRequestMergeResult result, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO factory.task_merge_status(task_id,status,head_sha,base_sha,mergeable,merge_state_status,error,synced_at)
+            VALUES(@taskId,@status,@headSha,@baseSha,@mergeable,@mergeStateStatus,@error,@syncedAt)
+            ON CONFLICT(task_id) DO UPDATE SET status=excluded.status,head_sha=excluded.head_sha,
+              base_sha=excluded.base_sha,mergeable=excluded.mergeable,merge_state_status=excluded.merge_state_status,
+              error=excluded.error,synced_at=excluded.synced_at
+            """;
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition(sql, new { taskId, status = result.Status, result.HeadSha, result.BaseSha,
+            result.Mergeable, result.MergeStateStatus, result.Error, syncedAt = clock.UtcNow }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<TaskMergeStatus?> GetMergeStatusAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        var row = await c.QuerySingleOrDefaultAsync<TaskMergeStatusRow>(new CommandDefinition("""
+            SELECT task_id AS "TaskId",status,head_sha AS "HeadSha",base_sha AS "BaseSha",mergeable,
+              merge_state_status AS "MergeStateStatus",error,synced_at AS "SyncedAt"
+            FROM factory.task_merge_status WHERE task_id=@taskId
+            """, new { taskId }, cancellationToken: cancellationToken));
+        return row?.ToModel();
+    }
+
+    public async Task ClearMergeStatusAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var c = Connection();
+        await c.ExecuteAsync(new CommandDefinition("DELETE FROM factory.task_merge_status WHERE task_id=@taskId", new { taskId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<ManualMergeRequest?> BeginManualMergeAsync(Guid taskId, string requester, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var row = await connection.QuerySingleOrDefaultAsync<ManualMergeCandidateRow>(new CommandDefinition("""
+            SELECT t.status,t.failure_reason AS "FailureReason",t.branch_name AS "BranchName",
+              t.validated_head_commit AS "ValidatedHeadCommit",r.owner AS "RepositoryOwner",r.name AS "RepositoryName",
+              p.pull_request_number AS "PullRequestNumber"
+            FROM factory.task t JOIN github.repository r ON r.id=t.repository_id
+            LEFT JOIN LATERAL (
+              SELECT pull_request_number FROM factory.publication
+              WHERE task_id=t.id AND status='PullRequestCreated' AND pull_request_number IS NOT NULL
+              ORDER BY completed_at DESC LIMIT 1
+            ) p ON true
+            WHERE t.id=@taskId FOR UPDATE OF t
+            """, new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (row is null || (row.Status != "Published" && !(row.Status == "NeedsHuman" &&
+            (row.FailureReason?.StartsWith("Automatic merge", StringComparison.Ordinal) == true ||
+             row.FailureReason?.StartsWith("On-demand merge failed:", StringComparison.Ordinal) == true)))
+            || row.PullRequestNumber is null || string.IsNullOrWhiteSpace(row.BranchName) || string.IsNullOrWhiteSpace(row.ValidatedHeadCommit)) return null;
+
+        await connection.ExecuteAsync(new CommandDefinition("""
+            UPDATE factory.manual_merge_request SET status='Failed',completed_at=now(),error='Request expired before an outcome was recorded; check GitHub before retrying.'
+            WHERE task_id=@taskId AND status='Running' AND requested_at < now()-interval '5 minutes'
+            """, new { taskId }, transaction, cancellationToken: cancellationToken));
+        var requestId = Guid.NewGuid();
+        var inserted = await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.manual_merge_request(id,task_id,requested_by,status)
+            VALUES(@requestId,@taskId,@requester,'Running') ON CONFLICT DO NOTHING
+            """, new { requestId, taskId, requester }, transaction, cancellationToken: cancellationToken));
+        if (inserted != 1) return null;
+        await transaction.CommitAsync(cancellationToken);
+        return new ManualMergeRequest(requestId, taskId, row.RepositoryOwner, row.RepositoryName,
+            row.PullRequestNumber.Value, row.BranchName!, row.ValidatedHeadCommit!);
+    }
+
+    public async Task CompleteManualMergeAsync(Guid requestId, bool succeeded, string? headSha, string? error, bool githubRejected, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var row = await connection.QuerySingleOrDefaultAsync<ManualMergeOutcomeRow>(new CommandDefinition(
+            "SELECT task_id AS \"TaskId\",status FROM factory.manual_merge_request WHERE id=@requestId FOR UPDATE",
+            new { requestId }, transaction, cancellationToken: cancellationToken));
+        if (row is null || row.Status != "Running") return;
+        await connection.ExecuteAsync(new CommandDefinition("""
+            UPDATE factory.manual_merge_request SET status=@status,completed_at=now(),head_sha=@headSha,error=@error WHERE id=@requestId
+            """, new { requestId, status = succeeded ? "Succeeded" : "Failed", headSha, error }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+            SELECT t.id,t.status,t.status,@reason,'operator' FROM factory.task t WHERE t.id=@taskId
+            """, new { taskId = row.TaskId, reason = succeeded ? $"On-demand merge accepted for {headSha}" : $"On-demand merge failed: {error}" }, transaction, cancellationToken: cancellationToken));
+        if (githubRejected && !succeeded)
+        {
+            TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Published, FactoryTaskStatus.NeedsHuman);
+            var moved = await connection.ExecuteAsync(new CommandDefinition("""
+                UPDATE factory.task SET status='NeedsHuman',failure_reason=@reason
+                WHERE id=@taskId AND status='Published' AND NOT require_human_merge
+                """, new { taskId = row.TaskId, reason = $"On-demand merge failed: {error}" }, transaction, cancellationToken: cancellationToken));
+            if (moved == 1)
+                await connection.ExecuteAsync(new CommandDefinition("""
+                    INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
+                    VALUES(@taskId,'Published','NeedsHuman',@reason,'operator')
+                    """, new { taskId = row.TaskId, reason = $"On-demand merge failed: {error}" }, transaction, cancellationToken: cancellationToken));
+        }
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<TaskCiStatus?> GetCiStatusAsync(Guid taskId, CancellationToken cancellationToken)
@@ -849,8 +979,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
-            "SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
+            "SELECT status FROM factory.task WHERE id=@taskId AND NOT repair_paused FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
         if (currentText != nameof(FactoryTaskStatus.Published)) return false;
+        if (await HasActiveManualMergeAsync(connection, transaction, taskId, cancellationToken)) return false;
         TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Published, FactoryTaskStatus.Pending);
 
         await connection.ExecuteAsync(new CommandDefinition(
@@ -862,8 +993,8 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId",
             new { taskId }, transaction, cancellationToken: cancellationToken));
         await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,'Published','Pending','Automatic CI repair triggered','orchestrator')",
-            new { taskId }, transaction, cancellationToken: cancellationToken));
+            "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,'Published','Pending',@feedback,'orchestrator')",
+            new { taskId, feedback }, transaction, cancellationToken: cancellationToken));
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE factory.task_ci_status SET repair_triggered_for_commit=@headCommit WHERE task_id=@taskId",
             new { taskId, headCommit }, transaction, cancellationToken: cancellationToken));
@@ -889,6 +1020,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
             "SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
         if (currentText != nameof(FactoryTaskStatus.Published)) return 0;
+        if (await HasActiveManualMergeAsync(connection, transaction, taskId, cancellationToken)) return 0;
 
         // Dedup is the source of truth, not the caller's own pre-filtering: only a comment id that actually
         // inserts here (ON CONFLICT DO NOTHING) is newly ingested, so a duplicate call for the same comment can
@@ -1028,7 +1160,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               ) AS any_available
             ), candidate AS (
               SELECT t.id FROM factory.task t, available
-              WHERE t.status='WaitingForQuota' AND available.any_available
+              WHERE t.status='WaitingForQuota' AND NOT t.repair_paused AND available.any_available
               ORDER BY t.priority DESC, t.created_at
               FOR UPDATE OF t SKIP LOCKED LIMIT 1
             ), updated AS (
@@ -1577,6 +1709,43 @@ internal sealed class TaskCiStatusRow
 
     public TaskCiStatus ToModel() => new(TaskId, OverallStatus, HeadCommit,
         JsonSerializer.Deserialize<List<PullRequestCheck>>(ChecksJson) ?? [], Error, new DateTimeOffset(DateTime.SpecifyKind(SyncedAt, DateTimeKind.Utc)), RepairTriggeredForCommit);
+}
+
+internal sealed class TaskMergeStatusRow
+{
+    public Guid TaskId { get; init; }
+    public string Status { get; init; } = "";
+    public string? HeadSha { get; init; }
+    public string? BaseSha { get; init; }
+    public string? Mergeable { get; init; }
+    public string? MergeStateStatus { get; init; }
+    public string? Error { get; init; }
+    public DateTime SyncedAt { get; init; }
+    public TaskMergeStatus ToModel() => new(TaskId, Status, HeadSha, BaseSha, Mergeable, MergeStateStatus,
+        Error, new DateTimeOffset(DateTime.SpecifyKind(SyncedAt, DateTimeKind.Utc)));
+}
+
+internal sealed class TaskRepairPauseRow
+{
+    public string Status { get; init; } = "";
+    public bool RepairPaused { get; init; }
+}
+
+internal sealed class ManualMergeCandidateRow
+{
+    public string Status { get; init; } = "";
+    public string? FailureReason { get; init; }
+    public string? BranchName { get; init; }
+    public string? ValidatedHeadCommit { get; init; }
+    public string RepositoryOwner { get; init; } = "";
+    public string RepositoryName { get; init; } = "";
+    public int? PullRequestNumber { get; init; }
+}
+
+internal sealed class ManualMergeOutcomeRow
+{
+    public Guid TaskId { get; init; }
+    public string Status { get; init; } = "";
 }
 
 internal sealed class TaskFeedbackRow
