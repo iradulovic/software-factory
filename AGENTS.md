@@ -180,6 +180,22 @@ push directly to protected branches
 
 ---
 
+# GitHub CLI
+
+Use the GitHub CLI for GitHub issue, label, pull-request, and related repository operations.
+
+Commands that depend on the user's Windows keyring authentication must run through the elevated host context; the sandbox may report an invalid token even when the user's interactive PowerShell session is authenticated.
+
+Before a GitHub write, verify:
+
+```text
+gh auth status -h github.com
+```
+
+If authentication is missing or invalid, stop and instruct the user to run `gh auth login -h github.com` and then `gh auth status` in their own terminal. Do not open a browser or automate the login flow, and never ask the user to paste a token into the conversation. Retry the elevated GitHub CLI command only after the user confirms that CLI authentication succeeds.
+
+---
+
 # Factory Task State
 
 Use explicit state transitions.
