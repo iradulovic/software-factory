@@ -12,6 +12,8 @@ Verification status: the Git cache and worktree flow is covered by tests that ru
 
 For a clone-to-test-PR walkthrough, see the [first-run guide](docs/first-run.md), including the no-auto-merge safety marker and operator recovery links.
 
+On Windows, start with `./scripts/setup.ps1` from a fresh clone. The terminal wizard inventories the SDK, Node/npm, Git, GitHub CLI, configured agents, WSL, and the Docker daemon plus Compose; prints a reviewed package plan; guides sign-ins in your own terminal; reuses `scripts/start.ps1`; and reports service health. `./scripts/setup.ps1 -CheckOnly` is a headless doctor run that changes no services or repository settings and writes a redacted `logs/setup-report.json` report. See [first-run setup](docs/first-run.md#windows-setup-wizard).
+
 ## Prerequisites
 
 - .NET SDK 10
