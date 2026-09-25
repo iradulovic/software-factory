@@ -32,6 +32,33 @@ public sealed class AgentSelectorTests
     }
 
     [Fact]
+    public async Task Pi_is_available_as_a_fallback_when_Codex_is_paused_and_Claude_is_at_quota()
+    {
+        var store = new FakeTaskStore();
+        store.PausedAgents.Add("Codex");
+        store.AgentsAtQuota.Add("Claude");
+        var pi = new StubAgent("Pi", provider: "MoonshotAI", allowAutomaticFallback: true);
+        var selector = new AgentSelector([new StubAgent("Codex-Luna", provider: "Codex"), new StubAgent("Claude"), pi], store);
+
+        var selected = await selector.SelectAsync("Codex-Luna", CancellationToken.None);
+
+        Assert.Same(pi, selected);
+    }
+
+    [Fact]
+    public async Task Pi_is_not_used_as_an_automatic_fallback_without_explicit_cost_opt_in()
+    {
+        var store = new FakeTaskStore();
+        store.PausedAgents.Add("Codex");
+        store.AgentsAtQuota.Add("Claude");
+        var pi = new StubAgent("Pi", provider: "MoonshotAI", allowAutomaticFallback: false);
+        var selector = new AgentSelector([new StubAgent("Codex-Luna", provider: "Codex"), new StubAgent("Claude"), pi], store);
+
+        Assert.Null(await selector.SelectAsync("Codex-Luna", CancellationToken.None));
+        Assert.Same(pi, await selector.SelectAsync("Pi", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Returns_null_when_every_configured_agent_is_at_quota()
     {
         var store = new FakeTaskStore();
@@ -116,10 +143,11 @@ public sealed class AgentSelectorTests
         Assert.Equal(["Codex", "Codex-High", "Claude"], selector.KnownAgentNames);
     }
 
-    private sealed class StubAgent(string name, string? provider = null) : IAgentRunner
+    private sealed class StubAgent(string name, string? provider = null, bool allowAutomaticFallback = true) : IAgentRunner
     {
         public string Name { get; } = name;
         public string Provider { get; } = provider ?? name;
+        public bool AllowAutomaticFallback { get; } = allowAutomaticFallback;
         public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

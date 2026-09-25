@@ -33,6 +33,7 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
     public string Provider => profile.EffectiveProvider;
     public string? Model => profile.Model;
     public string? ReasoningEffort => profile.ReasoningEffort;
+    public bool AllowAutomaticFallback => profile.AllowAutomaticFallback;
 
     public async Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
     {

@@ -115,6 +115,40 @@ function Write-Ok($text) { Write-Host "  [OK]   $text" -ForegroundColor Green }
 function Write-WarnLine($text) { Write-Host "  [WARN] $text" -ForegroundColor Yellow }
 function Write-FailLine($text) { Write-Host "  [FAIL] $text" -ForegroundColor Red }
 
+# npm's global executable shims are placed in its configured prefix on Windows. Ensure that
+# directory is visible to the service processes started below, even when the launching shell's
+# PATH does not already include it. This covers Pi and other globally installed CLI agents.
+function Add-NpmGlobalPrefixToPath {
+    $npmCommand = Get-Command 'npm.cmd' -ErrorAction SilentlyContinue
+    if (-not $npmCommand) { $npmCommand = Get-Command 'npm' -ErrorAction SilentlyContinue }
+    if (-not $npmCommand) { return }
+
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $prefixOutput = & $npmCommand.Source config get prefix 2>$null
+        $prefixExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($prefixExitCode -ne 0) { return }
+
+    $npmGlobalPrefix = [string]($prefixOutput | Select-Object -First 1)
+    $npmGlobalPrefix = $npmGlobalPrefix.Trim()
+    if (-not $npmGlobalPrefix -or -not (Test-Path -LiteralPath $npmGlobalPrefix -PathType Container)) { return }
+
+    $alreadyOnPath = $false
+    foreach ($entry in ($env:PATH -split [System.IO.Path]::PathSeparator)) {
+        if ([string]::Equals($entry.Trim('"'), $npmGlobalPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $alreadyOnPath = $true
+            break
+        }
+    }
+    if (-not $alreadyOnPath) { $env:PATH = "$npmGlobalPrefix$([System.IO.Path]::PathSeparator)$env:PATH" }
+}
+
+Add-NpmGlobalPrefixToPath
+
 # ---------------------------------------------------------------------------------------------
 # CLI availability and authentication - checked here, proactively and visibly, rather than only
 # discovered later as a confusing agent-process failure deep in a task's own log (SF-615's
@@ -141,6 +175,7 @@ Write-Section 'CLI availability and authentication'
 Test-Cli -Name 'gh' -CheckArgs @('auth', 'status') -Hint 'Run "gh auth login".' | Out-Null
 Test-Cli -Name 'codex' -CheckArgs @('--version') -Hint 'Run "codex login".' | Out-Null
 Test-Cli -Name 'claude' -CheckArgs @('--version') -Hint 'Run "claude login" (or sign in on first use).' | Out-Null
+Test-Cli -Name 'pi' -CheckArgs @('--version') -Hint 'Install with "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" and sign in for the configured model.' | Out-Null
 Test-Cli -Name 'docker' -CheckArgs @('version', '--format', '{{.Server.Version}}') -Hint 'Start Docker Desktop.' | Out-Null
 
 function Get-ApiHealth {

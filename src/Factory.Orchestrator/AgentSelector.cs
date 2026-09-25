@@ -4,8 +4,8 @@ namespace Factory.Orchestrator;
 
 /// <summary>
 /// Picks which configured agent runs a task's next implementation attempt: the task's preferred agent if it is
-/// not currently at quota, otherwise the first other configured agent that is not, otherwise none. This is the
-/// only agent-specific decision anywhere in orchestration; everything downstream of it is agent-agnostic.
+/// not currently at quota, otherwise the first fallback-enabled configured agent that is not, otherwise none.
+/// This is the only agent-specific decision anywhere in orchestration; everything downstream of it is agent-agnostic.
 /// </summary>
 public sealed class AgentSelector(IEnumerable<IAgentRunner> runners, ITaskStore tasks)
 {
@@ -29,9 +29,10 @@ public sealed class AgentSelector(IEnumerable<IAgentRunner> runners, ITaskStore 
 
     private IEnumerable<IAgentRunner> Order(string? preferredAgent)
     {
-        if (preferredAgent is null) return runners;
-        var preferred = runners.Where(r => string.Equals(r.Name, preferredAgent, StringComparison.OrdinalIgnoreCase));
-        var rest = runners.Where(r => !string.Equals(r.Name, preferredAgent, StringComparison.OrdinalIgnoreCase));
+        if (preferredAgent is null) return runners.Where(r => r.AllowAutomaticFallback);
+        var isPreferred = (IAgentRunner runner) => string.Equals(runner.Name, preferredAgent, StringComparison.OrdinalIgnoreCase);
+        var preferred = runners.Where(isPreferred);
+        var rest = runners.Where(r => !isPreferred(r) && r.AllowAutomaticFallback);
         return preferred.Concat(rest);
     }
 }

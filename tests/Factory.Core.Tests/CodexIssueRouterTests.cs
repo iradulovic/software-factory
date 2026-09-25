@@ -44,3 +44,27 @@ public sealed class CodexIssueRouterTests
         Assert.Contains("mutually exclusive", route.Error);
     }
 }
+
+public sealed class AgentIssueRouterTests
+{
+    [Fact]
+    public void Routes_the_explicit_Pi_label_to_Pi_without_making_it_the_default()
+    {
+        var route = AgentIssueRouter.Resolve([AgentIssueRouter.PiLabel]);
+
+        Assert.Equal(AgentIssueRouter.PiProfile, route.PreferredAgent);
+        Assert.Contains(AgentIssueRouter.PiLabel, route.Reason);
+        Assert.Null(route.Error);
+        Assert.Equal(CodexIssueRouter.LunaPreset, AgentIssueRouter.Resolve([]).PreferredAgent);
+    }
+
+    [Fact]
+    public void Rejects_combining_the_Pi_route_with_a_Codex_preset_label()
+    {
+        var route = AgentIssueRouter.Resolve([AgentIssueRouter.PiLabel, CodexIssueRouter.SolLabel]);
+
+        Assert.Null(route.PreferredAgent);
+        Assert.Equal(route.Error, route.Reason);
+        Assert.Contains("cannot be combined", route.Error);
+    }
+}

@@ -532,7 +532,8 @@ public sealed record PreviousAttemptSummary(
 /// one is a configuration change, never a new class. <see cref="PromptDelivery"/> is <c>"stdin"</c> (the prompt is
 /// piped to the process) or <c>"argument"</c> (the prompt is appended to <see cref="Arguments"/>).
 /// </summary>
-/// <param name="QuotaSignatures">Signatures identifying a short-cooldown quota exhaustion (<see cref="QuotaWindow.ShortTerm"/>).</param>
+/// <param name="QuotaSignatures">Signatures identifying a short-cooldown quota exhaustion (<see cref="QuotaWindow.ShortTerm"/>);
+/// null or empty means automatic quota classification is not configured.</param>
 /// <param name="WeeklyQuotaSignatures">Signatures identifying a longer, weekly-scale exhaustion (<see cref="QuotaWindow.Weekly"/>),
 /// checked before <paramref name="QuotaSignatures"/> so a CLI that reports both kinds is classified correctly.
 /// <see langword="null"/> or empty if this CLI is not known to report one.</param>
@@ -570,7 +571,7 @@ public sealed record AgentProfile(
     IReadOnlyList<string> Arguments,
     string PromptDelivery,
     int TimeoutMinutes,
-    IReadOnlyList<string> QuotaSignatures,
+    IReadOnlyList<string>? QuotaSignatures,
     IReadOnlyList<string> VersionArguments,
     int AvailabilityTimeoutSeconds,
     int QuotaCooldownHours,
@@ -582,8 +583,14 @@ public sealed record AgentProfile(
     string? SessionIdPattern = null,
     string? Provider = null,
     string? Model = null,
-    string? ReasoningEffort = null)
+    string? ReasoningEffort = null,
+    bool AllowAutomaticFallback = true)
 {
+    /// <summary>Configuration binding constructor. Defaults let a profile omit optional settings such as quota
+    /// signatures without the binder trying to construct the positional record from a missing constructor value.</summary>
+    public AgentProfile() : this(string.Empty, string.Empty, Array.Empty<string>(), "stdin", 90,
+        Array.Empty<string>(), Array.Empty<string>(), 5, 5) { }
+
     /// <summary>The effective provider key for quota/pause/availability grouping — <see cref="Provider"/> if set,
     /// otherwise <see cref="Name"/> (SF-704).</summary>
     public string EffectiveProvider => Provider ?? Name;
