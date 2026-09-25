@@ -64,6 +64,9 @@ builder.Services.AddFactoryTelemetry(builder.Configuration, "Factory.Api");
 builder.Services.AddFactoryInfrastructure(builder.Configuration);
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.AddSingleton(sp => new NpgsqlDataSourceBuilder(sp.GetRequiredService<IOptions<FactoryOptions>>().Value.ConnectionString).Build());
+builder.Services.AddSingleton<NudgeStore>();
+builder.Services.AddHttpClient();
+if (!builder.Environment.IsEnvironment("Testing")) builder.Services.AddHostedService<NudgeWorker>();
 
 var app = builder.Build();
 app.UseCors();
@@ -221,6 +224,14 @@ app.MapGet("/api/attention", async (NpgsqlDataSource db, IOptions<FactoryOptions
         "SELECT count(*)::int FROM factory.task WHERE status='Pending'", cancellationToken: ct));
     return Results.Ok(new { items, nextTask = next, pendingCount, workerHealthy = latestWorker is not null && now - latestWorker <= TimeSpan.FromSeconds(staleAfter) });
 });
+
+app.MapGet("/api/nudges", async (NudgeStore nudges, CancellationToken ct) =>
+{
+    var items = await nudges.GetRecentAsync(100, ct);
+    return Results.Ok(new { items, unreadCount = await nudges.GetUnreadCountAsync(ct) });
+});
+app.MapPost("/api/nudges/{id:guid}/read", async (Guid id, NudgeStore nudges, CancellationToken ct) =>
+    await nudges.MarkReadAsync(id, ct) ? Results.NoContent() : Results.NotFound());
 
 app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct) =>
 {

@@ -311,6 +311,8 @@ With no `Telemetry__OtlpEndpoint` configured, nothing is exported and startup is
 
 ## Current limitations and safety
 
+The Overview nudge inbox checks actionable attention changes every 10 seconds and keeps unread, resolved, and delivery state in PostgreSQL. It works locally without any destination. Setting `Digest:WebhookUrl` also enables nudge delivery to that webhook; each nudge contains a fixed description and dashboard link, without task output, logs, issue text, or secrets. Delivery uses a stable `Idempotency-Key` header, retries failures after one minute, and limits successful sends to five per minute. Receivers should honor that key to prevent a duplicate if the API stops after an HTTP success but before recording it.
+
 - Both Codex and Claude Code CLIs were proven end-to-end (Sync -> claim -> worktree -> agent -> validate -> publish) on the desktop for SF-608; a live automatic merge (Sync -> claim -> worktree -> agent -> validate -> publish -> CI green -> auto-merge, no operator action) was proven for SF-709.
 - The repository cache is a bare repository that tracks `origin` explicitly (`+refs/heads/*:refs/remotes/origin/*`). Caches created by earlier versions with `git clone --bare` are healed automatically on the next task.
 - One task is executed at a time; the schema and claim query support later multi-worker operation.
