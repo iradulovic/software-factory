@@ -340,6 +340,22 @@ public sealed record PullRequestResult(bool Succeeded, int? Number, string? Url,
 public sealed record GitHubWriteResult(bool Succeeded, string? Error);
 public sealed record PullRequestState(bool Merged, bool Closed);
 
+/// <summary>GitHub's merge calculation for the exact PR head and base observed in one read.</summary>
+public sealed record PullRequestMergeResult(bool Succeeded, bool Open, string? HeadSha, string? BaseSha,
+    string? Mergeable, string? MergeStateStatus, string? Error, string? HeadBranch = null, bool IsDraft = false)
+{
+    public string Status => !Succeeded ? "Unavailable" : !Open ? "Closed"
+        : Mergeable == "CONFLICTING" || MergeStateStatus == "DIRTY" ? "Conflict"
+        : Mergeable == "UNKNOWN" || MergeStateStatus == "UNKNOWN" ? "Pending"
+        : MergeStateStatus is "BLOCKED" or "BEHIND" or "DRAFT" or "UNSTABLE" ? "Requirements"
+        : Mergeable == "MERGEABLE" ? "Mergeable" : "Pending";
+}
+
+public sealed record TaskMergeStatus(Guid TaskId, string Status, string? HeadSha, string? BaseSha,
+    string? Mergeable, string? MergeStateStatus, string? Error, DateTimeOffset SyncedAt);
+public sealed record ManualMergeRequest(Guid Id, Guid TaskId, string RepositoryOwner, string RepositoryName,
+    int PullRequestNumber, string BranchName, string ValidatedHeadCommit);
+
 /// <summary>The outcome of requesting <c>gh pr merge</c> (SF-709). A failure (a merge conflict, a protected-branch
 /// rejection, insufficient reviews) is reported explicitly via <see cref="Error"/> rather than thrown, so the
 /// caller can move the task to <see cref="FactoryTaskStatus.NeedsHuman"/> instead of retrying it forever.</summary>
@@ -351,7 +367,8 @@ public sealed record MergeResult(bool Succeeded, string? Error);
 /// <c>PreparePublicationStep</c> before publication and never re-derived afterward. <see langword="false"/> lets
 /// <c>Factory.GitHubSync.Worker</c> request a merge itself once CI on this pull request's head commit is green;
 /// <see langword="true"/> leaves the pull request exactly as before, waiting on a human merge.</param>
-public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, string RepositoryName, int PullRequestNumber, bool RequireHumanMerge);
+public sealed record PublishedTaskRef(Guid TaskId, string RepositoryOwner, string RepositoryName, int PullRequestNumber, bool RequireHumanMerge,
+    FactoryTaskStatus Status = FactoryTaskStatus.Published);
 
 /// <summary>One CI check's outcome (SF-614), normalized from either a GitHub Actions check run or a legacy
 /// commit status into the same shape. <see cref="Conclusion"/> is one of <see cref="PullRequestCiStatus.Pending"/>,

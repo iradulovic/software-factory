@@ -6,6 +6,44 @@ public sealed class GhCliTests
 {
     private static readonly GitHubRepository Repository = new(1, "acme", "billing", "https://example.invalid/billing.git", "main", true);
 
+    [Theory]
+    [InlineData("CONFLICTING", "DIRTY", "Conflict")]
+    [InlineData("MERGEABLE", "CLEAN", "Mergeable")]
+    [InlineData("UNKNOWN", "UNKNOWN", "Pending")]
+    [InlineData("MERGEABLE", "BLOCKED", "Requirements")]
+    public async Task Mergeability_distinguishes_GitHub_calculation_states(string mergeable, string mergeState, string expected)
+    {
+        var runner = new SequencedRunner();
+        runner.EnqueueResponse(0, $$"""{"state":"OPEN","headRefOid":"head1","headRefName":"factory/task","baseRefOid":"base1","mergeable":"{{mergeable}}","mergeStateStatus":"{{mergeState}}","isDraft":false}""", "");
+        var result = await new GhCliClient(runner).GetPullRequestMergeabilityAsync("acme", "billing", 17, CancellationToken.None);
+        Assert.Equal(expected, result.Status);
+        Assert.Equal("head1", result.HeadSha);
+        Assert.Equal("base1", result.BaseSha);
+        Assert.Equal("factory/task", result.HeadBranch);
+        Assert.Contains("mergeStateStatus", Assert.Single(runner.Requests).Arguments.Last());
+    }
+
+    [Fact]
+    public async Task Mergeability_read_error_is_unavailable_not_a_conflict()
+    {
+        var runner = new SequencedRunner();
+        runner.EnqueueResponse(1, "", "authentication failed");
+        var result = await new GhCliClient(runner).GetPullRequestMergeabilityAsync("acme", "billing", 17, CancellationToken.None);
+        Assert.Equal("Unavailable", result.Status);
+        Assert.Equal("authentication failed", result.Error);
+    }
+
+    [Fact]
+    public async Task On_demand_merge_passes_the_expected_head_to_GitHub()
+    {
+        var runner = new SequencedRunner();
+        runner.EnqueueResponse(0, "", "");
+        var result = await new GhCliPublisher(runner).MergePullRequestAtHeadAsync("acme", "billing", 17, "head1", CancellationToken.None);
+        Assert.True(result.Succeeded);
+        Assert.Contains("--match-head-commit", Assert.Single(runner.Requests).Arguments);
+        Assert.Contains("head1", runner.Requests[0].Arguments);
+    }
+
     [Fact]
     public async Task GetIssuesAsync_fetches_every_page_until_a_short_page_ends_it()
     {

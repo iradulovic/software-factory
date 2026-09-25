@@ -351,6 +351,8 @@ public sealed class PublicationExecutorTests
             public Task<GitHubWriteResult> CommentOnIssueAsync(string owner, string name, int issueNumber, string body, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<GitHubWriteResult> SetStateLabelAsync(string owner, string name, int issueNumber, string label, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<MergeResult> MergePullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<MergeResult> MergePullRequestAtHeadAsync(string owner, string name, int number, string expectedHeadCommit, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<MergeResult> ReadyPullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken) => throw new NotSupportedException();
         }
     }
 }

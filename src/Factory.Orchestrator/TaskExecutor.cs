@@ -126,7 +126,7 @@ public sealed class TaskExecutor(
                     await tasks.CompleteRunAsync(context.RunId, ExecutionStatus.Failed, cancellationToken);
                     var nextAttempt = context.AttemptNumber + 1;
                     await TransitionAsync(context, FactoryTaskStatus.Pending,
-                        $"Automatic repair scheduled: attempt {nextAttempt} of {context.Configuration.MaxImplementationAttempts}.", cancellationToken);
+                        $"Automatic repair scheduled: attempt {nextAttempt} of {context.Configuration.MaxImplementationAttempts}. Previous failure: {result.Reason}", cancellationToken);
                     logger.LogInformation("Task {TaskId} failed validation ({Reason}); automatically rescheduling repair attempt {Next} of {Max}",
                         context.Task.Id, result.Reason, nextAttempt, context.Configuration.MaxImplementationAttempts);
                     return false;

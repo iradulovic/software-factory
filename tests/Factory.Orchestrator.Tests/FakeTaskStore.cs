@@ -53,6 +53,18 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task ReleaseLeaseAsync(Guid taskId, string workerId, CancellationToken cancellationToken) { LeaseReleased = true; return Task.CompletedTask; }
     public Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken) => Task.FromResult(false);
     public Task<bool> RetryAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(false);
+    public bool RepairPaused { get; private set; }
+    public Task<bool> SetRepairPausedAsync(Guid taskId, bool paused, string actor, CancellationToken cancellationToken)
+    {
+        if (RepairPaused == paused) return Task.FromResult(false);
+        RepairPaused = paused;
+        return Task.FromResult(true);
+    }
+    public Task SetMergeStatusAsync(Guid taskId, PullRequestMergeResult result, CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task<TaskMergeStatus?> GetMergeStatusAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult<TaskMergeStatus?>(null);
+    public Task ClearMergeStatusAsync(Guid taskId, CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task<ManualMergeRequest?> BeginManualMergeAsync(Guid taskId, string requester, CancellationToken cancellationToken) => Task.FromResult<ManualMergeRequest?>(null);
+    public Task CompleteManualMergeAsync(Guid requestId, bool succeeded, string? headSha, string? error, bool githubRejected, CancellationToken cancellationToken) => Task.CompletedTask;
     public Task<TaskCancellationOutcome> CancelAsync(Guid taskId, CancellationToken cancellationToken)
     {
         if (Status == FactoryTaskStatus.Stopping) return Task.FromResult(TaskCancellationOutcome.Stopping);

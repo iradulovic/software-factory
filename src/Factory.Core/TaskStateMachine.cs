@@ -46,6 +46,9 @@ public static class TaskStateMachine
     public static bool IsCancellationRequested(FactoryTaskStatus status) =>
         status is FactoryTaskStatus.Stopping or FactoryTaskStatus.Cancelled;
 
+    public static bool CanPauseRepairs(FactoryTaskStatus status) =>
+        status is not (FactoryTaskStatus.Completed or FactoryTaskStatus.Cancelled or FactoryTaskStatus.Rejected);
+
     public static bool CanTransition(FactoryTaskStatus from, FactoryTaskStatus to) =>
         Allowed.TryGetValue(from, out var states) && states.Contains(to);
 
