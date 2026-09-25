@@ -2,7 +2,7 @@
 
 This file is the ordered handoff queue for feature work. `BOOTSTRAP_SPEC.md` describes the architecture; this file records what to build next.
 
-Last reviewed: 2026-09-22
+Last reviewed: 2026-09-25
 
 ## Agent workflow
 
@@ -102,6 +102,9 @@ Multi-machine execution, multiple concurrent coding workers, additional agent pr
 ## Blocked
 
 ## Completed
+
+- [x] **SF-720 — Expose a current-execution snapshot for Overview (GitHub issue #113)** — Completed 2026-09-25. Added `GET /api/execution/current`, a bounded read-only projection over persisted task, run, step, and agent-run records. It returns task and issue links, repository, the selected/fallback agent, task and execution status, current running step, implementation attempt and persisted limit, run/step IDs, and elapsed/last-progress timestamps. Starting, running, between-step, stopping, and idle states have no stale step or log reference. Added indexes for newest run/step/agent lookups.
+  - Verification: `dotnet build --no-restore` passed with 0 warnings; full `dotnet test --no-restore` passed (560 tests: Core 206, Integration 55, API 55, Orchestrator 105, Infrastructure 139). API tests cover idle projection, retry/fallback, the restarted run, current step, and reference clearing between steps.
 
 - [x] **SF-719 — Route Codex model presets by issue complexity and explicit labels (GitHub issue #125)**
   - Completed 2026-09-25. GitHub issue labels route deterministically to Codex-Sol (`codex:sol`) or Codex-Luna (`codex:luna`), default to Luna when absent, and stop conflicting labels before an agent runs. The chosen route and reason persist across retries; every implementation and review invocation records its profile, model, effort, purpose, and selection reason. The review preset is independent of implementation routing, and the dashboard exposes the effective selection.

@@ -129,6 +129,13 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvail
     return Results.Ok(new { metrics, active, activity, throughput, agentStatus, idleReason, reviewBacklog });
 });
 
+app.MapGet("/api/execution/current", async (NpgsqlDataSource db, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var row = await c.QuerySingleOrDefaultAsync<CurrentExecutionRow>(new CommandDefinition(CurrentExecutionQuery.Sql, cancellationToken: ct));
+    return Results.Ok(CurrentExecutionProjection.Create(row, dashboardUrl, DateTimeOffset.UtcNow));
+});
+
 app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
