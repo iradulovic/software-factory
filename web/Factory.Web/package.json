@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint .",
-    "test": "node ./tests/run-github-status-test.cjs && node ./tests/run-merge-policy-badge-test.cjs",
+    "test": "node ./tests/run-github-status-test.cjs && node ./tests/run-merge-policy-badge-test.cjs && node ./tests/run-shell-layout-test.cjs",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
