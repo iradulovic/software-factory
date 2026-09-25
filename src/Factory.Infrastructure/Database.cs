@@ -570,7 +570,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         {
             r.Id, r.TaskId, r.RunId, r.StepId, r.Agent, r.StartedAt, r.CompletedAt, r.DurationSeconds, r.ExitCode, r.Status,
             r.StandardOutput, r.StandardError, r.QuotaDetected, r.QuotaResetAt, r.AttemptNumber, r.NeedsHuman, r.CountsAsImplementationAttempt,
-            r.ProviderSessionId,
+            r.ProviderSessionId, r.Model, r.ReasoningEffort, r.SelectionReason, r.Purpose,
             ResultJson = r.Result is null ? null : JsonSerializer.Serialize(r.Result, JsonOptions),
             ResultSummary = r.Result?.Summary,
             TestsRun = r.Result is null ? null : JsonSerializer.Serialize(r.Result.TestsRun, JsonOptions),
