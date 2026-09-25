@@ -6,6 +6,7 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import { z } from "zod";
 import { agentStatusSchema, apiBase, getJson, globalPauseScope, pauseStateSchema, taskSchema } from "@/lib/api";
 import { AgentStateBadge, Badge, Duration, Empty, RelativeTime } from "@/components/ui";
+import { CurrentWork } from "@/components/current-work";
 
 const dashboardSchema = z.object({
   metrics: z.object({ activeTasks:z.number(),pendingTasks:z.number(),completedToday:z.number(),needsOperator:z.number(),reviewBacklog:z.number(),successRate:z.number() }),
@@ -73,6 +74,7 @@ export default function Overview() {
   const globalPaused = global?.paused ?? false;
 
   return <div className="min-w-0 space-y-5"><div><p className="eyebrow">Overview</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Factory operations</h1><p className="mt-1 text-sm text-muted-foreground">Live view of autonomous development work.</p></div>
+    <CurrentWork quotaAgents={error ? [] : data?.agentStatus.filter(agent => agent.state === "QuotaBlocked").map(agent => agent.agent)}/>
     {error && <div className="panel tone-amber p-3 text-sm">API unavailable — start Factory.Api to load operational data.</div>}
     {outcome && <div role="status" className={`tone-${outcome.tone==="success"?"green":"red"} rounded border px-4 py-3 text-sm`}>{outcome.message}</div>}
     <section className={`panel flex flex-wrap items-center justify-between gap-3 p-4 ${globalPaused?"tone-amber":""}`}>

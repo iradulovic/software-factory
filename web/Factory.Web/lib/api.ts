@@ -8,6 +8,16 @@ export const taskSchema = z.object({
   agentModel: z.string().nullable(), agentReasoningEffort: z.string().nullable(), agentSelectionReason: z.string().nullable(), agentRoutingError: z.string().nullable()
 });
 export type FactoryTask = z.infer<typeof taskSchema>;
+export const currentExecutionSchema = z.object({
+  status: z.string(), taskStatus: z.string().nullable(), taskId: z.string().nullable(), taskTitle: z.string().nullable(),
+  taskUrl: z.string().nullable(), repository: z.string().nullable(), issueNumber: z.number().nullable(), issueUrl: z.string().nullable(),
+  agent: z.string().nullable(), runId: z.string().nullable(), runStartedAt: z.string().nullable(),
+  stepId: z.string().nullable(), stepType: z.string().nullable(), stepStartedAt: z.string().nullable(),
+  implementationAttempt: z.number().nullable(), maxImplementationAttempts: z.number().nullable(),
+  startedAt: z.string().nullable(), lastProgressAt: z.string().nullable(),
+  elapsedSeconds: z.number().nullable(), lastProgressAgeSeconds: z.number().nullable()
+});
+export type CurrentExecution = z.infer<typeof currentExecutionSchema>;
 export const taskDependencySchema = z.object({
   taskId: z.string(), dependsOnTaskId: z.string(), dependsOnTitle: z.string(), dependsOnStatus: z.string()
 });
