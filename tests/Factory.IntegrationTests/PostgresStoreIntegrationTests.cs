@@ -1336,6 +1336,9 @@ public sealed class PostgresStoreIntegrationTests
                 Assert.Equal("Reserving capacity for interactive use", globalPause.Reason);
                 Assert.NotNull(globalPause.PausedAt);
                 Assert.Equal("operator", globalPause.PausedBy);
+                Assert.False(await fixture.Tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, false, null,
+                    "operator", CancellationToken.None, expectedPaused: false));
+                Assert.True((await fixture.Tasks.GetDispatchPauseAsync(DispatchPauseScope.Global, CancellationToken.None)).Paused);
 
                 var all = await restarted.GetAllDispatchPausesAsync(CancellationToken.None);
                 Assert.Contains(all, p => p.Scope == DispatchPauseScope.Global && p.Paused);
@@ -1345,6 +1348,14 @@ public sealed class PostgresStoreIntegrationTests
                 // stale reason for a pause that is no longer in effect.
                 await fixture.Tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, false, null, "operator", CancellationToken.None);
                 var resumed = await fixture.Tasks.GetDispatchPauseAsync(DispatchPauseScope.Global, CancellationToken.None);
+                var audit = (await fixture.Connection.QueryAsync<(bool Paused, string Actor)>("""
+                    SELECT paused AS "Paused",actor AS "Actor" FROM factory.dispatch_pause_event
+                    WHERE scope=@scope AND (reason='Reserving capacity for interactive use' OR (NOT paused AND actor='operator'))
+                    ORDER BY occurred_at DESC,id DESC LIMIT 2
+                    """, new { scope = DispatchPauseScope.Global })).ToArray();
+                Assert.Equal(2, audit.Length);
+                Assert.Equal((false, "operator"), audit[0]);
+                Assert.Equal((true, "operator"), audit[1]);
                 Assert.False(resumed.Paused);
                 Assert.Null(resumed.Reason);
                 Assert.Null(resumed.PausedAt);

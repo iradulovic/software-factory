@@ -419,13 +419,17 @@ internal sealed class FakeTaskStore : ITaskStore
     public Task<IReadOnlyList<DispatchPauseState>> GetAllDispatchPausesAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<DispatchPauseState>>(DispatchPauses.Values.ToList());
 
-    public Task SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor, CancellationToken cancellationToken)
+    public Task<bool> SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor,
+        CancellationToken cancellationToken, bool? expectedPaused = null)
     {
+        if (expectedPaused is not null &&
+            (DispatchPauses.TryGetValue(scope, out var current) && current.Paused) != expectedPaused.Value)
+            return Task.FromResult(false);
         DispatchPauseChanges.Add((scope, paused, reason, actor));
         DispatchPauses[scope] = paused
             ? new DispatchPauseState(scope, true, reason, DateTimeOffset.UtcNow, actor)
             : DispatchPauseState.NotPaused(scope);
-        return Task.CompletedTask;
+        return Task.FromResult(true);
     }
 
     public StepRecord Step(string stepType) => Steps.Values.Single(s => s.StepType == stepType);

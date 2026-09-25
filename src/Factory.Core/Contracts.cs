@@ -164,7 +164,8 @@ public interface ITaskStore
     /// Resuming (<paramref name="paused"/> <see langword="false"/>) clears <paramref name="reason"/> and the
     /// recorded actor/time along with it, so a later query never shows a stale reason for a pause that is no
     /// longer in effect.</summary>
-    Task SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor, CancellationToken cancellationToken);
+    Task<bool> SetDispatchPauseAsync(string scope, bool paused, string? reason, string actor, CancellationToken cancellationToken,
+        bool? expectedPaused = null);
 
     /// <summary>Sets a task's claim-ordering priority (SF-611): among every eligible task, <see cref="ClaimNextAsync"/>
     /// always claims the highest priority first (ties broken by creation order). Never restricted by status — a

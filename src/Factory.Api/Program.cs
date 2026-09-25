@@ -65,6 +65,7 @@ builder.Services.AddFactoryInfrastructure(builder.Configuration);
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.AddSingleton(sp => new NpgsqlDataSourceBuilder(sp.GetRequiredService<IOptions<FactoryOptions>>().Value.ConnectionString).Build());
 builder.Services.AddSingleton<NudgeStore>();
+builder.Services.AddScoped<OperatorChat>();
 builder.Services.AddHttpClient();
 if (!builder.Environment.IsEnvironment("Testing")) builder.Services.AddHostedService<NudgeWorker>();
 
@@ -187,6 +188,13 @@ app.MapGet("/api/execution/current", async (NpgsqlDataSource db, CancellationTok
     return Results.Ok(CurrentExecutionProjection.Create(row, dashboardUrl, DateTimeOffset.UtcNow));
 });
 
+app.MapPost("/api/operator/ask", async (OperatorQuestion question, OperatorChat chat, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(question.Text) || question.Text.Length > 1000)
+        return Results.BadRequest(new { error = "Enter a question of at most 1000 characters." });
+    return Results.Ok(await chat.AnswerAsync(question.Text.Trim(), ct));
+});
+
 app.MapGet("/api/attention", async (NpgsqlDataSource db, IOptions<FactoryOptions> options,
     IOptions<GitHubSyncOptions> githubOptions, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers,
     ITaskStore tasks, CancellationToken ct) =>
@@ -247,16 +255,31 @@ app.MapGet("/api/github/status", async (IGitHubAvailabilityChecker checker, Canc
 app.MapGet("/api/control/pause", async (ITaskStore tasks, CancellationToken ct) =>
     Results.Ok(await tasks.GetAllDispatchPausesAsync(ct)));
 
-app.MapPost("/api/control/pause", async (PauseRequest? body, ITaskStore tasks, CancellationToken ct) =>
+app.MapGet("/api/control/history", async (NpgsqlDataSource db, CancellationToken ct) =>
 {
-    await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, true, body?.Reason, "operator", ct);
-    return Results.NoContent();
+    await using var c = await db.OpenConnectionAsync(ct);
+    return Results.Ok(await c.QueryAsync(new CommandDefinition("""
+        SELECT id,scope,paused,reason,actor,occurred_at AS "occurredAt"
+        FROM factory.dispatch_pause_event ORDER BY occurred_at DESC,id DESC LIMIT 50
+        """, cancellationToken: ct)));
 });
 
-app.MapPost("/api/control/resume", async (ITaskStore tasks, CancellationToken ct) =>
+app.MapPost("/api/control/pause", async (PauseRequest? body, HttpRequest request, ITaskStore tasks, CancellationToken ct) =>
 {
-    await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, false, null, "operator", ct);
-    return Results.NoContent();
+    var header = request.Headers["X-Expected-Paused"].ToString();
+    if (header.Length > 0 && !bool.TryParse(header, out _)) return Results.BadRequest(new { error = "Invalid expected pause state." });
+    bool? expected = header.Length == 0 ? null : bool.Parse(header);
+    return await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, true, body?.Reason, "operator", ct, expected)
+        ? Results.NoContent() : Results.Conflict(new { error = "Dispatch state changed. Refresh before pausing." });
+});
+
+app.MapPost("/api/control/resume", async (HttpRequest request, ITaskStore tasks, CancellationToken ct) =>
+{
+    var header = request.Headers["X-Expected-Paused"].ToString();
+    if (header.Length > 0 && !bool.TryParse(header, out _)) return Results.BadRequest(new { error = "Invalid expected pause state." });
+    bool? expected = header.Length == 0 ? null : bool.Parse(header);
+    return await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, false, null, "operator", ct, expected)
+        ? Results.NoContent() : Results.Conflict(new { error = "Dispatch state changed. Refresh before resuming." });
 });
 
 app.MapPost("/api/agents/{agent}/pause", async (string agent, PauseRequest? body, ITaskStore tasks, CancellationToken ct) =>
@@ -339,6 +362,10 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
           status,head_sha AS "headSha",error
         FROM factory.manual_merge_request WHERE task_id=@id ORDER BY requested_at DESC
         """, new { id }, cancellationToken: ct));
+    var taskEvents = await c.QueryAsync(new CommandDefinition("""
+        SELECT id,from_status AS "fromStatus",to_status AS "toStatus",reason,actor,occurred_at AS "occurredAt"
+        FROM factory.task_event WHERE task_id=@id ORDER BY occurred_at DESC,id DESC LIMIT 100
+        """, new { id }, cancellationToken: ct));
     var attemptRow = await c.QuerySingleAsync(new CommandDefinition("""
         SELECT t.repair_paused AS "repairPaused",t.validated_head_commit AS "validatedHeadCommit",
           (SELECT count(*)::int FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.counts_as_implementation_attempt
@@ -355,7 +382,7 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
         maxCiRepairs = githubOptions.Value.MaxCiRepairAttempts, attemptRow.latestRetryReason };
     var reviewFindings = await tasks.GetReviewFindingsAsync(id, ct);
     var dependencyDtos = dependencies.Select(d => new { d.TaskId, d.DependsOnTaskId, d.DependsOnTitle, DependsOnStatus = d.DependsOnStatus.ToString(), d.Source });
-    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos, feedback, ciStatus, mergeStatus, mergeRequests,
+    return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos, feedback, ciStatus, mergeStatus, mergeRequests, taskEvents,
         validatedHeadCommit = attemptRow.validatedHeadCommit, attempts, reviewFindings });
 });
 
