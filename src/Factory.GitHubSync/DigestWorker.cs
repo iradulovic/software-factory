@@ -6,13 +6,14 @@ using Microsoft.Extensions.Options;
 
 namespace Factory.GitHubSync;
 
-/// <summary>Periodically builds and persists a digest summarizing finished work, CI failures, items needing the
-/// developer, and meaningful quota/worker blockers (SF-705). Generation itself never repeats an unchanged alert —
-/// see <see cref="DigestBuilder"/> — and delivery to an external destination only ever happens when one is
+/// <summary>Periodically builds and persists a factual operator briefing with outcomes, retries, actionable tasks,
+/// provider checks, and current blockers. Generation itself never repeats an unchanged alert — see
+/// <see cref="DigestBuilder"/> — and delivery to an external destination only ever happens when one is
 /// explicitly configured (<see cref="DigestOptions.WebhookUrl"/>); otherwise the digest is still generated and
 /// persisted, just readable only via <c>GET /api/digest</c>.</summary>
 public sealed class DigestWorker(ITaskStore tasks, IDigestStore digests, IClock clock, IHttpClientFactory httpClientFactory,
-    IOptions<DigestOptions> options, ILogger<DigestWorker> logger) : BackgroundService
+    IOptions<DigestOptions> options, IOptions<FactoryOptions> factoryOptions,
+    IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ILogger<DigestWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -38,14 +39,20 @@ public sealed class DigestWorker(ITaskStore tasks, IDigestStore digests, IClock 
 
         using var activity = FactoryTelemetry.Source.StartActivity("digest.generate");
 
-        var finishedWork = await tasks.GetRecentlyFinishedTasksAsync(windowSince, cancellationToken);
+        var finishedWork = await tasks.GetRecentlyFinishedTasksAsync(windowSince, now, cancellationToken);
         var ciFailures = await tasks.GetOpenCiFailureAlertsAsync(cancellationToken);
         var needsHuman = await tasks.GetNeedsHumanAlertsAsync(cancellationToken);
         var blockers = await tasks.GetActiveBlockerAlertsAsync(cancellationToken);
+        var failedTasks = await tasks.GetOpenFailedTaskAlertsAsync(cancellationToken);
+        var retrySummary = await tasks.GetDigestRetrySummaryAsync(windowSince, now, cancellationToken);
+        var nextEligibleTask = await tasks.GetNextEligibleTaskAsync(cancellationToken);
+        var providers = await ReadProviderStatusesAsync(cancellationToken);
         var previousFingerprints = await digests.GetAlertFingerprintsAsync(cancellationToken);
 
-        var payload = DigestBuilder.Build(windowSince, now, finishedWork, ciFailures, needsHuman, blockers, previousFingerprints);
-        var openAlerts = ciFailures.Concat(needsHuman).Concat(blockers).ToList();
+        var payload = DigestBuilder.Build(windowSince, now, finishedWork, ciFailures, needsHuman, blockers,
+            previousFingerprints, failedTasks, retrySummary, nextEligibleTask, providers, latest?.Payload,
+            factoryOptions.Value.DashboardBaseUrl);
+        var openAlerts = ciFailures.Concat(needsHuman).Concat(blockers).Concat(failedTasks).ToList();
         var digest = await digests.SaveAsync(payload, openAlerts, cancellationToken);
 
         logger.LogInformation(
@@ -59,6 +66,43 @@ public sealed class DigestWorker(ITaskStore tasks, IDigestStore digests, IClock 
         if (options.Value.WebhookUrl is { Length: > 0 } webhookUrl)
             await DeliverAsync(digest, webhookUrl, cancellationToken);
     }
+
+    private async Task<IReadOnlyList<DigestProviderStatus>> ReadProviderStatusesAsync(CancellationToken cancellationToken)
+    {
+        var providers = new List<DigestProviderStatus>();
+        foreach (var group in availabilityCheckers.GroupBy(checker => checker.Provider, StringComparer.OrdinalIgnoreCase))
+        {
+            var checker = group.First();
+            string state;
+            string? version = null;
+            string? error = null;
+            try
+            {
+                var result = await checker.CheckAsync(cancellationToken);
+                state = result.Available ? "Available" : "Unavailable";
+                version = result.Version;
+                error = result.Error;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                state = "Unknown";
+                error = ex.Message;
+                logger.LogWarning(ex, "Digest availability check failed for provider {Provider}", checker.Provider);
+            }
+
+            var checkedAt = clock.UtcNow;
+            var atQuota = await tasks.IsAgentAtQuotaAsync(checker.Provider, cancellationToken);
+            var quota = await tasks.GetAgentQuotaStatusAsync(checker.Provider, cancellationToken);
+            providers.Add(new DigestProviderStatus(checker.Provider, state, version, Limit(error, 240), atQuota,
+                atQuota ? quota?.ResetAt : null, atQuota ? quota?.Window.ToString() : null,
+                atQuota ? quota?.ResetKind.ToString() : null, checkedAt));
+        }
+        return providers.OrderBy(provider => provider.Provider, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static string? Limit(string? value, int length) => value is { Length: > 0 }
+        ? value.Length <= length ? value : value[..length]
+        : null;
 
     private async Task DeliverAsync(DigestRun digest, string webhookUrl, CancellationToken cancellationToken)
     {

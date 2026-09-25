@@ -1464,30 +1464,86 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             "SELECT count(*)::int FROM factory.task WHERE status IN ('ReadyForPublish','Published')", cancellationToken: cancellationToken));
     }
 
-    public async Task<IReadOnlyList<DigestFinishedTask>> GetRecentlyFinishedTasksAsync(DateTimeOffset since, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<DigestFinishedTask>> GetRecentlyFinishedTasksAsync(DateTimeOffset since, DateTimeOffset until, CancellationToken cancellationToken)
     {
-        // Windowed by task_event.occurred_at (when the transition actually happened), matching GetOutcomeMetricsAsync's
-        // own convention, not by task.completed_at/failed_at — Rejected sets neither. t.status=te.to_status excludes a
-        // stale event for a task later retried past it (e.g. a Rejected task an operator continued and later
-        // completed), so nothing already superseded is ever reported as finished work again.
+        // Use one latest settling transition per task in a half-open window. A failure or rejection still counts as
+        // work even when an operator retried the task later in the same window.
         const string sql = """
             SELECT t.id AS "TaskId", t.title AS "Title", (gr.owner || '/' || gr.name) AS "Repository",
               i.issue_number AS "IssueNumber", p.pull_request_url AS "PullRequestUrl",
-              (te.to_status='Completed') AS "Merged", te.occurred_at AS "FinishedAt"
-            FROM factory.task_event te
-            JOIN factory.task t ON t.id=te.task_id AND t.status=te.to_status
+              (settled.to_status='Completed') AS "Merged", settled.occurred_at AS "FinishedAt",
+              (settled.to_status='Failed') AS "Failed"
+            FROM factory.task t
             JOIN github.repository gr ON gr.id=t.repository_id
             LEFT JOIN github.issue i ON i.id=t.github_issue_id
+            JOIN LATERAL (
+              SELECT to_status,occurred_at FROM factory.task_event
+              WHERE task_id=t.id AND to_status IN ('Completed','Rejected','Failed')
+                AND occurred_at >= @since AND occurred_at < @until
+              ORDER BY occurred_at DESC LIMIT 1
+            ) settled ON true
             LEFT JOIN LATERAL (
               SELECT pull_request_url FROM factory.publication
               WHERE task_id=t.id AND pull_request_url IS NOT NULL ORDER BY completed_at DESC LIMIT 1
             ) p ON true
-            WHERE te.to_status IN ('Completed','Rejected') AND te.occurred_at >= @since
-            ORDER BY te.occurred_at DESC
+            ORDER BY settled.occurred_at DESC
             """;
         await using var c = Connection();
-        var rows = await c.QueryAsync<DigestFinishedTaskRow>(new CommandDefinition(sql, new { since }, cancellationToken: cancellationToken));
+        var rows = await c.QueryAsync<DigestFinishedTaskRow>(new CommandDefinition(sql, new { since, until }, cancellationToken: cancellationToken));
         return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task<DigestRetrySummary> GetDigestRetrySummaryAsync(DateTimeOffset since, DateTimeOffset until, CancellationToken cancellationToken)
+    {
+        const string totalSql = """
+            SELECT count(*)::int FROM factory.task_event
+            WHERE to_status='Pending' AND from_status IS NOT NULL AND from_status <> 'WaitingForQuota'
+              AND occurred_at >= @since AND occurred_at < @until
+            """;
+        const string tasksSql = """
+            WITH retries AS (
+              SELECT task_id,count(*)::int AS retry_count,max(occurred_at) AS last_retry
+              FROM factory.task_event
+              WHERE to_status='Pending' AND from_status IS NOT NULL AND from_status <> 'WaitingForQuota'
+                AND occurred_at >= @since AND occurred_at < @until
+              GROUP BY task_id
+            )
+            SELECT t.id AS "TaskId",t.title AS "Title",gr.owner || '/' || gr.name AS "Repository",
+              i.issue_number AS "IssueNumber",t.status AS "Status",r.retry_count AS "RetryCount"
+            FROM retries r JOIN factory.task t ON t.id=r.task_id
+            JOIN github.repository gr ON gr.id=t.repository_id
+            LEFT JOIN github.issue i ON i.id=t.github_issue_id
+            WHERE t.status NOT IN ('Completed','Cancelled')
+            ORDER BY r.retry_count DESC,r.last_retry DESC,t.id LIMIT 5
+            """;
+        await using var c = Connection();
+        var total = await c.ExecuteScalarAsync<int>(new CommandDefinition(totalSql, new { since, until }, cancellationToken: cancellationToken));
+        var rows = await c.QueryAsync<DigestRetryTaskRow>(new CommandDefinition(tasksSql, new { since, until }, cancellationToken: cancellationToken));
+        return new DigestRetrySummary(total, rows.Select(row => row.ToModel()).ToList());
+    }
+
+    public async Task<DigestNextTask?> GetNextEligibleTaskAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT t.id AS "TaskId",t.title AS "Title",gr.owner || '/' || gr.name AS "Repository",
+              i.issue_number AS "IssueNumber",t.priority AS "Priority",t.created_at AS "CreatedAt"
+            FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id
+            LEFT JOIN github.issue i ON i.id=t.github_issue_id
+            WHERE t.status='Pending' AND NOT t.repair_paused
+              AND NOT EXISTS (SELECT 1 FROM factory.dispatch_pause WHERE scope='__global__' AND paused)
+              AND NOT EXISTS (
+                SELECT 1 FROM factory.task_dependency td JOIN factory.task dep ON dep.id=td.depends_on_task_id
+                WHERE td.task_id=t.id AND dep.status<>'Completed'
+              )
+              AND (@maxOutstandingReviewWork <= 0 OR (
+                SELECT count(*) FROM factory.task WHERE status IN ('ReadyForPublish','Published')
+              ) < @maxOutstandingReviewWork)
+            ORDER BY t.priority DESC,t.created_at LIMIT 1
+            """;
+        await using var c = Connection();
+        var row = await c.QuerySingleOrDefaultAsync<DigestNextTaskRow>(new CommandDefinition(sql,
+            new { maxOutstandingReviewWork = options.Value.MaxOutstandingReviewWork }, cancellationToken: cancellationToken));
+        return row?.ToModel();
     }
 
     public async Task<IReadOnlyList<DigestAlertCandidate>> GetOpenCiFailureAlertsAsync(CancellationToken cancellationToken)
@@ -1523,6 +1579,26 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return rows.Select(r => r.ToModel()).ToList();
     }
 
+    public async Task<IReadOnlyList<DigestAlertCandidate>> GetOpenFailedTaskAlertsAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT CASE WHEN t.status='Rejected' THEN 'Rejected' ELSE 'Failed' END AS "Kind",
+              (lower(t.status) || ':' || t.id) AS "Key",t.title AS "Title",
+              COALESCE(t.failure_reason,CASE WHEN t.status='Rejected' THEN 'Pull request closed without merging.' ELSE 'Task failed.' END) AS "Detail",
+              t.id AS "TaskId",p.pull_request_url AS "Url",
+              COALESCE((SELECT max(te.occurred_at) FROM factory.task_event te WHERE te.task_id=t.id AND te.to_status=t.status),t.created_at) AS "UpdatedAt"
+            FROM factory.task t
+            LEFT JOIN LATERAL (
+              SELECT pull_request_url FROM factory.publication
+              WHERE task_id=t.id AND pull_request_url IS NOT NULL ORDER BY completed_at DESC LIMIT 1
+            ) p ON true
+            WHERE t.status IN ('Failed','Rejected')
+            """;
+        await using var c = Connection();
+        var rows = await c.QueryAsync<DigestAlertCandidateRow>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return rows.Select(r => r.ToModel()).ToList();
+    }
+
     public async Task<IReadOnlyList<DigestAlertCandidate>> GetActiveBlockerAlertsAsync(CancellationToken cancellationToken)
     {
         const string quotaSql = """
@@ -1547,6 +1623,46 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             var detail = pause.Reason is { Length: > 0 } ? $"Paused by {pause.PausedBy}: {pause.Reason}" : $"Paused by {pause.PausedBy}";
             alerts.Add(new DigestAlertCandidate("Pause", $"pause:{pause.Scope}", title, detail, null, null, pause.PausedAt ?? clock.UtcNow));
         }
+
+        var staleSeconds = Math.Max(options.Value.PollingIntervalSeconds, options.Value.LeaseHeartbeatSeconds) * 3;
+        const string operationalSql = """
+            SELECT 'ReviewBacklog' AS "Kind",'review-backlog' AS "Key",'Review backlog limit reached' AS "Title",
+              count(*)::text || '/' || @reviewLimit || ' tasks await publication or merge.' AS "Detail",
+              NULL::uuid AS "TaskId",'/tasks' AS "Url",now() AS "UpdatedAt"
+            FROM factory.task
+            HAVING @reviewLimit > 0 AND count(*) >= @reviewLimit
+            UNION ALL
+            SELECT 'Worker','worker:orchestrator','Worker unavailable',
+              CASE WHEN w.last_seen_at IS NULL THEN 'No worker has reported a heartbeat.' ELSE 'The last worker heartbeat is stale.' END,
+              NULL::uuid,'/',COALESCE(w.last_seen_at,now())
+            FROM (SELECT max(last_seen_at) AS last_seen_at FROM factory.worker) w
+            WHERE w.last_seen_at IS NULL OR w.last_seen_at < now() - make_interval(secs => @staleSeconds)
+            UNION ALL
+            SELECT 'RepositorySync',('repository-sync:' || gr.id),gr.owner || '/' || gr.name || ' sync failed',f.error,
+              NULL::uuid,'/repositories',f.occurred_at
+            FROM github.repository gr
+            JOIN LATERAL (
+              SELECT error,occurred_at FROM github.repository_sync_failure
+              WHERE repository_id=gr.id ORDER BY occurred_at DESC LIMIT 1
+            ) f ON true
+            WHERE gr.is_enabled AND (gr.last_synced_at IS NULL OR f.occurred_at > gr.last_synced_at)
+            UNION ALL
+            SELECT 'RepairsStopped',('repairs-stopped:' || t.id),t.title,'Automatic repair attempts are stopped.',
+              t.id,'/tasks/' || t.id,COALESCE((SELECT max(te.occurred_at) FROM factory.task_event te WHERE te.task_id=t.id AND te.to_status=t.status),t.created_at)
+            FROM factory.task t WHERE t.repair_paused AND t.status NOT IN ('Completed','Cancelled','Rejected')
+            UNION ALL
+            SELECT 'MergeConflict',('merge-conflict:' || t.id),t.title,'GitHub confirmed a merge conflict.',
+              t.id,p.pull_request_url,m.synced_at
+            FROM factory.task t JOIN factory.task_merge_status m ON m.task_id=t.id
+            LEFT JOIN LATERAL (
+              SELECT pull_request_url FROM factory.publication
+              WHERE task_id=t.id AND pull_request_url IS NOT NULL ORDER BY completed_at DESC LIMIT 1
+            ) p ON true
+            WHERE t.status='Published' AND m.status='Conflict' AND m.synced_at >= now() - interval '15 minutes'
+            """;
+        var operationalRows = await c.QueryAsync<DigestAlertCandidateRow>(new CommandDefinition(operationalSql,
+            new { reviewLimit = options.Value.MaxOutstandingReviewWork, staleSeconds }, cancellationToken: cancellationToken));
+        alerts.AddRange(operationalRows.Select(r => r.ToModel()));
         return alerts;
     }
 }
@@ -1554,7 +1670,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
 /// <summary>Persists digest generations and alert-dedup state (SF-705). Fingerprint comparison itself is
 /// <see cref="DigestBuilder"/>'s job (pure, no database access); this store only reads back what was fingerprinted
 /// last time and persists what should be remembered next time.</summary>
-public sealed class PostgresDigestStore(IOptions<FactoryOptions> options, IClock clock) : IDigestStore
+public sealed class PostgresDigestStore(IOptions<FactoryOptions> options) : IDigestStore
 {
     private NpgsqlConnection Connection() => new(options.Value.ConnectionString);
 
@@ -1593,7 +1709,9 @@ public sealed class PostgresDigestStore(IOptions<FactoryOptions> options, IClock
     public async Task<DigestRun> SaveAsync(DigestPayload payload, IReadOnlyList<DigestAlertCandidate> openAlerts, CancellationToken cancellationToken)
     {
         var id = Guid.NewGuid();
-        var generatedAt = clock.UtcNow;
+        // Treat the payload's snapshot boundary as the generation time. The next window begins at this exact point,
+        // so the time spent querying and inserting cannot leave a gap between consecutive digests.
+        var generatedAt = payload.WindowUntil;
         var payloadJson = JsonSerializer.Serialize(payload);
 
         await using var connection = Connection();
@@ -1658,10 +1776,36 @@ internal sealed class DigestFinishedTaskRow
     public int? IssueNumber { get; init; }
     public string? PullRequestUrl { get; init; }
     public bool Merged { get; init; }
+    public bool Failed { get; init; }
     public DateTime FinishedAt { get; init; }
 
     public DigestFinishedTask ToModel() => new(TaskId, Title, Repository, IssueNumber, PullRequestUrl, Merged,
-        new DateTimeOffset(DateTime.SpecifyKind(FinishedAt, DateTimeKind.Utc)));
+        new DateTimeOffset(DateTime.SpecifyKind(FinishedAt, DateTimeKind.Utc)), Failed);
+}
+
+internal sealed class DigestRetryTaskRow
+{
+    public Guid TaskId { get; init; }
+    public string Title { get; init; } = "";
+    public string Repository { get; init; } = "";
+    public int? IssueNumber { get; init; }
+    public string Status { get; init; } = "";
+    public int RetryCount { get; init; }
+
+    public DigestRetryTask ToModel() => new(TaskId, Title, Repository, IssueNumber, Status, RetryCount);
+}
+
+internal sealed class DigestNextTaskRow
+{
+    public Guid TaskId { get; init; }
+    public string Title { get; init; } = "";
+    public string Repository { get; init; } = "";
+    public int? IssueNumber { get; init; }
+    public int Priority { get; init; }
+    public DateTime CreatedAt { get; init; }
+
+    public DigestNextTask ToModel() => new(TaskId, Title, Repository, IssueNumber, Priority,
+        new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)));
 }
 
 internal sealed class DigestAlertCandidateRow

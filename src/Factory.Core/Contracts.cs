@@ -395,11 +395,17 @@ public interface ITaskStore
 
     /// <summary>Tasks whose most recent settling transition into <see cref="FactoryTaskStatus.Completed"/> or
     /// <see cref="FactoryTaskStatus.Rejected"/> happened at or after <paramref name="since"/> (SF-705) — the
-    /// "finished work" a digest reports, windowed by when that transition actually occurred (via
-    /// <c>task_event</c>), not by task creation time, and restricted to a task whose current resting status still
-    /// matches that transition (so a task later retried past a stale <c>Rejected</c> event is never reported
-    /// twice).</summary>
-    Task<IReadOnlyList<DigestFinishedTask>> GetRecentlyFinishedTasksAsync(DateTimeOffset since, CancellationToken cancellationToken);
+    /// "finished work" a digest reports, including the latest <c>Completed</c>, <c>Rejected</c>, or <c>Failed</c>
+    /// transition per task in the half-open window, based on <c>task_event.occurred_at</c> rather than task creation
+    /// time. A later retry does not erase a failure or rejection that happened inside the window.</summary>
+    Task<IReadOnlyList<DigestFinishedTask>> GetRecentlyFinishedTasksAsync(DateTimeOffset since, DateTimeOffset until, CancellationToken cancellationToken);
+
+    /// <summary>Retry transitions and the most-retried still-open tasks in the half-open digest window.</summary>
+    Task<DigestRetrySummary> GetDigestRetrySummaryAsync(DateTimeOffset since, DateTimeOffset until, CancellationToken cancellationToken);
+
+    /// <summary>The first pending task in claim order at this instant, respecting global and repair pauses, dependency
+    /// completion, and the configured outstanding-review limit.</summary>
+    Task<DigestNextTask?> GetNextEligibleTaskAsync(CancellationToken cancellationToken);
 
     /// <summary>Every task resting in <see cref="FactoryTaskStatus.Published"/> whose most recently synchronized
     /// CI status (SF-614) is <c>Failure</c> (SF-705) — the open CI-failure conditions a digest surfaces.</summary>
@@ -409,14 +415,16 @@ public interface ITaskStore
     /// needs-the-developer conditions a digest surfaces.</summary>
     Task<IReadOnlyList<DigestAlertCandidate>> GetNeedsHumanAlertsAsync(CancellationToken cancellationToken);
 
-    /// <summary>Every currently meaningful quota or dispatch-pause blocker (SF-705): an agent whose
-    /// <see cref="IsAgentAtQuotaAsync"/> reset time has not yet passed, and any scope with an active
-    /// <see cref="SetDispatchPauseAsync"/> pause — the open worker-blocker conditions a digest surfaces.</summary>
+    /// <summary>Every failed or rejected task still available for operator review or retry.</summary>
+    Task<IReadOnlyList<DigestAlertCandidate>> GetOpenFailedTaskAlertsAsync(CancellationToken cancellationToken);
+
+    /// <summary>Every current worker blocker relevant to the briefing: quota and dispatch pauses, the review backlog
+    /// cap, stale worker heartbeat, repository sync failure, stopped repairs, and confirmed merge conflicts.</summary>
     Task<IReadOnlyList<DigestAlertCandidate>> GetActiveBlockerAlertsAsync(CancellationToken cancellationToken);
 }
 
-/// <summary>Persists digest generations and the alert-dedup state that keeps an unchanged CI failure, needs-human
-/// task, or quota/pause blocker from being re-surfaced as new noise on every subsequent digest (SF-705). The
+/// <summary>Persists digest generations and alert-dedup state that keeps an unchanged CI failure, needs-human,
+/// failed/rejected task, or operational blocker from being re-surfaced as new noise on every subsequent digest. The
 /// database is the external boundary this abstracts, exactly like <see cref="ITaskStore"/> and
 /// <see cref="IGitHubStore"/> — digest generation itself (<c>DigestBuilder</c>) stays pure and independent of it.</summary>
 public interface IDigestStore

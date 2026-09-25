@@ -59,7 +59,7 @@ export const workerSchema = z.object({
 export type Worker = z.infer<typeof workerSchema>;
 export const digestFinishedTaskSchema = z.object({
   taskId: z.string(), title: z.string(), repository: z.string(), issueNumber: z.number().nullable(),
-  pullRequestUrl: z.string().nullable(), merged: z.boolean(), finishedAt: z.string()
+  pullRequestUrl: z.string().nullable(), merged: z.boolean(), failed: z.boolean().optional(), finishedAt: z.string()
 });
 export type DigestFinishedTask = z.infer<typeof digestFinishedTaskSchema>;
 export const digestAlertSchema = z.object({
@@ -67,12 +67,38 @@ export const digestAlertSchema = z.object({
   taskId: z.string().nullable(), url: z.string().nullable(), updatedAt: z.string()
 });
 export type DigestAlert = z.infer<typeof digestAlertSchema>;
+export const digestNextTaskSchema = z.object({
+  taskId: z.string(), title: z.string(), repository: z.string(), issueNumber: z.number().nullable(),
+  priority: z.number(), createdAt: z.string(), url: z.string().nullable().optional()
+});
+export const digestRetryTaskSchema = z.object({
+  taskId: z.string(), title: z.string(), repository: z.string(), issueNumber: z.number().nullable(), status: z.string(), retryCount: z.number()
+});
+export const digestRetrySummarySchema = z.object({ totalRetries: z.number(), tasks: z.array(digestRetryTaskSchema) });
+export const digestProviderStatusSchema = z.object({
+  provider: z.string(), availability: z.string(), version: z.string().nullable(), error: z.string().nullable(),
+  quotaDetected: z.boolean(), quotaResetAt: z.string().nullable(), quotaWindow: z.string().nullable(),
+  resetKind: z.string().nullable(), checkedAt: z.string()
+});
+export const digestChangesSchema = z.object({
+  merged: z.number(), rejected: z.number(), failed: z.number(), retries: z.number(), openAttentionDelta: z.number().nullable(),
+  providerStateChanges: z.number().nullable().optional()
+});
+export const digestActionItemSchema = z.object({
+  key: z.string(), kind: z.string(), title: z.string(), detail: z.string(), taskId: z.string().nullable(),
+  url: z.string().nullable(), priority: z.number(), updatedAt: z.string()
+});
+export type DigestActionItem = z.infer<typeof digestActionItemSchema>;
 export const digestPayloadSchema = z.object({
   windowSince: z.string(), windowUntil: z.string(),
   finishedWork: z.array(digestFinishedTaskSchema),
   ciFailures: z.array(digestAlertSchema), ciFailureTotal: z.number(),
   needsHuman: z.array(digestAlertSchema), needsHumanTotal: z.number(),
-  blockers: z.array(digestAlertSchema), blockerTotal: z.number()
+  blockers: z.array(digestAlertSchema), blockerTotal: z.number(),
+  failedTasks: z.array(digestAlertSchema).optional(), failedTaskTotal: z.number().optional(),
+  nextEligibleTask: digestNextTaskSchema.nullable().optional(), retrySummary: digestRetrySummarySchema.optional(),
+  providers: z.array(digestProviderStatusSchema).optional(), changesSincePrevious: digestChangesSchema.optional(),
+  actionItems: z.array(digestActionItemSchema).optional(), briefingText: z.string().optional()
 });
 export type DigestPayload = z.infer<typeof digestPayloadSchema>;
 export const digestRunSchema = z.object({
