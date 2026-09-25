@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ExternalLink, Radio } from "lucide-react";
 import { apiBase, currentExecutionSchema, getJson, type CurrentExecution } from "@/lib/api";
 import { Badge, Duration } from "@/components/ui";
@@ -33,6 +33,7 @@ function statusMessage(snapshot: CurrentExecution) {
 }
 
 export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
+  const queryClient = useQueryClient();
   const [now, setNow] = useState(() => Date.now());
   const snapshot = useQuery({
     queryKey: ["current-execution"],
@@ -41,6 +42,20 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
     retry: false
   });
   const execution = snapshot.error ? null : snapshot.data;
+  const cancel = useMutation({
+    mutationFn: async (taskId: string) => {
+      const response = await fetch(`${apiBase}/api/tasks/${taskId}/cancel`, { method: "POST" });
+      if (!response.ok) throw new Error(`Cancel request failed (${response.status})`);
+      return (await response.json()) as { status: string };
+    },
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["current-execution"] }); }
+  });
+  const pauseRepairs = useMutation({
+    mutationFn: async (taskId: string) => {
+      const response = await fetch(`${apiBase}/api/tasks/${taskId}/stop-repairs`, { method: "POST" });
+      if (!response.ok) throw new Error(`Pause request failed (${response.status})`);
+    }
+  });
   const stepId = execution?.status === "Running" || execution?.status === "Stopping" ? execution.stepId : null;
   const log = useQuery({
     queryKey: ["current-step-tail", stepId],
@@ -93,8 +108,14 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
         <h2 className="mt-2 break-words text-xl font-semibold sm:text-2xl">{snapshot.isPending ? "Checking for active work…" : snapshot.error ? "Current work unavailable" : execution?.taskTitle ?? "Factory is idle"}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{snapshot.error ? "Factory API unavailable. Live state cannot be confirmed." : execution ? statusMessage(execution) : "Waiting for execution state."}</p>
       </div>
-      {execution?.taskStatus && <Badge value={execution.taskStatus}/>}
+      <div className="flex items-center gap-2">{execution?.taskStatus && <Badge value={execution.taskStatus}/>}
+        {execution?.taskId && execution.status !== "Stopping" && <><button type="button" className="rounded border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-40" aria-label={`Pause later repairs for ${execution.taskTitle}`} disabled={pauseRepairs.isPending || (pauseRepairs.isSuccess && pauseRepairs.variables === execution.taskId)} onClick={()=>pauseRepairs.mutate(execution.taskId!)}>{pauseRepairs.isPending ? "Pausing…" : "Pause later repairs"}</button><button type="button" className="tone-amber rounded border px-2 py-1 text-xs disabled:opacity-40" aria-label={`Cancel ${execution.taskTitle}`} disabled={cancel.isPending} onClick={()=>cancel.mutate(execution.taskId!)}>{cancel.isPending ? "Requesting stop…" : "Cancel task"}</button></>}
+      </div>
     </div>
+    {cancel.isSuccess && cancel.variables === execution?.taskId && <p role="status" className="border-b border-[var(--border)] px-4 py-2 text-xs">{cancel.data.status === "Stopping" ? "Stop requested. Waiting for the worker to acknowledge it." : "Task cancelled."}</p>}
+    {cancel.isError && cancel.variables === execution?.taskId && <p role="alert" className="border-b border-[var(--border)] px-4 py-2 text-xs text-red-400">{cancel.error.message}</p>}
+    {pauseRepairs.isSuccess && pauseRepairs.variables === execution?.taskId && <p role="status" className="border-b border-[var(--border)] px-4 py-2 text-xs">Later automatic repairs paused. Current execution keeps running.</p>}
+    {pauseRepairs.isError && pauseRepairs.variables === execution?.taskId && <p role="alert" className="border-b border-[var(--border)] px-4 py-2 text-xs text-red-400">{pauseRepairs.error.message}</p>}
     {execution?.taskId && <div className="grid gap-4 border-b border-[var(--border)] p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-[1.3fr_1fr_1fr_1fr]">
       <div className="min-w-0"><p className="eyebrow">Issue / repository</p><p className="mt-1 break-words text-sm">{execution.issueUrl && execution.issueNumber ? <a className="text-emerald-400 hover:underline" href={execution.issueUrl} target="_blank" rel="noreferrer">#{execution.issueNumber} <ExternalLink className="inline size-3"/></a> : "Local task"} · {execution.repository}</p></div>
       <div><p className="eyebrow">Actual agent</p><p className="mt-1 text-sm">{execution.agent ?? "Selecting agent"}</p></div>
@@ -102,7 +123,7 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
       <div><p className="eyebrow">Timing</p><p className="mt-1 text-sm">Elapsed <Duration seconds={execution.elapsedSeconds == null ? null : execution.elapsedSeconds + (now - snapshot.dataUpdatedAt) / 1000}/></p><p className="text-xs text-muted-foreground">Progress {age(execution.lastProgressAt, now)}</p></div>
       <div className="flex flex-wrap gap-3 sm:col-span-2 xl:col-span-4"><Link className="text-sm font-medium text-emerald-400 hover:underline" href={`/tasks/${execution.taskId}`}>Open task →</Link>{execution.runId && <Link className="text-sm font-medium text-emerald-400 hover:underline" href={`/runs/${execution.runId}`}>Open run →</Link>}</div>
     </div>}
-    <div className="grid min-w-0 gap-0 lg:grid-cols-[minmax(13rem,1fr)_minmax(0,2fr)]">
+    {execution?.taskId && <div className="grid min-w-0 gap-0 lg:grid-cols-[minmax(13rem,1fr)_minmax(0,2fr)]">
       <div className="min-w-0 border-b border-[var(--border)] p-4 sm:p-5 lg:border-b-0 lg:border-r">
         <p className="eyebrow">System events</p>
         {execution?.taskId ? <div className="mt-3 space-y-3 text-xs">
@@ -126,6 +147,6 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
         {isTailLimited && <p className="mt-2 text-xs text-amber-300">Showing the latest 64 KiB only. Earlier output may be truncated; open the full log for all output.</p>}
         {stepId && !isAgent && <p className="mt-2 text-xs text-muted-foreground">Output belongs to the current {execution?.stepType?.replace(/([a-z])([A-Z])/g, "$1 $2")} step.</p>}
       </div>
-    </div>
+    </div>}
   </section>;
 }
