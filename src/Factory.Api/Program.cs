@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Dapper;
+using Factory.Api;
 using Factory.Core;
 using Factory.Infrastructure;
 using Microsoft.Extensions.Options;
@@ -179,6 +180,44 @@ app.MapGet("/api/execution/current", async (NpgsqlDataSource db, CancellationTok
     await using var c = await db.OpenConnectionAsync(ct);
     var row = await c.QuerySingleOrDefaultAsync<CurrentExecutionRow>(new CommandDefinition(CurrentExecutionQuery.Sql, cancellationToken: ct));
     return Results.Ok(CurrentExecutionProjection.Create(row, dashboardUrl, DateTimeOffset.UtcNow));
+});
+
+app.MapGet("/api/attention", async (NpgsqlDataSource db, IOptions<FactoryOptions> options,
+    IOptions<GitHubSyncOptions> githubOptions, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers,
+    ITaskStore tasks, CancellationToken ct) =>
+{
+    var now = DateTimeOffset.UtcNow;
+    await using var c = await db.OpenConnectionAsync(ct);
+    var taskRows = await c.QueryAsync<AttentionTaskRow>(new CommandDefinition(AttentionQuery.Tasks, cancellationToken: ct));
+    var sources = (await c.QueryAsync<AttentionSourceRow>(new CommandDefinition(AttentionQuery.Sources, cancellationToken: ct))).ToList();
+    var reviewCount = await c.ExecuteScalarAsync<int>(new CommandDefinition(
+        "SELECT count(*)::int FROM factory.task WHERE status IN ('ReadyForPublish','Published')", cancellationToken: ct));
+    var reviewLimit = options.Value.MaxOutstandingReviewWork;
+    if (reviewLimit > 0 && reviewCount >= reviewLimit)
+        sources.Add(new AttentionSourceRow { Id = "global", Kind = "ReviewBacklog", Title = "Review backlog limit reached",
+            Reason = $"{reviewCount}/{reviewLimit} tasks await publication or merge.", FirstObservedAt = now, LastObservedAt = now });
+    var agents = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct);
+    if (agents.Count > 0 && agents.All(agent => agent.State is "QuotaBlocked" or "Unavailable" or "Unknown" or "Paused"))
+        sources.Add(new AttentionSourceRow { Id = "global", Kind = "AllAgentsUnavailable", Title = "No agent can claim work",
+            Reason = "Every configured agent is quota blocked, paused, or unavailable.", FirstObservedAt = now, LastObservedAt = now });
+    var staleAfter = Math.Max(options.Value.PollingIntervalSeconds, options.Value.LeaseHeartbeatSeconds) * 3;
+    var latestWorker = await c.ExecuteScalarAsync<DateTimeOffset?>(new CommandDefinition(
+        "SELECT max(last_seen_at) FROM factory.worker", cancellationToken: ct));
+    if (AttentionProjection.StaleWorker(latestWorker, now, TimeSpan.FromSeconds(staleAfter)) is { } workerAlert)
+        sources.Add(workerAlert);
+    var items = AttentionProjection.Sort(AttentionProjection.ForTasks(taskRows, now, githubOptions.Value.MaxCiRepairAttempts)
+        .Concat(AttentionProjection.ForSources(sources)));
+    var next = reviewLimit > 0 && reviewCount >= reviewLimit ? null : await c.QuerySingleOrDefaultAsync(new CommandDefinition("""
+        SELECT t.id,t.title,gr.owner || '/' || gr.name AS repository
+        FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id
+        WHERE t.status='Pending' AND NOT t.repair_paused AND NOT EXISTS (
+          SELECT 1 FROM factory.task_dependency td JOIN factory.task dep ON dep.id=td.depends_on_task_id
+          WHERE td.task_id=t.id AND dep.status<>'Completed')
+        ORDER BY t.priority DESC,t.created_at LIMIT 1
+        """, cancellationToken: ct));
+    var pendingCount = await c.ExecuteScalarAsync<int>(new CommandDefinition(
+        "SELECT count(*)::int FROM factory.task WHERE status='Pending'", cancellationToken: ct));
+    return Results.Ok(new { items, nextTask = next, pendingCount, workerHealthy = latestWorker is not null && now - latestWorker <= TimeSpan.FromSeconds(staleAfter) });
 });
 
 app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct) =>
