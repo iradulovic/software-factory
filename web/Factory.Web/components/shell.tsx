@@ -8,6 +8,7 @@ import { z } from "zod";
 import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageSquareText, Moon, Newspaper, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, githubStatusSchema, workerSchema, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
+import { agentStateDescription } from "@/components/ui";
 import { Button } from "@/components/ui/button";
 import {
   Sidebar,
@@ -139,7 +140,7 @@ function AgentStatusPill() {
   const { data } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)) });
   if (!data?.length) return <div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-muted-foreground">No agents configured</div>;
   return <div className="flex items-center gap-3 rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-muted-foreground">
-    {data.map(a => <span className="flex items-center gap-1.5" key={a.agent} title={`${a.agent}: ${a.state}${a.error ? ` — ${a.error}` : ""}`}>
+    {data.map(a => <span className="flex items-center gap-1.5" key={a.agent} title={`${a.agent}: ${agentStateDescription(a.state)}${a.error ? ` — ${a.error}` : ""}`}>
       <span className={`size-1.5 rounded-full ${agentDotTones[a.state] ?? "bg-amber-500"}`} />{a.agent}
     </span>)}
   </div>;

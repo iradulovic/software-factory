@@ -98,6 +98,23 @@ public sealed class CliAgentRunnerTests
     }
 
     [Fact]
+    public async Task Pi_one_shot_profile_pins_its_model_and_pipes_the_task_prompt()
+    {
+        var runner = new RecordingRunner(new ProcessResult("pi", [], ".", Now, Now, 0, "done", "", false, false));
+        var profile = new AgentProfile("Pi", "pi", ["--print", "--model", "moonshotai/kimi-k2.6"], "stdin", 90,
+            [], ["--version"], 5, 5, Provider: "MoonshotAI", Model: "moonshotai/kimi-k2.6", AllowAutomaticFallback: false);
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
+
+        await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Equal(["--print", "--model", "moonshotai/kimi-k2.6"], runner.Request!.Arguments);
+        Assert.Contains("Implement the task described in .factory/task.md", runner.Request.StandardInput);
+        Assert.Equal("moonshotai/kimi-k2.6", agent.Model);
+        Assert.Equal("MoonshotAI", agent.Provider);
+        Assert.False(agent.AllowAutomaticFallback);
+    }
+
+    [Fact]
     public async Task No_resume_requested_uses_the_normal_arguments_even_when_the_profile_supports_resume()
     {
         var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "session id: 11111111-1111-1111-1111-111111111111", "", false, false));

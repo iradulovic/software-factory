@@ -310,7 +310,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public async Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken)
     {
         if (!issue.Labels.Contains("factory:ready", StringComparer.OrdinalIgnoreCase) || !issue.State.Equals("OPEN", StringComparison.OrdinalIgnoreCase)) return false;
-        var route = CodexIssueRouter.Resolve(issue.Labels);
+        var route = AgentIssueRouter.Resolve(issue.Labels);
         const string sql = """
             INSERT INTO factory.task(id,repository_id,github_issue_id,title,description,status,preferred_agent,
               preferred_agent_reason,agent_routing_error,base_branch)

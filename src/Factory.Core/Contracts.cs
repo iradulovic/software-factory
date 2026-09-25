@@ -21,6 +21,11 @@ public interface IAgentRunner
     /// this, never by <see cref="Name"/>, so presets of one provider correctly share that provider's quota
     /// instead of each accumulating an independent budget.</summary>
     string Provider { get; }
+
+    /// <summary>Whether dispatch may select this runner as an automatic fallback when another profile is unavailable.
+    /// Explicitly preferred profiles remain selectable regardless of this value.</summary>
+    bool AllowAutomaticFallback => true;
+
     Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken);
 }
 public interface IAgentAvailabilityChecker
