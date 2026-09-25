@@ -10,7 +10,7 @@ The orchestrator is split into `Worker` (claim, heartbeat, close interrupted exe
 
 ## Docker Desktop on Windows
 
-Docker Desktop may be installed for the current user without adding its CLI to the `PATH` inherited by terminals or coding agents. Resolve the CLI once and invoke it explicitly:
+Docker Desktop may be installed for the current user without adding its CLI to the `PATH` inherited by terminals or coding agents. Resolve the CLI and add its directory to PATH for this PowerShell session; scripts/start.ps1 invokes docker by command name:
 
 ```powershell
 $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
@@ -23,10 +23,11 @@ $dockerCli = if ($dockerCommand) {
 if (-not (Test-Path -LiteralPath $dockerCli)) {
     throw "Docker CLI not found. Start Docker Desktop and verify its installation."
 }
+if (-not $dockerCommand) { $env:Path += [IO.Path]::PathSeparator + (Split-Path $dockerCli) }
 
-& $dockerCli version
-& $dockerCli compose ps
-& $dockerCli compose up -d postgres
+docker version
+docker compose ps
+docker compose up -d postgres
 ```
 
 The current Windows installation uses the user-local fallback above. Docker Desktop may need to be started from its Start Menu shortcut before the daemon is available. A successful `docker version` must show both Client and Server sections; a client-only result does not prove daemon access.

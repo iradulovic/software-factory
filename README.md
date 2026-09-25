@@ -6,9 +6,11 @@ Planned work and completed features are tracked in [`TASKS.md`](TASKS.md). Futur
 
 ## What works
 
-The bootstrap vertical slice synchronizes issues, labels, and comments through `gh`; creates one pending factory task for each open `factory:ready` issue; claims tasks atomically in PostgreSQL; creates a bare repository cache and Git worktree; writes `.factory/task.md`; invokes a configured coding agent (Codex or Claude Code CLI); validates `.factory/result.json`; runs configured build/test commands; and exposes the persisted history through the API and dashboard. A validated task is published — its branch is pushed and a pull request opened, with a human's explicit approval by default (or automatically for an `auto-draft` repository). The factory writes its own state back to GitHub as it goes — a concise issue comment and a `factory:*` state label at each of start, ready-for-review, failure, and needs-human — and syncs a published pull request's outcome back onto the task. As of SF-709, a CI-green pull request merges automatically unless its own repository's `.factory/config.json` sets `requireHumanMerge: true` (the default) or its originating GitHub issue carries a `HUMAN REVIEW` marker (title, body, or a `human-review` label) — either way it waits on a human merge exactly as every task did before SF-709; it never deploys.
+The bootstrap vertical slice imports open factory:ready issues, runs the configured CLI agent in an isolated Git worktree, independently validates the result, and records task/run state in PostgreSQL and the dashboard. Publication and merge are separate decisions: publish is manual by default (or can be requested automatically), while requireHumanMerge defaults to true when omitted. A false requireHumanMerge value lets the orchestrator merge the pull request after GitHub CI succeeds, unless the issue has a HUMAN REVIEW marker, which always requires a human merge. The factory writes issue comments and factory:* state labels, pushes its task branch, opens its pull request, and never deploys.
 
-Verification status: the Git cache and worktree flow is covered by tests that run real Git against a temporary upstream repository, and the PostgreSQL claim, lease, and persistence behavior is integration-tested. Complete end-to-end runs against this repository itself, for both Codex and Claude Code, including a live automatic merge, are recorded in `TASKS.md` (SF-608, SF-709).
+Verification status: the Git cache and worktree flow is covered by tests that run real Git against a temporary upstream repository, and the PostgreSQL claim, lease, and persistence behavior is integration-tested. Live end-to-end runs against this repository itself for both Codex and Claude Code, including automatic merge where the task policy allowed it, are recorded in TASKS.md (SF-608, SF-709).
+
+For a clone-to-test-PR walkthrough, see the [first-run guide](docs/first-run.md), including the no-auto-merge safety marker and operator recovery links.
 
 ## Prerequisites
 
@@ -18,15 +20,15 @@ Verification status: the Git cache and worktree flow is covered by tests that ru
 - Git
 - [GitHub CLI](https://cli.github.com/) (`gh`)
 - [Codex CLI](https://developers.openai.com/codex/cli/) (the default configured agent profile; any other CLI coding agent can be added through configuration, see below)
+- Claude Code CLI (the configured alternate provider)
 
-Authenticate interactive tools once as your normal user:
+Authenticate the local tools once as the Windows user who will run the factory:
 
-```powershell
-gh auth login
-codex login
-```
+- Run gh auth login -h github.com, then verify with gh auth status -h github.com.
+- Run codex login.
+- Run claude login.
 
-The application stores no GitHub or model credentials.
+The factory uses the authenticated local GitHub and agent CLIs; it does not store their credentials in the repository or database. The GitHub CLI account acts with its existing permissions, which may be broader than this one repository.
 
 ## 1. Start PostgreSQL
 
@@ -38,27 +40,11 @@ If `docker` is not on `PATH` for a Windows terminal or coding agent, use the use
 
 The development credentials in Compose are local-only defaults. Override `Factory__ConnectionString` for any non-local environment.
 
-## 2. Configure a repository
+## 2. Add a repository (after services are running)
 
-Edit `src/Factory.GitHubSync/appsettings.json` and replace the disabled sample entry:
+Open the dashboard's **Repositories** page, enter the GitHub owner and repository name, and select **Add repository**. The new enabled repository is picked up on the next sync cycle; no service restart or tracked settings edit is needed. The form uses main as the default branch.
 
-```json
-{
-  "Owner": "acme",
-  "Name": "billing",
-  "CloneUrl": "https://github.com/acme/billing.git",
-  "DefaultBranch": "main",
-  "Enabled": true
-}
-```
-
-A real repository is developer- or machine-specific, unlike the disabled placeholder above, which stays checked
-in as the shared template. Put your real values in `src/Factory.GitHubSync/appsettings.Local.json` instead (same
-shape, gitignored, loaded automatically after `appsettings.json` when present) rather than editing the tracked
-file directly.
-
-The main settings cover the PostgreSQL connection, factory root, polling intervals, task concurrency, task lease and heartbeat intervals, configured CLI coding agents, default branch, and configured repositories. Environment-variable examples are in `.env.example`; no real credentials belong in configuration.
-
+## Repository and agent configuration
 Every CLI coding agent — Codex, Claude Code, or anything else with a CLI and a prompt — is configured under `Agents:Profiles`, never a new class. The default Codex profiles use the same `Provider: "Codex"`, so pause and quota state is shared:
 
 | Profile | Model | Reasoning effort | Selection |
@@ -107,11 +93,11 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
 }
 ```
 
-`requireHumanMerge` controls whether a task's pull request opens as a draft and waits for a human to merge it (`true`, the default), or opens ready for review and merges automatically once CI passes (`false`). Either way, a GitHub issue that carries a `HUMAN REVIEW` marker (in its title, body, or a `human-review` label) always waits on a human merge, overriding a repository's own `false` — this decision is computed once, when the task is first published, and never re-derived if the issue changes afterward.
+When omitted, requireHumanMerge defaults to true: the pull request is opened as a draft and waits for a human merge. Set it to false to open the pull request ready for review and let the orchestrator merge the pull request once CI is green. A HUMAN REVIEW phrase in the issue title or body, or the exact human-review label, always forces the human-merge path even when the repository sets false. The effective policy is captured before publication; later issue edits do not change it.
 
 `maxReviewAttempts` (default `1`) controls SF-702's optional second-agent review pass: after a task's own implementation, build, and test all validate cleanly, a review is requested — and the task moves `Validating -> Reviewing` before `ReadyForPublish` — when its GitHub issue carries a `request review` marker (in its title, body, or a `request-review` label), or when the implementing agent's own result reports one or more `risks` even without that marker. A second agent invocation (preferring the same `IAgentRunner` as the implementation, per `AgentSelector`, though a paused or quota-exhausted provider falls through to another configured one, which is how a genuinely different agent ends up reviewing the change) then reads the already-committed diff read-only — it never modifies, stages, or commits anything — and writes `.factory/review.json`: a `status` of `completed`, `blocked`, or `needs-human`, a `summary`, a `findings` array (each with `severity`, an optional `file`/`line`, and a `description`; an empty array is a valid, meaningful result), and `needsHuman`/`humanReason`. Findings are persisted to `factory.review_finding` and returned from `GET /api/tasks/{id}` as `reviewFindings`, and rendered in the Task Details "Review findings" panel once non-empty. A `blocked` or `needs-human` result moves the task to `NeedsHuman` instead of `ReadyForPublish`. Sizing `maxReviewAttempts` above `1` retries a review that failed to produce a valid result (a crashed process, quota, or malformed `review.json`) rather than retrying a review that ran cleanly; once attempts are exhausted without ever producing a valid result, the review is skipped entirely and the task still proceeds to `ReadyForPublish` — a review pass never blocks publishing on its own infrastructure failure, only on a genuine `blocked`/`needs-human` finding.
 
-Automatic merge is scoped to pull requests the factory itself opened for one of its own tasks (`Factory.GitHubSync.Worker.ResolvePublishedTasksAsync` only iterates tasks resting in `Published`, i.e. `factory.publication` rows created by `PublicationExecutor`). A pull request opened by hand — `gh pr create`, the GitHub web UI, or any other path that does not go through the factory's own publish flow — has no associated factory task and no `requireHumanMerge`/`HUMAN REVIEW` policy to evaluate, so the factory never discovers or acts on it. Merging that pull request, CI-green or not, remains entirely the operator's own responsibility.
+Automatic merge is scoped to pull requests the factory itself opened for its own tasks. A pull request opened by hand through gh or GitHub has no associated factory task or merge policy, so the factory never discovers or acts on it; merging it remains the responsibility of the operator.
 
 Each entry in `buildCommands`/`testCommands` is an executable plus its arguments, run directly through `IProcessRunner` — never through a shell, and never split on whitespace at run time, so an argument containing a space (a quoted test filter, a path) needs no escaping:
 
@@ -127,7 +113,7 @@ Shell operators (`&&`, `|`, redirection, ...) are never available implicitly. A 
 { "buildCommands": [{ "shell": "dotnet build && dotnet build -c Release" }] }
 ```
 
-`publish` is `"manual"` (default: a human must click Publish on a `ReadyForPublish` task) or `"auto-draft"` (the orchestrator requests publication itself as soon as a task reaches `ReadyForPublish`). Publishing pushes the task's own branch and opens a draft pull request; it never merges.
+publish is "manual" by default, which waits for an operator to select Publish after a task reaches ReadyForPublish, or "auto-draft", which asks the orchestrator to publish automatically after validation. Publication pushes the task branch and opens a pull request; it never merges. Whether the pull request is a draft or is eligible for automatic merge is controlled separately by requireHumanMerge and the HUMAN REVIEW issue marker.
 
 While a task's pull request is still open, its GitHub CI status is synchronized every sync cycle and shown on Task Details in its own "CI status" panel, kept distinct from local build/test validation: an overall `Pending`/`Success`/`Failure`/`NoChecks`/`Unavailable` badge, the exact head commit the status is for, and each individual check with a link to its diagnostics. The head commit and its checks are always fetched together in one call, so a status is never shown against a different — possibly stale — commit than the one it actually describes; a read failure (authentication, network) shows its real error text rather than looking like "no checks." A failure on that exact commit that looks like a genuine code problem triggers one bounded automatic repair attempt (SF-706), reusing the same operator-feedback continuation mechanism described above but attributed to the orchestrator; a failure that looks infrastructure/authentication-related instead (cancelled, timed out, needs a workflow approval), or a task whose automatic repair attempts are exhausted, moves to `NeedsHuman` rather than looping. This never deploys.
 
@@ -211,7 +197,7 @@ The single documented entry point (SF-615) starts everything — PostgreSQL, Syn
 ./scripts/start.ps1
 ```
 
-It checks `gh`/`codex`/`claude`/`docker` availability and authentication first (reporting each clearly rather than letting a missing login surface later as a confusing agent-process failure), waits for PostgreSQL to report healthy, starts each .NET service and the dashboard as background processes with their own log file under `logs/` (`logs/sync.log`, `logs/orchestrator.log`, `logs/api.log`, `logs/dashboard.log`, plus a matching `.err.log` for each), waits for `Factory.Api`'s `/health` to actually confirm database connectivity (not just that the process started), and prints a final status summary including each worker's heartbeat freshness from `GET /api/workers`.
+Before starting, the script checks GitHub CLI authentication, verifies that the gh, Codex, Claude Code, and Docker commands are available, and confirms Docker can reach its server. It then starts PostgreSQL and the local services, writes per-service stdout/stderr logs under logs/, checks Factory.Api health against the database, and reports worker heartbeat freshness from GET /api/workers.
 
 Every service (Sync, Orchestrator, Api, and the dashboard) runs from a **dedicated Git worktree** at `.worktrees/services` (gitignored), not from the repository root you have checked out interactively (SF-716). On every run, `start.ps1` fetches `origin/main` and hard-resets that worktree to it (creating it first if missing), then starts every service from there. This means switching the branch checked out in your own working copy — to review a PR, work on a different task, or just look around — can never change what the *running* services actually execute; only a fresh `git push` to `main` does, and only takes effect on the next `start.ps1` run. `Factory:RootDirectory`/`Factory:LogsDirectory` (both configured as relative paths) resolve inside that dedicated worktree, so state is never silently split across each project's own subdirectory or across whichever branch happened to be checked out - this does mean `factory-data/` now lives under `.worktrees/services/factory-data`, a new location the first time this runs after upgrading; it's safe to delete any prior `factory-data/` left at the repository root or inside a project's own subdirectory from a manual `dotnet run`, since it only ever held reconstructible Git repository caches and task worktrees, never the database (PostgreSQL, unaffected by any of this, remains the durable source of truth for task history). PostgreSQL is started the same way, from the dedicated worktree's `docker-compose.yml`, with the Compose project name pinned explicitly to your checkout's directory name so it always resolves to the same container and data volume regardless of which worktree provided the compose file. `-StatusOnly` reports the dedicated worktree's current pinned commit (and, for reference only, what branch your own interactive checkout happens to be on) without touching either.
 
@@ -243,7 +229,7 @@ Alternatively, `docker compose up --build postgres factory-api factory-web` runs
 
 ## 5. Exercise the vertical slice
 
-Create the labels once and open a test issue. `factory:ready` marks an issue eligible; the other four are state labels the factory itself sets as a task progresses, so they need to exist on the repository but never need to be applied by hand:
+Create the factory state labels in GitHub if they are missing; omit any gh label create command below for a label that already exists. Apply only factory:ready to a test issue; the factory applies the other four as task state changes. Include HUMAN REVIEW in the test issue title so the test pull request cannot auto-merge, even if the target repository opts in to automatic merge.
 
 ```powershell
 gh label create "factory:ready" --repo acme/billing --color 1D76DB --description "Ready for local Software Factory"
@@ -251,10 +237,10 @@ gh label create "factory:in-progress" --repo acme/billing --color FBCA04 --descr
 gh label create "factory:needs-human" --repo acme/billing --color D93F0B --description "Software Factory needs human input"
 gh label create "factory:ready-for-review" --repo acme/billing --color 0E8A16 --description "Software Factory validated this and it is ready for review"
 gh label create "factory:failed" --repo acme/billing --color B60205 --description "Software Factory failed this task"
-gh issue create --repo acme/billing --title "Add a health endpoint" --body "Implement and test a health endpoint." --label "factory:ready"
+gh issue create --repo acme/billing --title "HUMAN REVIEW: Add a health endpoint" --body "Implement and test a health endpoint." --label "factory:ready"
 ```
 
-Within the configured polling interval, Sync imports it and creates a task. The Orchestrator claims it, writes the worktree context, invokes Codex, runs deterministic validation, and records the outcome, posting a comment and updating the issue's state label as it goes. Follow progress on Overview, Tasks, and Task Details, or on the issue itself.
+Within the configured polling interval, Sync imports the issue and creates a task. The Orchestrator invokes the configured agent, runs deterministic validation, and records the outcome, posting a comment and updating the issue state label as it goes. Follow progress and policy on Overview, Tasks, and Task Details, or on the issue itself. If publication is manual, select Publish from Task Details after validation; with auto-draft it is requested automatically.
 
 Sync is incremental: each repository records the point in time through which it is fully synchronized, and the next cycle asks `gh` only for issues updated at or after that checkpoint (fully paginated, never capped at a single page), so a repository with thousands of issues eventually converges without re-fetching its whole history every cycle. The checkpoint only advances once a cycle finishes fetching everything it found, using the time the cycle started rather than when it finished (backdated by a small fixed safety margin to absorb GitHub's search-indexing lag), so an issue that changes mid-cycle, or just before it, is safely picked up again next time rather than skipped. Every comment is fetched per issue rather than trusting `gh issue list`'s own capped nested field, and `closed_at` is persisted alongside `state`. A closed issue or one that loses its `factory:ready` label converges automatically: its still-`Pending` task (never one already in flight) is cancelled with an explicit reason recorded on the task; a reopened, still-eligible issue is picked up again like any other eligible issue on its next sync. `gh` CLI failures, including rate limiting, are persisted per repository as operational state and surfaced on the Repositories page.
 
