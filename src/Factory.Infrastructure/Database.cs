@@ -61,11 +61,12 @@ internal sealed class TaskRow
     public string? ResumableSessionAgent { get; init; }
     public string? PreferredAgentReason { get; init; }
     public string? AgentRoutingError { get; init; }
+    public string? TaskClass { get; init; }
 
     public FactoryTask ToModel() => new(Id, RepositoryId, GitHubIssueId, IssueNumber, Title, Description, TaskType, Priority,
         Enum.Parse<FactoryTaskStatus>(Status), PreferredAgent, BaseBranch, BranchName, WorktreePath, ClaimedBy, Offset(ClaimedAt), Offset(LeaseUntil),
         Offset(CreatedAt), Offset(StartedAt), Offset(CompletedAt), Offset(FailedAt), FailureReason, ResumableSessionId, ResumableSessionAgent,
-        PreferredAgentReason, AgentRoutingError);
+        PreferredAgentReason, AgentRoutingError, TaskClass);
 
     private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     private static DateTimeOffset? Offset(DateTime? value) => value is null ? null : Offset(value.Value);
@@ -153,6 +154,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
                 t.preferred_agent AS "PreferredAgent",
                 t.preferred_agent_reason AS "PreferredAgentReason",
                 t.agent_routing_error AS "AgentRoutingError",
+                t.task_class AS "TaskClass",
                 t.base_branch AS "BaseBranch",
                 t.branch_name AS "BranchName",
                 t.worktree_path AS "WorktreePath",
@@ -183,6 +185,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               claimed."PreferredAgent",
               claimed."PreferredAgentReason",
               claimed."AgentRoutingError",
+              claimed."TaskClass",
               claimed."BaseBranch",
               claimed."BranchName",
               claimed."WorktreePath",
@@ -313,15 +316,15 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         var route = AgentIssueRouter.Resolve(issue.Labels);
         const string sql = """
             INSERT INTO factory.task(id,repository_id,github_issue_id,title,description,status,preferred_agent,
-              preferred_agent_reason,agent_routing_error,base_branch)
-            VALUES(@id,@repositoryId,@issueId,@title,@body,'Pending',@preferredAgent,@preferredAgentReason,@agentRoutingError,@baseBranch)
+              preferred_agent_reason,agent_routing_error,task_class,base_branch)
+            VALUES(@id,@repositoryId,@issueId,@title,@body,'Pending',@preferredAgent,@preferredAgentReason,@agentRoutingError,@taskClass,@baseBranch)
             ON CONFLICT DO NOTHING;
             """;
         await using var connection = Connection();
         return await connection.ExecuteAsync(new CommandDefinition(sql, new
         {
             id = Guid.NewGuid(), repositoryId = issue.RepositoryId, issueId = issue.Id, issue.Title, issue.Body, baseBranch,
-            preferredAgent = route.PreferredAgent, preferredAgentReason = route.Reason, agentRoutingError = route.Error
+            preferredAgent = route.PreferredAgent, preferredAgentReason = route.Reason, agentRoutingError = route.Error, taskClass = route.TaskClass
         }, cancellationToken: cancellationToken)) == 1;
     }
 
@@ -587,12 +590,12 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             INSERT INTO factory.agent_run(
               id,task_id,run_id,step_id,agent,started_at,completed_at,duration_seconds,exit_code,status,stdout,stderr,
               quota_detected,quota_reset_at,attempt_number,needs_human,counts_as_implementation_attempt,provider_session_id,
-              model,reasoning_effort,selection_reason,purpose,
+              model,reasoning_effort,selection_reason,purpose,task_class,
               result_json,result_summary,tests_run,tests_passed,files_changed,risks,human_reason)
             VALUES(
               @Id,@TaskId,@RunId,@StepId,@Agent,@StartedAt,@CompletedAt,@DurationSeconds,@ExitCode,@Status,@StandardOutput,@StandardError,
               @QuotaDetected,@QuotaResetAt,@AttemptNumber,@NeedsHuman,@CountsAsImplementationAttempt,@ProviderSessionId,
-              @Model,@ReasoningEffort,@SelectionReason,@Purpose,
+              @Model,@ReasoningEffort,@SelectionReason,@Purpose,@TaskClass,
               CAST(@ResultJson AS jsonb),@ResultSummary,CAST(@TestsRun AS jsonb),@TestsPassed,
               CAST(@FilesChanged AS jsonb),CAST(@Risks AS jsonb),@HumanReason)
             """;
@@ -600,7 +603,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         {
             r.Id, r.TaskId, r.RunId, r.StepId, r.Agent, r.StartedAt, r.CompletedAt, r.DurationSeconds, r.ExitCode, r.Status,
             r.StandardOutput, r.StandardError, r.QuotaDetected, r.QuotaResetAt, r.AttemptNumber, r.NeedsHuman, r.CountsAsImplementationAttempt,
-            r.ProviderSessionId, r.Model, r.ReasoningEffort, r.SelectionReason, r.Purpose,
+            r.ProviderSessionId, r.Model, r.ReasoningEffort, r.SelectionReason, r.Purpose, r.TaskClass,
             ResultJson = r.Result is null ? null : JsonSerializer.Serialize(r.Result, JsonOptions),
             ResultSummary = r.Result?.Summary,
             TestsRun = r.Result is null ? null : JsonSerializer.Serialize(r.Result.TestsRun, JsonOptions),

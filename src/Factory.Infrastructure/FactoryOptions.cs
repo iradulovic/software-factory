@@ -42,7 +42,8 @@ public sealed class FactoryOptions
     public int DatabaseQueryRowLimit { get; set; } = 500;
 
     /// <summary>Profile reserved for judgment-heavy review invocations, independently of task implementation routing.</summary>
-    public string ReviewPreferredAgent { get; set; } = CodexIssueRouter.SolPreset;
+    public string ReviewPreferredAgent { get; set; } = CodexIssueRouter.Codex;
+    public string ReviewTaskClass { get; set; } = "deep";
 }
 
 /// <summary>The configured set of CLI coding-agent profiles. Adding a provider or model preset is a configuration
@@ -57,14 +58,13 @@ public sealed class AgentProfilesOptions
     /// it instead of in place of it — registering every configured agent twice.</summary>
     public static readonly IReadOnlyList<AgentProfile> DefaultProfiles =
     [
-        new("Codex-Luna", "codex", ["exec", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--approve-for-me", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
+        new("Codex", "codex", [], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
             SessionIdPattern: @"session id: (?<sessionId>[0-9a-fA-F-]{36})",
-            ResumeArguments: ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--dangerously-bypass-approvals-and-sandbox", "-"],
-            Provider: "Codex", Model: "gpt-5.6-luna", ReasoningEffort: "max"),
-        new("Codex-Sol", "codex", ["exec", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
-            SessionIdPattern: @"session id: (?<sessionId>[0-9a-fA-F-]{36})",
-            ResumeArguments: ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"],
-            Provider: "Codex", Model: "gpt-5.6-sol", ReasoningEffort: "medium")
+            Provider: "Codex",
+            Classes: [
+                new("quick", "gpt-5.6-luna", "max", ["exec", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--dangerously-bypass-approvals-and-sandbox", "-"]),
+                new("deep", "gpt-5.6-sol", "medium", ["exec", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"])
+            ])
     ];
 
     public List<AgentProfile> Profiles { get; set; } = [];

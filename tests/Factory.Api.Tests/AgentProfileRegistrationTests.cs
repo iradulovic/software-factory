@@ -23,15 +23,15 @@ public sealed class AgentProfileRegistrationTests : IClassFixture<AgentProfileRe
         var configuration = app.Services.GetRequiredService<IConfiguration>();
         var configuredProfiles = configuration.GetSection("Agents").Get<AgentProfilesOptions>()!.Profiles;
 
-        Assert.Equal(new[] { "Codex-Luna", "Codex-Sol", "Claude", "Pi" }, configuredProfiles.Select(p => p.Name).ToArray());
-        Assert.Equal(["Codex-Luna", "Codex-Sol", "Claude", "Pi"], runners.Select(r => r.Name));
-        Assert.Equal(["Codex-Luna", "Codex-Sol", "Claude", "Pi"], checkers.Select(c => c.Agent));
+        Assert.Equal(new[] { "Codex", "Claude", "Pi" }, configuredProfiles.Select(p => p.Name).ToArray());
+        Assert.Equal(["Codex", "Claude", "Pi"], runners.Select(r => r.Name));
+        Assert.Equal(["Codex", "Claude", "Pi"], checkers.Select(c => c.Agent));
         Assert.Equal("Codex", runners[0].Provider);
-        Assert.Equal("Codex", runners[1].Provider);
         Assert.True(runners[0].AllowAutomaticFallback);
-        Assert.Equal(("gpt-5.6-luna", "max"), (runners[0].Model, runners[0].ReasoningEffort));
-        Assert.Equal(("gpt-5.6-sol", "medium"), (runners[1].Model, runners[1].ReasoningEffort));
-        Assert.Equal(("MoonshotAI", "moonshotai/kimi-k2.6", null), (runners[3].Provider, runners[3].Model, runners[3].ReasoningEffort));
+        Assert.True(runners[0].SupportsTaskClass("quick"));
+        Assert.True(runners[0].SupportsTaskClass("deep"));
+        Assert.False(runners[0].SupportsTaskClass("unknown"));
+        Assert.Equal(("MoonshotAI", "moonshotai/kimi-k2.6", null), (runners[2].Provider, runners[2].Model, runners[2].ReasoningEffort));
 
         var piProfile = configuredProfiles.Single(p => p.Name == "Pi");
         Assert.Equal(["--print", "--model", "moonshotai/kimi-k2.6"], piProfile.Arguments);

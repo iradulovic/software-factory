@@ -73,6 +73,19 @@ public sealed class CurrentExecutionProjectionTests
         Assert.Equal(stepStartedAt, snapshot.LastProgressAt);
         Assert.InRange(snapshot.ElapsedSeconds!.Value, 17, 19);
     }
+
+    [Fact]
+    public void Projection_shows_provider_for_a_legacy_codex_invocation()
+    {
+        var snapshot = CurrentExecutionProjection.Create(new CurrentExecutionRow
+        {
+            TaskId = Guid.NewGuid(), TaskTitle = "Legacy Codex task", TaskStatus = "Implementing",
+            RepositoryOwner = "acme", RepositoryName = "factory", LastAgent = "Codex-Sol",
+            RunId = Guid.NewGuid(), RunStartedAt = DateTimeOffset.UtcNow
+        }, "http://localhost:3000", DateTimeOffset.UtcNow);
+
+        Assert.Equal("Codex", snapshot.Agent);
+    }
 }
 
 [Collection("API PostgreSQL tests")]

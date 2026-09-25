@@ -875,7 +875,8 @@ public sealed class PostgresStoreIntegrationTests
             Assert.NotNull(claimed);
             Assert.Equal(issueId, claimed.GitHubIssueId);
             Assert.Equal(FactoryTaskStatus.Claimed, claimed.Status);
-            Assert.Equal(CodexIssueRouter.LunaPreset, claimed.PreferredAgent);
+            Assert.Equal(CodexIssueRouter.Codex, claimed.PreferredAgent);
+            Assert.Equal("quick", claimed.TaskClass);
             Assert.Contains("defaulted", claimed.PreferredAgentReason, StringComparison.OrdinalIgnoreCase);
 
             var runId = await tasks.StartRunAsync(claimed.Id, "integration-worker", CancellationToken.None);

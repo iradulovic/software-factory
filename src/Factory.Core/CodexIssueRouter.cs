@@ -1,32 +1,33 @@
 namespace Factory.Core;
 
-public sealed record AgentRouteSelection(string? PreferredAgent, string? Reason, string? Error);
+public sealed record AgentRouteSelection(string? PreferredAgent, string? Reason, string? Error, string? TaskClass = null);
 
-/// <summary>Resolves the explicit GitHub issue labels that select a Codex model preset.</summary>
+/// <summary>Resolves provider-neutral task intent, including labels created before the class migration.</summary>
 public static class CodexIssueRouter
 {
+    public const string QuickLabel = "coding:quick";
+    public const string DeepLabel = "coding:deep";
     public const string SolLabel = "codex:sol";
     public const string LunaLabel = "codex:luna";
-    public const string SolPreset = "Codex-Sol";
-    public const string LunaPreset = "Codex-Luna";
+    public const string Codex = "Codex";
 
     public static AgentRouteSelection Resolve(IReadOnlyCollection<string> labels)
     {
-        var requestsSol = labels.Contains(SolLabel, StringComparer.OrdinalIgnoreCase);
-        var requestsLuna = labels.Contains(LunaLabel, StringComparer.OrdinalIgnoreCase);
+        var requestsSol = labels.Contains(DeepLabel, StringComparer.OrdinalIgnoreCase) || labels.Contains(SolLabel, StringComparer.OrdinalIgnoreCase);
+        var requestsLuna = labels.Contains(QuickLabel, StringComparer.OrdinalIgnoreCase) || labels.Contains(LunaLabel, StringComparer.OrdinalIgnoreCase);
 
         if (requestsSol && requestsLuna)
         {
-            var error = $"Conflicting Codex routing labels: {SolLabel} and {LunaLabel} are mutually exclusive.";
+            var error = "Conflicting coding class labels: quick and deep are mutually exclusive.";
             return new AgentRouteSelection(null, error, error);
         }
 
         if (requestsSol)
-            return new AgentRouteSelection(SolPreset, $"GitHub issue label {SolLabel} selected {SolPreset}.", null);
+            return new AgentRouteSelection(Codex, $"GitHub issue label {(labels.Contains(DeepLabel, StringComparer.OrdinalIgnoreCase) ? DeepLabel : SolLabel)} selected deep coding class.", null, "deep");
 
         if (requestsLuna)
-            return new AgentRouteSelection(LunaPreset, $"GitHub issue label {LunaLabel} selected {LunaPreset}.", null);
+            return new AgentRouteSelection(Codex, $"GitHub issue label {(labels.Contains(QuickLabel, StringComparer.OrdinalIgnoreCase) ? QuickLabel : LunaLabel)} selected quick coding class.", null, "quick");
 
-        return new AgentRouteSelection(LunaPreset, $"No Codex routing label was present; defaulted to {LunaPreset}.", null);
+        return new AgentRouteSelection(Codex, "No coding class label was present; defaulted to quick.", null, "quick");
     }
 }

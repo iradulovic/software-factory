@@ -23,7 +23,11 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
     {
         var maxAttempts = Math.Max(1, context.Configuration!.MaxReviewAttempts);
         PipelineStepResult? lastFailure = null;
-        var preferredReviewAgent = options.Value.ReviewPreferredAgent;
+        var configuredReviewAgent = options.Value.ReviewPreferredAgent;
+        var legacyCodexPreset = configuredReviewAgent is "Codex-Luna" or "Codex-Sol";
+        var preferredReviewAgent = legacyCodexPreset ? "Codex" : configuredReviewAgent;
+        var reviewTaskClass = configuredReviewAgent == "Codex-Luna" ? "quick"
+            : configuredReviewAgent == "Codex-Sol" ? "deep" : options.Value.ReviewTaskClass;
         if (!selector.KnownAgentNames.Contains(preferredReviewAgent, StringComparer.OrdinalIgnoreCase))
         {
             logger.LogWarning("Task {TaskId} skipping review: configured review preset {Agent} is not available. Configured options: {Options}.",
@@ -33,7 +37,7 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            var agent = await selector.SelectAsync(preferredReviewAgent, cancellationToken);
+            var agent = await selector.SelectAsync(preferredReviewAgent, cancellationToken, reviewTaskClass);
             if (agent is null)
             {
                 logger.LogInformation("Task {TaskId} skipping review: no agent available (paused or at quota).", context.Task.Id);
@@ -41,11 +45,11 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
             }
 
             var selectionReason = string.Equals(agent.Name, preferredReviewAgent, StringComparison.OrdinalIgnoreCase)
-                ? $"Configured review preset '{preferredReviewAgent}' independently of the implementation preset."
-                : $"Provider fallback selected review preset '{agent.Name}' because configured review provider '{preferredReviewAgent}' is paused or at quota.";
+                ? $"Configured review provider '{configuredReviewAgent}' selected coding class '{reviewTaskClass}' independently of implementation."
+                : $"Provider fallback selected review agent '{agent.Name}' for coding class '{reviewTaskClass}' because configured review provider '{configuredReviewAgent}' is paused, at quota, or lacks the class.";
             await tasks.SetCurrentAgentAsync(context.Task.Id, agent.Name, selectionReason, cancellationToken);
             PipelineStepResult outcome;
-            try { outcome = await RunAsync(context, agent, attempt, selectionReason, cancellationToken); }
+            try { outcome = await RunAsync(context, agent, attempt, reviewTaskClass, selectionReason, cancellationToken); }
             finally { await tasks.SetCurrentAgentAsync(context.Task.Id, null, null, cancellationToken); }
 
             if (outcome.Outcome != PipelineOutcome.Failed) return outcome;
@@ -57,11 +61,11 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
         return PipelineStepResult.Ok;
     }
 
-    private async Task<PipelineStepResult> RunAsync(PipelineContext context, IAgentRunner agent, int attempt, string selectionReason, CancellationToken cancellationToken)
+    private async Task<PipelineStepResult> RunAsync(PipelineContext context, IAgentRunner agent, int attempt, string taskClass, string selectionReason, CancellationToken cancellationToken)
     {
         var stepId = await tasks.StartStepAsync(context.RunId, "AgentReview", attempt, cancellationToken);
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
-        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, attempt, logPath, Purpose: AgentRunPurpose.Review), cancellationToken);
+        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, attempt, logPath, Purpose: AgentRunPurpose.Review, TaskClass: taskClass), cancellationToken);
 
         var review = result.ReviewResult;
         var validReview = review?.Status is "completed" or "blocked" or "needs-human";
@@ -70,8 +74,8 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
             result.Process.Succeeded && !result.QuotaDetected && validReview ? "Succeeded" : "Failed",
             result.Process.StandardOutput, result.Process.StandardError, result.QuotaDetected, result.QuotaResetAt, attempt,
             review?.NeedsHuman == true || review?.Status is "blocked" or "needs-human", null,
-            CountsAsImplementationAttempt: false, ProviderSessionId: result.ProviderSessionId, Model: agent.Model,
-            ReasoningEffort: agent.ReasoningEffort, SelectionReason: selectionReason, Purpose: "Review"), cancellationToken);
+            CountsAsImplementationAttempt: false, ProviderSessionId: result.ProviderSessionId, Model: result.Model ?? agent.Model,
+            ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort, SelectionReason: selectionReason, Purpose: "Review", TaskClass: taskClass), cancellationToken);
 
         // Quota status is shared with implementation invocations (AgentSelector reads the same record), so a
         // review that hits quota correctly makes that agent unavailable for the task's next implementation

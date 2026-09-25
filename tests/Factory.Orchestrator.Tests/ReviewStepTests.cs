@@ -132,26 +132,27 @@ public sealed class ReviewStepTests
     }
 
     [Fact]
-    public async Task Review_uses_its_configured_Sol_preset_independently_of_a_Luna_implementation_route()
+    public async Task Review_uses_its_configured_deep_class_independently_of_implementation()
     {
         var store = new FakeTaskStore();
-        var luna = new FakeAgent("Codex-Luna", _ => throw new InvalidOperationException("implementation preset must not be selected for review"), "gpt-5.6-luna", "max");
-        var solInvoked = false;
+        string? requestedClass = null;
         var review = new AgentReviewResult("completed", "Fine", [], false, null);
-        var sol = new FakeAgent("Codex-Sol", _ =>
+        var codex = new FakeAgent("Codex", request =>
         {
-            solInvoked = true;
-            return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: review));
-        }, "gpt-5.6-sol", "medium");
-        var step = new ReviewStep(store, new AgentSelector([luna, sol], store),
-            Options.Create(new FactoryOptions { ReviewPreferredAgent = "Codex-Sol" }), NullLogger<ReviewStep>.Instance);
+            requestedClass = request.TaskClass;
+            return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: review,
+                Model: "gpt-5.6-sol", ReasoningEffort: "medium"));
+        });
+        var step = new ReviewStep(store, new AgentSelector([codex], store),
+            Options.Create(new FactoryOptions { ReviewPreferredAgent = "Codex", ReviewTaskClass = "deep" }), NullLogger<ReviewStep>.Instance);
 
-        var result = await step.ExecuteAsync(Context(preferredAgent: "Codex-Luna"), CancellationToken.None);
+        var result = await step.ExecuteAsync(Context(preferredAgent: "Codex"), CancellationToken.None);
 
         Assert.Equal(PipelineOutcome.Succeeded, result.Outcome);
-        Assert.True(solInvoked);
+        Assert.Equal("deep", requestedClass);
         var invocation = Assert.Single(store.AgentRuns);
-        Assert.Equal("Codex-Sol", invocation.Agent);
+        Assert.Equal("Codex", invocation.Agent);
+        Assert.Equal("deep", invocation.TaskClass);
         Assert.Equal("gpt-5.6-sol", invocation.Model);
         Assert.Equal("medium", invocation.ReasoningEffort);
         Assert.Contains("independently", invocation.SelectionReason);

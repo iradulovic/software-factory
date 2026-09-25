@@ -15,6 +15,7 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
         // transient unavailability — failing clearly here beats AgentSelector silently falling back to whatever
         // else is configured as if no preference had been set at all.
         var preferred = context.Task.PreferredAgent;
+        var taskClass = context.Task.TaskClass ?? "quick";
         if (context.Task.AgentRoutingError is not null)
             return PipelineStepResult.NeedsHuman($"Agent routing configuration error: {context.Task.AgentRoutingError}");
 
@@ -24,13 +25,16 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
                 $"Preferred agent/preset '{preferred}' is not configured. Configured options: {string.Join(", ", selector.KnownAgentNames)}.");
         }
 
-        var agent = await selector.SelectAsync(preferred, cancellationToken);
-        if (agent is null) return PipelineStepResult.WaitingForQuota("All configured agents are paused or at quota.");
+        if (!selector.HasSupportingAgent(taskClass))
+            return PipelineStepResult.NeedsHuman($"No configured agent supports coding class '{taskClass}'.");
+
+        var agent = await selector.SelectAsync(preferred, cancellationToken, taskClass);
+        if (agent is null) return PipelineStepResult.WaitingForQuota($"No configured agent supporting coding class '{taskClass}' is available (paused or at quota).");
         var selectionReason = preferred is null
-            ? $"Selected '{agent.Name}' from configured profile order; the task has no preferred preset."
+            ? $"Selected '{agent.Name}' for coding class '{taskClass}' from configured provider order."
             : string.Equals(preferred, agent.Name, StringComparison.OrdinalIgnoreCase)
-                ? context.Task.PreferredAgentReason ?? $"Selected the task's preferred preset '{preferred}'."
-                : $"Provider fallback selected '{agent.Name}' instead of '{preferred}' because the preferred provider is paused or at quota.";
+                ? context.Task.PreferredAgentReason ?? $"Selected the task's preferred provider '{preferred}' for coding class '{taskClass}'."
+                : $"Provider fallback selected '{agent.Name}' instead of '{preferred}' for coding class '{taskClass}' because the preferred provider is paused, at quota, or does not support the class.";
 
         // Persisted from the moment the agent is actually selected — before it runs, not only once it finishes —
         // so a task currently mid-invocation is correctly attributed to the agent really running it, including
@@ -55,7 +59,8 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
         // a fallback to a different agent (quota, pause) always gets a fresh invocation, exactly as before this
         // task, since a different provider's CLI cannot use another provider's private session id.
         var resumeSessionId = context.Task.ResumableSessionAgent == agent.Name ? context.Task.ResumableSessionId : null;
-        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath, resumeSessionId), cancellationToken);
+        var taskClass = context.Task.TaskClass ?? "quick";
+        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath, resumeSessionId, TaskClass: taskClass), cancellationToken);
         // A quota-interrupted invocation never got a real chance to implement anything, so it is excluded from
         // the implementation-attempt budget (CountAgentRunsAsync) even though it stays recorded here in full.
         await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), context.Task.Id, context.RunId, stepId, agent.Name, result.Process.StartedAt,
@@ -63,7 +68,8 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
             result.Process.Succeeded ? "Succeeded" : "Failed", result.Process.StandardOutput, result.Process.StandardError,
             result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result,
             CountsAsImplementationAttempt: !result.QuotaDetected, ProviderSessionId: result.ProviderSessionId,
-            Model: agent.Model, ReasoningEffort: agent.ReasoningEffort, SelectionReason: selectionReason), cancellationToken);
+            Model: result.Model ?? agent.Model, ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort,
+            SelectionReason: selectionReason, TaskClass: taskClass), cancellationToken);
 
         // Quota status is persisted independently of this task's run: every invocation updates it, whether or not
         // quota was detected, so a status that cleared is reflected immediately for AgentSelector rather than only

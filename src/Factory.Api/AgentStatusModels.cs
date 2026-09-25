@@ -49,8 +49,8 @@ public static class AgentOperationalStateResolver
     /// <param name="isPaused">Whether the operator has paused this specific agent (SF-610).</param>
     /// <param name="isAtQuota">The independently persisted current quota status for this agent.</param>
     /// <param name="isBusy">Whether a task is currently invoking this agent right now.</param>
-    /// <param name="hasSuccessfulRunForProfile">Whether this exact profile has ever completed a successful invocation.
-    /// A different preset, or a legacy profile name, does not count.</param>
+    /// <param name="hasSuccessfulRunForProfile">Whether this provider has ever completed a successful invocation,
+    /// including historical Codex preset names. This verifies provider readiness, not a particular model.</param>
     public static AgentOperationalState Resolve(bool availabilityCheckSucceeded, bool availabilityCheckErrored, bool isPaused, bool isAtQuota, bool isBusy, bool hasSuccessfulRunForProfile)
     {
         if (availabilityCheckErrored) return AgentOperationalState.Unknown;

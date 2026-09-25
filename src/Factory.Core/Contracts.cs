@@ -4,13 +4,10 @@ public interface IClock { DateTimeOffset UtcNow { get; } }
 public interface IProcessRunner { Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken); }
 public interface IAgentRunner
 {
-    /// <summary>Matches <see cref="AgentProfile.Name"/> and <see cref="FactoryTask.PreferredAgent"/>. A preset
-    /// (SF-704) is just another configured profile with its own <see cref="Name"/> — e.g. "Codex-High" — so
-    /// selecting it and recording which settings actually ran (<see cref="AgentRunRecord.Agent"/>) reuse this
-    /// same field, no separate preset concept required.</summary>
+    /// <summary>Provider-level operational name. Task class and actual model are recorded separately.</summary>
     string Name { get; }
 
-    /// <summary>The configured model for this invocation preset, when the runner has a model setting.</summary>
+    /// <summary>The base profile's model, when one is configured. The invocation result records the actual model.</summary>
     string? Model => null;
 
     /// <summary>The configured reasoning effort for this invocation preset, when applicable.</summary>
@@ -25,6 +22,8 @@ public interface IAgentRunner
     /// <summary>Whether dispatch may select this runner as an automatic fallback when another profile is unavailable.
     /// Explicitly preferred profiles remain selectable regardless of this value.</summary>
     bool AllowAutomaticFallback => true;
+
+    bool SupportsTaskClass(string taskClass) => true;
 
     Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken);
 }
