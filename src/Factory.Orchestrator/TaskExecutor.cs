@@ -72,6 +72,17 @@ public sealed class TaskExecutor(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // The operator may persist a stop request between two steps, racing the next transition. Treat that
+            // expected lost-state race like token cancellation so it cannot be reported as a failed task or run.
+            var cancellationRequested = false;
+            try { cancellationRequested = await tasks.IsCancellationRequestedAsync(task.Id, CancellationToken.None); }
+            catch (Exception checkError) when (checkError is not OperationCanceledException)
+            {
+                logger.LogDebug(checkError, "Could not confirm a stop request after task {TaskId} failed", task.Id);
+            }
+            if (cancellationRequested)
+                throw new OperationCanceledException($"Task {task.Id} has a persisted stop request.", ex, cancellationToken);
+
             logger.LogError(ex, "Task {TaskId} failed in run {RunId}", task.Id, runId);
             await MarkFailedAsync(context, ex.Message, cancellationToken);
             await tasks.CloseExecutionAsync(runId, ExecutionStatus.Failed, ex.Message, cancellationToken);

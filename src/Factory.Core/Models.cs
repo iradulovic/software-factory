@@ -5,8 +5,10 @@ namespace Factory.Core;
 public enum FactoryTaskStatus
 {
     Pending, Claimed, Preparing, Planning, Implementing, Validating, Reviewing,
-    ReadyForPublish, Published, WaitingForQuota, NeedsHuman, Completed, Rejected, Failed, Cancelled
+    ReadyForPublish, Published, WaitingForQuota, NeedsHuman, Completed, Rejected, Failed, Stopping, Cancelled
 }
+
+public enum TaskCancellationOutcome { Stopping, Cancelled, NotCancellable }
 
 public enum ExecutionStatus { Pending, Running, Succeeded, Failed, Cancelled }
 
@@ -67,7 +69,7 @@ public static class TrackerSectionMapper
     {
         FactoryTaskStatus.Pending => TrackerSection.NextUp,
         FactoryTaskStatus.Claimed or FactoryTaskStatus.Preparing or FactoryTaskStatus.Planning or
-            FactoryTaskStatus.Implementing or FactoryTaskStatus.Validating or FactoryTaskStatus.Reviewing or
+        FactoryTaskStatus.Implementing or FactoryTaskStatus.Validating or FactoryTaskStatus.Reviewing or FactoryTaskStatus.Stopping or
             FactoryTaskStatus.ReadyForPublish or FactoryTaskStatus.Published or FactoryTaskStatus.WaitingForQuota => TrackerSection.InProgress,
         FactoryTaskStatus.Completed => TrackerSection.Completed,
         FactoryTaskStatus.NeedsHuman or FactoryTaskStatus.Rejected or FactoryTaskStatus.Failed or FactoryTaskStatus.Cancelled => TrackerSection.Blocked,

@@ -60,6 +60,46 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task A_stop_request_during_agent_execution_cancels_the_step_and_prevents_publication()
+    {
+        var harness = new Harness { WaitForAgentCancellation = true };
+        using var execution = new CancellationTokenSource();
+        var run = harness.ExecuteAsync(execution.Token);
+        await harness.AgentStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(TaskCancellationOutcome.Stopping, await harness.Store.CancelAsync(harness.ClaimedTask.Id, CancellationToken.None));
+        execution.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run);
+
+        var runId = Assert.Single(harness.Store.Runs.Keys);
+        Assert.True(await harness.Store.FinalizeCancellationAsync(harness.ClaimedTask.Id, runId, "Stopped by operator", CancellationToken.None));
+        Assert.Equal(ExecutionStatus.Cancelled, harness.Store.Runs[runId]);
+        Assert.Equal(ExecutionStatus.Cancelled, harness.Store.Step("AgentImplementation").Status);
+        Assert.Empty(harness.Store.PublicationRequests);
+        Assert.Equal(FactoryTaskStatus.Cancelled, harness.Store.Status);
+    }
+
+    [Fact]
+    public async Task A_stop_request_during_validation_cancels_the_validation_step_and_prevents_publication()
+    {
+        var harness = new Harness { WaitForValidationCancellation = true };
+        using var execution = new CancellationTokenSource();
+        var run = harness.ExecuteAsync(execution.Token);
+        await harness.ValidationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(TaskCancellationOutcome.Stopping, await harness.Store.CancelAsync(harness.ClaimedTask.Id, CancellationToken.None));
+        execution.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run);
+
+        var runId = Assert.Single(harness.Store.Runs.Keys);
+        Assert.True(await harness.Store.FinalizeCancellationAsync(harness.ClaimedTask.Id, runId, "Stopped by operator", CancellationToken.None));
+        Assert.Equal(ExecutionStatus.Cancelled, harness.Store.Runs[runId]);
+        Assert.Equal(ExecutionStatus.Cancelled, harness.Store.Step("Build").Status);
+        Assert.Empty(harness.Store.PublicationRequests);
+        Assert.Equal(FactoryTaskStatus.Cancelled, harness.Store.Status);
+    }
+
+    [Fact]
     public async Task PreparePublication_persists_the_effective_merge_policy_from_repository_configuration()
     {
         // SF-709: the default Harness configuration requires human merge and the issue carries no marker, so
@@ -702,6 +742,10 @@ public sealed class TaskExecutorTests
         public string CommandFailureOutput { get; init; } = "boom";
         public Exception? WorktreeFailure { get; init; }
         public Exception? AgentThrows { get; init; }
+        public bool WaitForAgentCancellation { get; init; }
+        public bool WaitForValidationCancellation { get; init; }
+        public TaskCompletionSource AgentStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ValidationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string? ConfigurationBaseRef { get; private set; }
         public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
         public string? PreferredAgent { get; init; }
@@ -736,7 +780,7 @@ public sealed class TaskExecutorTests
         public static AgentRunRecord PriorAgentRun(Guid taskId) => new(Guid.NewGuid(), taskId, Guid.NewGuid(), Guid.NewGuid(), "Codex",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1.0, 1, "Failed", null, "boom", false, null, 1, false, null);
 
-        public async Task<Guid> ExecuteAsync()
+        public async Task<Guid> ExecuteAsync(CancellationToken cancellationToken = default)
         {
             var runId = await Store.StartRunAsync(ClaimedTask.Id, "worker", CancellationToken.None);
             var executor = new TaskExecutor(Store,
@@ -751,7 +795,7 @@ public sealed class TaskExecutorTests
                 new ReviewStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), NullLogger<ReviewStep>.Instance),
                 new TaskGitHubNotifier(Store, new FakeGitHubPublisher(this), Options.Create(new FactoryOptions()), NullLogger<TaskGitHubNotifier>.Instance),
                 NullLogger<TaskExecutor>.Instance);
-            await executor.ExecuteAsync(ClaimedTask, runId, CancellationToken.None);
+            await executor.ExecuteAsync(ClaimedTask, runId, cancellationToken);
             return runId;
         }
 
@@ -807,9 +851,17 @@ public sealed class TaskExecutorTests
             {
                 harness.RecordAgentInvocation(name, request);
                 if (harness.AgentThrows is not null) throw harness.AgentThrows;
+                if (harness.WaitForAgentCancellation) return WaitForCancellationAsync(harness.AgentStarted, cancellationToken);
                 if (request.Purpose == AgentRunPurpose.Review)
                     return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: harness.ReviewAgentResult));
                 return Task.FromResult(harness.AgentResult);
+            }
+
+            private static async Task<AgentRunResult> WaitForCancellationAsync(TaskCompletionSource started, CancellationToken cancellationToken)
+            {
+                started.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                throw new InvalidOperationException("A cancelled agent invocation must not return successfully.");
             }
         }
 
@@ -837,12 +889,17 @@ public sealed class TaskExecutorTests
 
         private sealed class FakeProcessRunner(Harness harness) : IProcessRunner
         {
-            public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
+            public async Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
             {
                 harness.Commands.Add(request);
+                if (harness.WaitForValidationCancellation)
+                {
+                    harness.ValidationStarted.TrySetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
                 var succeeds = harness.CommandSucceeds(request);
                 var start = DateTimeOffset.UtcNow;
-                return Task.FromResult(new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, start.AddSeconds(1), succeeds ? 0 : 1, "output", succeeds ? "" : harness.CommandFailureOutput, false, false));
+                return new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, start.AddSeconds(1), succeeds ? 0 : 1, "output", succeeds ? "" : harness.CommandFailureOutput, false, false);
             }
         }
 

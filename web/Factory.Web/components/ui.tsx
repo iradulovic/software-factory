@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiBase } from "@/lib/api";
 
 export function Badge({ value }: { value: string }) {
-  const tone = /Completed|Succeeded|Ready/.test(value) ? "green" : /Failed|Cancelled|Rejected/.test(value) ? "red" : /Pending|Waiting/.test(value) ? "amber" : "blue";
+  const tone = /Completed|Succeeded|Ready/.test(value) ? "green" : /Failed|Cancelled|Rejected/.test(value) ? "red" : /Pending|Waiting|Stopping/.test(value) ? "amber" : "blue";
   return <span className={`badge ${tone}`}>{value.replace(/([a-z])([A-Z])/g, "$1 $2")}</span>;
 }
 const agentStateTones: Record<string, string> = { Unavailable: "red", Unknown: "amber", QuotaBlocked: "amber", Installed: "amber", Busy: "blue", Verified: "green" };

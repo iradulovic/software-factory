@@ -19,6 +19,19 @@ public sealed class LeaseMonitorTests
     }
 
     [Fact]
+    public async Task Persisted_stop_request_cancels_execution_without_waiting_for_the_next_lease_renewal()
+    {
+        var store = new FakeTaskStore { CancellationRequested = true };
+        using var execution = new CancellationTokenSource();
+
+        var monitoring = Monitor(store, leaseSeconds: 600).MonitorAsync(Guid.NewGuid(), execution);
+
+        Assert.True(await WaitUntilAsync(() => execution.IsCancellationRequested, TimeSpan.FromSeconds(3)));
+        await monitoring;
+        Assert.Empty(store.Heartbeats);
+    }
+
+    [Fact]
     public async Task Transient_renewal_failure_is_retried_while_the_lease_is_still_valid()
     {
         var calls = 0;

@@ -35,17 +35,23 @@ public sealed class ProcessRunnerTests
         var runner = new ProcessRunner(new SystemClock());
         using var cts = new CancellationTokenSource();
         var marker = Path.Combine(Path.GetTempPath(), $"factory-process-cancel-{Guid.NewGuid():N}");
+        var started = marker + "-started";
 
-        var run = runner.RunAsync(new ProcessRequest("sh", ["-c", $"sleep 30; touch {marker}"], "."), cts.Token);
+        var run = runner.RunAsync(new ProcessRequest("sh", ["-c", $"touch '{started}'; sleep 30; touch '{marker}'"], "."), cts.Token);
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (!File.Exists(started) && DateTimeOffset.UtcNow < deadline) await Task.Delay(20);
+        var commandStarted = File.Exists(started);
         cts.Cancel();
 
         var result = await run;
 
+        Assert.True(commandStarted, "The command must be running before its cancellation token is signalled.");
         Assert.True(result.Cancelled);
         Assert.False(result.TimedOut);
         Assert.False(result.Succeeded);
         await Task.Delay(TimeSpan.FromSeconds(1));
         Assert.False(File.Exists(marker));
+        File.Delete(started);
     }
 
     [Fact]
