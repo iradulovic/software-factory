@@ -23,7 +23,7 @@ The initial goal is to create a controlled, observable system capable of:
 7. preparing changes for publication to GitHub,
 8. measuring how much useful development work can be obtained from basic ChatGPT Plus and Claude Pro subscriptions.
 
-Human approval remains required before merging pull requests.
+The initial bootstrap required human approval before merge. SF-709 later added per-repository CI-triggered automatic merge: requireHumanMerge defaults to true when omitted, false opts in, and a HUMAN REVIEW issue marker always forces human merge.
 
 ---
 
@@ -1240,11 +1240,11 @@ For V1:
 - run only trusted repositories,
 - do not expose secrets in prompts,
 - do not store subscription credentials,
-- do not allow automatic merges,
+- allow automatic merging only for factory-created, independently validated pull requests when the repository opts in and the originating issue has no HUMAN REVIEW marker,
 - do not allow force pushes,
 - do not allow arbitrary GitHub administrative actions.
 
-Human approval is required for merging.
+A HUMAN REVIEW marker always requires human merge; otherwise the captured repository policy determines whether CI-green factory pull requests may auto-merge.
 
 ---
 
@@ -1290,7 +1290,7 @@ V1:
 
 ```text
 Implementation: Codex
-Human merge: required
+Human merge: repository-configurable after SF-709; omitted requireHumanMerge still requires a human
 Concurrency: 1
 Retries: maximum 2
 ```
