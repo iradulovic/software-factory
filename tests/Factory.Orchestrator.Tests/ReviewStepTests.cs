@@ -7,10 +7,10 @@ namespace Factory.Orchestrator.Tests;
 
 public sealed class ReviewStepTests
 {
-    private static PipelineContext Context(RepositoryConfiguration? configuration = null)
+    private static PipelineContext Context(RepositoryConfiguration? configuration = null, string? preferredAgent = null)
     {
         var task = new FactoryTask(Guid.NewGuid(), 1, 2, 42, "Add invoice export", "", "GitHubIssue", 0,
-            FactoryTaskStatus.Reviewing, null, "main", "factory/42", "/tmp/worktree", "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null);
+            FactoryTaskStatus.Reviewing, preferredAgent, "main", "factory/42", "/tmp/worktree", "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null);
         var context = new PipelineContext(task, Guid.NewGuid())
         {
             Worktree = new WorktreeLocation("factory/42", "/tmp/worktree"),
@@ -20,7 +20,7 @@ public sealed class ReviewStepTests
     }
 
     private static ReviewStep Step(FakeTaskStore store, params IAgentRunner[] agents) =>
-        new(store, new AgentSelector(agents, store), Options.Create(new FactoryOptions()), NullLogger<ReviewStep>.Instance);
+        new(store, new AgentSelector(agents, store), Options.Create(new FactoryOptions { ReviewPreferredAgent = "Codex" }), NullLogger<ReviewStep>.Instance);
 
     [Fact]
     public async Task No_available_agent_skips_review_without_failing_the_pipeline()
@@ -131,16 +131,46 @@ public sealed class ReviewStepTests
         Assert.Equal(["Codex", null], store.CurrentAgentCalls);
     }
 
+    [Fact]
+    public async Task Review_uses_its_configured_Sol_preset_independently_of_a_Luna_implementation_route()
+    {
+        var store = new FakeTaskStore();
+        var luna = new FakeAgent("Codex-Luna", _ => throw new InvalidOperationException("implementation preset must not be selected for review"), "gpt-5.6-luna", "max");
+        var solInvoked = false;
+        var review = new AgentReviewResult("completed", "Fine", [], false, null);
+        var sol = new FakeAgent("Codex-Sol", _ =>
+        {
+            solInvoked = true;
+            return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: review));
+        }, "gpt-5.6-sol", "medium");
+        var step = new ReviewStep(store, new AgentSelector([luna, sol], store),
+            Options.Create(new FactoryOptions { ReviewPreferredAgent = "Codex-Sol" }), NullLogger<ReviewStep>.Instance);
+
+        var result = await step.ExecuteAsync(Context(preferredAgent: "Codex-Luna"), CancellationToken.None);
+
+        Assert.Equal(PipelineOutcome.Succeeded, result.Outcome);
+        Assert.True(solInvoked);
+        var invocation = Assert.Single(store.AgentRuns);
+        Assert.Equal("Codex-Sol", invocation.Agent);
+        Assert.Equal("gpt-5.6-sol", invocation.Model);
+        Assert.Equal("medium", invocation.ReasoningEffort);
+        Assert.Contains("independently", invocation.SelectionReason);
+        Assert.Equal("Review", invocation.Purpose);
+        Assert.False(invocation.CountsAsImplementationAttempt);
+    }
+
     private static ProcessResult Process(int? exitCode = 0)
     {
         var start = DateTimeOffset.UtcNow;
         return new ProcessResult("codex", [], ".", start, start.AddSeconds(1), exitCode, "", "", false, false);
     }
 
-    private sealed class FakeAgent(string name, Func<AgentRunRequest, Task<AgentRunResult>> run) : IAgentRunner
+    private sealed class FakeAgent(string name, Func<AgentRunRequest, Task<AgentRunResult>> run, string? model = null, string? reasoningEffort = null) : IAgentRunner
     {
         public string Name => name;
-        public string Provider => name;
+        public string Provider => "Codex";
+        public string? Model => model;
+        public string? ReasoningEffort => reasoningEffort;
         public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken) => run(request);
     }
 }

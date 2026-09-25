@@ -12,7 +12,7 @@ using Serilog;
 // hasn't run yet, else the configuration default. Never just the preferred agent, which a fallback can disagree
 // with (SF-609).
 const string TaskAgentExpr = """
-    COALESCE(t.current_agent,(SELECT ar.agent FROM factory.agent_run ar WHERE ar.task_id=t.id ORDER BY ar.started_at DESC LIMIT 1),t.preferred_agent,'Codex')
+    COALESCE(t.current_agent,(SELECT ar.agent FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1),t.preferred_agent,'Codex-Luna')
     """;
 
 const string TaskListSql = $"""
@@ -24,9 +24,23 @@ const string TaskListSql = $"""
            WHEN t.status IN ('Completed','ReadyForPublish','Published') THEN 'Passed'
            WHEN t.status='Rejected' THEN 'Pull request closed without merge'
            WHEN t.status='Cancelled' THEN 'Cancelled' END AS result,
-      EXTRACT(EPOCH FROM (COALESCE(t.completed_at,now())-COALESCE(t.started_at,t.created_at))) AS "durationSeconds"
+      EXTRACT(EPOCH FROM (COALESCE(t.completed_at,now())-COALESCE(t.started_at,t.created_at))) AS "durationSeconds",
+      CASE WHEN t.current_agent IS NULL THEN (SELECT ar.model FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' AND ar.agent={TaskAgentExpr} ORDER BY ar.started_at DESC LIMIT 1) END AS "agentModel",
+      CASE WHEN t.current_agent IS NULL THEN (SELECT ar.reasoning_effort FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' AND ar.agent={TaskAgentExpr} ORDER BY ar.started_at DESC LIMIT 1) END AS "agentReasoningEffort",
+      COALESCE(t.current_agent_reason,(SELECT ar.selection_reason FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1),t.preferred_agent_reason) AS "agentSelectionReason",
+      t.agent_routing_error AS "agentRoutingError"
     FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id LEFT JOIN github.issue i ON i.id=t.github_issue_id
     """;
+
+static TaskResponse AddConfiguredAgentMetadata(TaskResponse task, IEnumerable<IAgentRunner> agents)
+{
+    var profile = agents.FirstOrDefault(agent => string.Equals(agent.Name, task.Agent, StringComparison.OrdinalIgnoreCase));
+    return profile is null ? task : task with
+    {
+        AgentModel = task.AgentModel ?? profile.Model,
+        AgentReasoningEffort = task.AgentReasoningEffort ?? profile.ReasoningEffort
+    };
+}
 
 // "Busy" (ActiveTask) is read from current_agent, the live selected-at-invocation-start signal (SF-609) — never
 // the task's preferred agent, which a fallback run can disagree with.
@@ -79,7 +93,7 @@ app.MapGet("/health", async (NpgsqlDataSource db, CancellationToken ct) =>
     }
 });
 
-app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, IOptions<FactoryOptions> options, CancellationToken ct) =>
+app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, IEnumerable<IAgentRunner> agents, ITaskStore tasks, IOptions<FactoryOptions> options, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
     var metrics = await c.QuerySingleAsync<DashboardMetricsRow>(new CommandDefinition("""
@@ -92,7 +106,7 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvail
           COALESCE(round(100.0 * count(*) FILTER (WHERE status='Completed') / NULLIF(count(*) FILTER (WHERE status IN ('Completed','Failed','Rejected')),0),1),0) AS "SuccessRate"
         FROM factory.task
         """, cancellationToken: ct));
-    var active = (await c.QueryAsync<TaskRow>(new CommandDefinition(TaskListSql + " WHERE t.status IN ('Claimed','Preparing','Implementing','Validating','Reviewing','Stopping') ORDER BY t.started_at DESC LIMIT 8", cancellationToken: ct))).Select(r => r.ToResponse());
+    var active = (await c.QueryAsync<TaskRow>(new CommandDefinition(TaskListSql + " WHERE t.status IN ('Claimed','Preparing','Implementing','Validating','Reviewing','Stopping') ORDER BY t.started_at DESC LIMIT 8", cancellationToken: ct))).Select(r => AddConfiguredAgentMetadata(r.ToResponse(), agents));
     var activity = await c.QueryAsync(new CommandDefinition("SELECT s.step_type AS type,s.status,s.completed_at AS \"occurredAt\",t.title FROM factory.step s JOIN factory.run r ON r.id=s.run_id JOIN factory.task t ON t.id=r.task_id WHERE s.completed_at IS NOT NULL ORDER BY s.completed_at DESC LIMIT 12", cancellationToken: ct));
     var throughput = await c.QueryAsync(new CommandDefinition("SELECT d::date AS day,count(t.id) AS completed FROM generate_series(CURRENT_DATE-6,CURRENT_DATE,'1 day') d LEFT JOIN factory.task t ON t.completed_at::date=d::date GROUP BY d ORDER BY d", cancellationToken: ct));
     var agentStatus = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct);
@@ -164,7 +178,7 @@ app.MapPost("/api/agents/{agent}/clear-quota", async (string agent, ITaskStore t
     return cleared ? Results.NoContent() : Results.NotFound(new { error = $"No quota status recorded for agent '{agent}'." });
 });
 
-app.MapGet("/api/tasks", async (string? status, string? repository, string? agent, string? q, string? sort, string? direction, int? page, int? pageSize, NpgsqlDataSource db, CancellationToken ct) =>
+app.MapGet("/api/tasks", async (string? status, string? repository, string? agent, string? q, string? sort, string? direction, int? page, int? pageSize, NpgsqlDataSource db, IEnumerable<IAgentRunner> agents, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
     var filters = new List<string>();
@@ -178,18 +192,18 @@ app.MapGet("/api/tasks", async (string? status, string? repository, string? agen
     var total = await c.ExecuteScalarAsync<int>(new CommandDefinition(countSql, new { status, repository, agent, q }, cancellationToken: ct));
     var normalizedPage = Math.Min(query.Page, Math.Max(1, (int)Math.Ceiling(total / (double)query.Size)));
     var offset = (normalizedPage - 1) * query.Size;
-    var items = (await c.QueryAsync<TaskRow>(new CommandDefinition(TaskListSql + where + $" ORDER BY {query.SortExpression} {query.Direction}, t.id LIMIT @Size OFFSET @Offset", new { status, repository, agent, q, query.Size, Offset = offset }, cancellationToken: ct))).Select(r => r.ToResponse());
+    var items = (await c.QueryAsync<TaskRow>(new CommandDefinition(TaskListSql + where + $" ORDER BY {query.SortExpression} {query.Direction}, t.id LIMIT @Size OFFSET @Offset", new { status, repository, agent, q, query.Size, Offset = offset }, cancellationToken: ct))).Select(r => AddConfiguredAgentMetadata(r.ToResponse(), agents));
     return Results.Ok(new { items, total, page = normalizedPage, pageSize = query.Size });
 });
 
-app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskStore tasks, CancellationToken ct) =>
+app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskStore tasks, IEnumerable<IAgentRunner> agents, CancellationToken ct) =>
 {
     using var activity = FactoryTelemetry.Source.StartActivity("api.get_task");
     activity?.SetTag("factory.task_id", id);
     await using var c = await db.OpenConnectionAsync(ct);
     var taskRow = await c.QuerySingleOrDefaultAsync<TaskRow>(new CommandDefinition(TaskListSql + " WHERE t.id=@id", new { id }, cancellationToken: ct));
     if (taskRow is null) return Results.NotFound();
-    var task = taskRow.ToResponse();
+    var task = AddConfiguredAgentMetadata(taskRow.ToResponse(), agents);
     var dependencies = await tasks.GetDependenciesAsync(id, ct);
     var issue = await c.QuerySingleOrDefaultAsync(new CommandDefinition("SELECT i.issue_number AS \"issueNumber\",i.title,i.body,i.state,i.author,i.created_at AS \"createdAt\",array_agg(l.name) FILTER (WHERE l.name IS NOT NULL) AS labels FROM github.issue i LEFT JOIN github.issue_label l ON l.issue_id=i.id JOIN factory.task t ON t.github_issue_id=i.id WHERE t.id=@id GROUP BY i.id", new { id }, cancellationToken: ct));
     var comments = await c.QueryAsync(new CommandDefinition("SELECT c.github_comment_id AS \"githubCommentId\",c.author,c.body,c.created_at AS \"createdAt\",c.updated_at AS \"updatedAt\" FROM github.issue_comment c JOIN factory.task t ON t.github_issue_id=c.issue_id WHERE t.id=@id ORDER BY c.created_at", new { id }, cancellationToken: ct));
@@ -200,7 +214,8 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
         """, new { id }, cancellationToken: ct));
     var steps = await c.QueryAsync(new CommandDefinition("SELECT s.id,s.run_id AS \"runId\",s.step_type AS \"stepType\",s.status,s.started_at AS \"startedAt\",s.completed_at AS \"completedAt\",s.duration_ms AS \"durationMs\",s.attempt,s.error,s.output,(s.log_path IS NOT NULL) AS \"hasLog\",(coalesce(length(s.output),0)>=65536) AS \"outputTruncated\" FROM factory.step s JOIN factory.run r ON r.id=s.run_id WHERE r.task_id=@id ORDER BY s.started_at", new { id }, cancellationToken: ct));
     var agentRunRows = await c.QueryAsync<AgentRunDetailsRow>(new CommandDefinition("""
-        SELECT id,run_id AS "RunId",agent,started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
+        SELECT id,run_id AS "RunId",agent,purpose,model,reasoning_effort AS "ReasoningEffort",selection_reason AS "SelectionReason",
+          started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
           exit_code AS "ExitCode",status,stdout,stderr,quota_detected AS "QuotaDetected",attempt_number AS "AttemptNumber",needs_human AS "NeedsHuman",
           result_json::text AS "ResultJson",result_summary AS "ResultSummary",tests_run::text AS "TestsRunJson",tests_passed AS "TestsPassed",
           files_changed::text AS "FilesChangedJson",risks::text AS "RisksJson",human_reason AS "HumanReason"
@@ -446,7 +461,8 @@ app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancellat
     if (run is null) return Results.NotFound();
     var steps = await c.QueryAsync(new CommandDefinition("SELECT id,run_id AS \"runId\",step_type AS \"stepType\",status,started_at AS \"startedAt\",completed_at AS \"completedAt\",duration_ms AS \"durationMs\",attempt,error,output,(log_path IS NOT NULL) AS \"hasLog\",(coalesce(length(output),0)>=65536) AS \"outputTruncated\" FROM factory.step WHERE run_id=@id ORDER BY started_at,id", new { id }, cancellationToken: ct));
     var agentRunRows = await c.QueryAsync<AgentRunDetailsRow>(new CommandDefinition("""
-        SELECT id,run_id AS "RunId",agent,started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
+        SELECT id,run_id AS "RunId",agent,purpose,model,reasoning_effort AS "ReasoningEffort",selection_reason AS "SelectionReason",
+          started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
           exit_code AS "ExitCode",status,stdout,stderr,quota_detected AS "QuotaDetected",attempt_number AS "AttemptNumber",needs_human AS "NeedsHuman",
           result_json::text AS "ResultJson",result_summary AS "ResultSummary",tests_run::text AS "TestsRunJson",tests_passed AS "TestsPassed",
           files_changed::text AS "FilesChangedJson",risks::text AS "RisksJson",human_reason AS "HumanReason"

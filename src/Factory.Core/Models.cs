@@ -109,7 +109,9 @@ public sealed record FactoryTask(
     DateTimeOffset? FailedAt,
     string? FailureReason,
     string? ResumableSessionId = null,
-    string? ResumableSessionAgent = null);
+    string? ResumableSessionAgent = null,
+    string? PreferredAgentReason = null,
+    string? AgentRoutingError = null);
 
 /// <param name="LastSyncedAt">The point in time through which this repository's issues are known to be fully
 /// synchronized, used as the incremental sync checkpoint; <see langword="null"/> before the first sync.</param>
@@ -134,7 +136,8 @@ public sealed record FactoryStep(Guid Id, Guid RunId, string StepType, Execution
 public sealed record AgentRunRecord(Guid Id, Guid TaskId, Guid RunId, Guid StepId, string Agent, DateTimeOffset StartedAt,
     DateTimeOffset? CompletedAt, double? DurationSeconds, int? ExitCode, string Status, string? StandardOutput,
     string? StandardError, bool QuotaDetected, DateTimeOffset? QuotaResetAt, int AttemptNumber, bool NeedsHuman, AgentResult? Result,
-    bool CountsAsImplementationAttempt = true, string? ProviderSessionId = null);
+    bool CountsAsImplementationAttempt = true, string? ProviderSessionId = null, string? Model = null,
+    string? ReasoningEffort = null, string? SelectionReason = null, string Purpose = "Implement");
 
 /// <param name="LogPath">When set, stdout and stderr are streamed to this file as the process runs, interleaved
 /// in arrival order, in addition to the bounded preview <see cref="ProcessResult"/> always returns.</param>
@@ -560,7 +563,9 @@ public sealed record AgentProfile(
     bool SupportsSessionResume = false,
     IReadOnlyList<string>? ResumeArguments = null,
     string? SessionIdPattern = null,
-    string? Provider = null)
+    string? Provider = null,
+    string? Model = null,
+    string? ReasoningEffort = null)
 {
     /// <summary>The effective provider key for quota/pause/availability grouping — <see cref="Provider"/> if set,
     /// otherwise <see cref="Name"/> (SF-704).</summary>

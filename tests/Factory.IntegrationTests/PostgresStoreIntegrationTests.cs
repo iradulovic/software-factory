@@ -699,7 +699,7 @@ public sealed class PostgresStoreIntegrationTests
 
             // A second attempt is now actively invoking Codex again: the live in-flight signal takes priority
             // over history, so the task is correctly attributed to whoever is actually running it right now.
-            await fixture.Tasks.SetCurrentAgentAsync(fixture.TaskId, "Codex", CancellationToken.None);
+            await fixture.Tasks.SetCurrentAgentAsync(fixture.TaskId, "Codex", "test selection", CancellationToken.None);
             Assert.Equal("Codex", await ResolveAgentAsync(fixture));
 
             // Any status transition clears the live signal, so a finished invocation never looks permanently busy.
@@ -726,7 +726,7 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Equal(fixture.TaskId, claimed?.Id);
             await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Claimed, FactoryTaskStatus.Preparing, null, CancellationToken.None);
             await fixture.Tasks.TransitionAsync(fixture.TaskId, FactoryTaskStatus.Preparing, FactoryTaskStatus.Implementing, null, CancellationToken.None);
-            await fixture.Tasks.SetCurrentAgentAsync(fixture.TaskId, "Codex", CancellationToken.None);
+            await fixture.Tasks.SetCurrentAgentAsync(fixture.TaskId, "Codex", "test selection", CancellationToken.None);
             // Simulate the worker crashing mid-invocation, exactly like the existing abandoned-execution scenario.
             await fixture.Connection.ExecuteAsync("UPDATE factory.task SET lease_until=now()-interval '1 minute' WHERE id=@TaskId", new { fixture.TaskId });
 
@@ -780,6 +780,8 @@ public sealed class PostgresStoreIntegrationTests
             Assert.NotNull(claimed);
             Assert.Equal(issueId, claimed.GitHubIssueId);
             Assert.Equal(FactoryTaskStatus.Claimed, claimed.Status);
+            Assert.Equal(CodexIssueRouter.LunaPreset, claimed.PreferredAgent);
+            Assert.Contains("defaulted", claimed.PreferredAgentReason, StringComparison.OrdinalIgnoreCase);
 
             var runId = await tasks.StartRunAsync(claimed.Id, "integration-worker", CancellationToken.None);
             var stepId = await tasks.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
@@ -787,15 +789,20 @@ public sealed class PostgresStoreIntegrationTests
                 ["src/Feature.cs"], ["Manual rollout"], true, "Approve deployment");
             var agentStartedAt = DateTimeOffset.UtcNow;
             await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), claimed.Id, runId, stepId, "Codex", agentStartedAt,
-                agentStartedAt.AddSeconds(1), 1, 0, "Succeeded", "output", "", false, null, 1, true, agentResult), CancellationToken.None);
+                agentStartedAt.AddSeconds(1), 1, 0, "Succeeded", "output", "", false, null, 1, true, agentResult,
+                Model: "gpt-5.6-luna", ReasoningEffort: "max", SelectionReason: "Default Codex route", Purpose: "Implement"), CancellationToken.None);
 
-            var persisted = await connection.QuerySingleAsync<(string Summary, string Files, string Risks, string HumanReason)>(
-                "SELECT result_summary,files_changed::text,risks::text,human_reason FROM factory.agent_run WHERE task_id=@taskId",
+            var persisted = await connection.QuerySingleAsync<(string Summary, string Files, string Risks, string HumanReason, string Model, string Effort, string SelectionReason, string Purpose)>(
+                "SELECT result_summary,files_changed::text,risks::text,human_reason,model,reasoning_effort,selection_reason,purpose FROM factory.agent_run WHERE task_id=@taskId",
                 new { taskId = claimed.Id });
             Assert.Equal("Review required", persisted.Summary);
             Assert.Contains("src/Feature.cs", persisted.Files);
             Assert.Contains("Manual rollout", persisted.Risks);
             Assert.Equal("Approve deployment", persisted.HumanReason);
+            Assert.Equal("gpt-5.6-luna", persisted.Model);
+            Assert.Equal("max", persisted.Effort);
+            Assert.Equal("Default Codex route", persisted.SelectionReason);
+            Assert.Equal("Implement", persisted.Purpose);
         }
         finally
         {
@@ -2278,6 +2285,12 @@ public sealed class PostgresStoreIntegrationTests
             Assert.Equal(0, await tasks.CountAgentRunsAsync(taskId, CancellationToken.None));
             Assert.Equal(3, await tasks.CountQuotaInterruptionsAsync(taskId, CancellationToken.None));
             Assert.Null(await tasks.GetPreviousAttemptAsync(taskId, CancellationToken.None));
+
+            var reviewStepId = await tasks.StartStepAsync(runId, "AgentReview", 1, CancellationToken.None);
+            await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), taskId, runId, reviewStepId, "Codex-Sol",
+                now.AddMinutes(-6), now.AddMinutes(-6), 0, 0, "Succeeded", "review", "", false, null, 1, false, null,
+                CountsAsImplementationAttempt: false, Model: "gpt-5.6-sol", ReasoningEffort: "medium", Purpose: "Review"), CancellationToken.None);
+            Assert.Equal(3, await tasks.CountQuotaInterruptionsAsync(taskId, CancellationToken.None));
 
             // A genuine, failed implementation attempt after those interruptions does count, and is what
             // GetPreviousAttemptAsync reports even though the quota interruptions above are more recent overall.

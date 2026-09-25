@@ -15,6 +15,9 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
         // transient unavailability — failing clearly here beats AgentSelector silently falling back to whatever
         // else is configured as if no preference had been set at all.
         var preferred = context.Task.PreferredAgent;
+        if (context.Task.AgentRoutingError is not null)
+            return PipelineStepResult.NeedsHuman($"Agent routing configuration error: {context.Task.AgentRoutingError}");
+
         if (preferred is not null && !selector.KnownAgentNames.Contains(preferred, StringComparer.OrdinalIgnoreCase))
         {
             return PipelineStepResult.NeedsHuman(
@@ -23,23 +26,28 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
 
         var agent = await selector.SelectAsync(preferred, cancellationToken);
         if (agent is null) return PipelineStepResult.WaitingForQuota("All configured agents are paused or at quota.");
+        var selectionReason = preferred is null
+            ? $"Selected '{agent.Name}' from configured profile order; the task has no preferred preset."
+            : string.Equals(preferred, agent.Name, StringComparison.OrdinalIgnoreCase)
+                ? context.Task.PreferredAgentReason ?? $"Selected the task's preferred preset '{preferred}'."
+                : $"Provider fallback selected '{agent.Name}' instead of '{preferred}' because the preferred provider is paused or at quota.";
 
         // Persisted from the moment the agent is actually selected — before it runs, not only once it finishes —
         // so a task currently mid-invocation is correctly attributed to the agent really running it, including
         // after a fallback away from the task's own PreferredAgent. Always cleared once this invocation is done,
         // whichever way it ends, so "busy" never outlives the actual invocation.
-        await tasks.SetCurrentAgentAsync(context.Task.Id, agent.Name, cancellationToken);
+        await tasks.SetCurrentAgentAsync(context.Task.Id, agent.Name, selectionReason, cancellationToken);
         try
         {
-            return await RunAsync(context, agent, cancellationToken);
+            return await RunAsync(context, agent, selectionReason, cancellationToken);
         }
         finally
         {
-            await tasks.SetCurrentAgentAsync(context.Task.Id, null, cancellationToken);
+            await tasks.SetCurrentAgentAsync(context.Task.Id, null, null, cancellationToken);
         }
     }
 
-    private async Task<PipelineStepResult> RunAsync(PipelineContext context, IAgentRunner agent, CancellationToken cancellationToken)
+    private async Task<PipelineStepResult> RunAsync(PipelineContext context, IAgentRunner agent, string selectionReason, CancellationToken cancellationToken)
     {
         var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", context.AttemptNumber, cancellationToken);
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
@@ -54,7 +62,8 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
             result.Process.CompletedAt, result.Process.Duration.TotalSeconds, result.Process.ExitCode,
             result.Process.Succeeded ? "Succeeded" : "Failed", result.Process.StandardOutput, result.Process.StandardError,
             result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result,
-            CountsAsImplementationAttempt: !result.QuotaDetected, ProviderSessionId: result.ProviderSessionId), cancellationToken);
+            CountsAsImplementationAttempt: !result.QuotaDetected, ProviderSessionId: result.ProviderSessionId,
+            Model: agent.Model, ReasoningEffort: agent.ReasoningEffort, SelectionReason: selectionReason), cancellationToken);
 
         // Quota status is persisted independently of this task's run: every invocation updates it, whether or not
         // quota was detected, so a status that cleared is reflected immediately for AgentSelector rather than only

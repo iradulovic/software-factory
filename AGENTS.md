@@ -178,6 +178,10 @@ change base branches
 push directly to protected branches
 ```
 
+### Local Git metadata permissions
+
+When workspace permissions identify `.git` as read-only, run Git operations that update refs, the index, objects, or worktree metadata — including `fetch`, branch creation/switching, `add`, `commit`, `rebase`, and `push` — through the elevated host context from the outset. Keep read-only inspection in the normal context. If a non-destructive Git write unexpectedly hits a sandbox permission error, retry that exact operation once in the elevated host context with a scoped justification; do not repeat it in the sandbox or work around it by changing permissions or editing `.git` manually. Remote writes still require explicit user authorization and follow the GitHub CLI authentication rule below.
+
 ---
 
 # GitHub CLI
