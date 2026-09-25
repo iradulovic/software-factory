@@ -1,3 +1,5 @@
+using Factory.Core;
+
 public sealed class AgentStatsRow
 {
     public string? ActiveTask { get; init; }
@@ -76,3 +78,26 @@ public sealed record AgentStatus(
     string Agent, string State, string? Version, string? Error, string? ActiveTask,
     int RunsToday, int SuccessfulRuns, DateTimeOffset? QuotaDetectedAt,
     DateTimeOffset? QuotaResetAt, string? QuotaWindow, string? QuotaResetKind, string? PauseReason);
+
+public sealed record GitHubStatus(string State, string? Error);
+
+public static class GitHubStatusResolver
+{
+    public static async Task<GitHubStatus> ResolveAsync(IGitHubAvailabilityChecker checker, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return FromAvailability(await checker.CheckAsync(cancellationToken));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return FromUnexpectedError();
+        }
+    }
+
+    public static GitHubStatus FromAvailability(GitHubAvailability availability) =>
+        new(availability.State.ToString(), availability.Error);
+
+    public static GitHubStatus FromUnexpectedError() =>
+        new(nameof(GitHubAvailabilityState.Unknown), "GitHub availability check failed unexpectedly");
+}

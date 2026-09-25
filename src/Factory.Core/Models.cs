@@ -181,6 +181,10 @@ public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, 
 
 public sealed record AgentAvailability(string Agent, bool Available, string? Version, string? Error);
 
+public enum GitHubAvailabilityState { Available, Unavailable, Unknown }
+
+public sealed record GitHubAvailability(GitHubAvailabilityState State, string? Error);
+
 /// <summary>An agent's current quota status, persisted independently of any particular task or run — the state
 /// <see cref="ITaskStore.IsAgentAtQuotaAsync"/> actually consults. Updated after every invocation of the agent,
 /// whether or not quota was detected, so a status that cleared is reflected immediately rather than only by

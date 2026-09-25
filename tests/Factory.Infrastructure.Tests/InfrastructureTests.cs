@@ -117,6 +117,65 @@ public sealed class InfrastructureTests
         Assert.Equal("Executable not found", availability.Error);
     }
 
+    [Fact]
+    public async Task GitHub_availability_checker_reports_available_without_exposing_account_output()
+    {
+        var runner = new StubResultRunner(new ProcessResult("gh", ["api", "user"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            0, "factory-bot\n", "", false, false));
+        var checker = new GitHubAvailabilityChecker(runner, Options.Create(new GitHubSyncOptions()));
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.Equal(GitHubAvailabilityState.Available, availability.State);
+        Assert.Null(availability.Error);
+    }
+
+    [Fact]
+    public async Task GitHub_availability_checker_sanitizes_authentication_failures()
+    {
+        var runner = new StubResultRunner(new ProcessResult("gh", ["api", "user"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            1, "", "HTTP 401: token ghp_secret", false, false));
+        var checker = new GitHubAvailabilityChecker(runner, Options.Create(new GitHubSyncOptions()));
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.Equal(GitHubAvailabilityState.Unavailable, availability.State);
+        Assert.Equal("GitHub CLI authentication or API check failed", availability.Error);
+        Assert.DoesNotContain("ghp_secret", availability.Error);
+    }
+
+    [Fact]
+    public async Task GitHub_availability_checker_reports_timeout_as_unavailable()
+    {
+        var runner = new StubResultRunner(new ProcessResult("gh", ["api", "user"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            null, "", "", true, false));
+        var checker = new GitHubAvailabilityChecker(runner, Options.Create(new GitHubSyncOptions()));
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.Equal(GitHubAvailabilityState.Unavailable, availability.State);
+        Assert.Equal("GitHub availability check timed out", availability.Error);
+    }
+
+    [Fact]
+    public async Task GitHub_availability_checker_reports_missing_cli_as_unavailable()
+    {
+        var checker = new GitHubAvailabilityChecker(new ThrowingRunner(), Options.Create(new GitHubSyncOptions()));
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.Equal(GitHubAvailabilityState.Unavailable, availability.State);
+        Assert.Equal("GitHub CLI executable not found", availability.Error);
+    }
+
+    [Fact]
+    public async Task GitHub_availability_checker_leaves_unexpected_errors_for_the_api_to_classify()
+    {
+        var checker = new GitHubAvailabilityChecker(new UnexpectedRunner(), Options.Create(new GitHubSyncOptions()));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => checker.CheckAsync(CancellationToken.None));
+    }
+
     private static readonly AgentProfile DefaultProfile = new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5);
 
     private static FactoryTask NewTask(string title, int issue) => new(Guid.NewGuid(), 1, 2, issue, title, "", "GitHubIssue", 0,
@@ -146,5 +205,11 @@ public sealed class InfrastructureTests
     {
         public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken) =>
             throw new System.ComponentModel.Win32Exception("No such file or directory");
+    }
+
+    private sealed class UnexpectedRunner : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("unexpected checker failure");
     }
 }
