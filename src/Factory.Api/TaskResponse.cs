@@ -15,7 +15,11 @@ public sealed record TaskResponse(
     int? ReviewMinutes,
     bool RequireHumanMerge,
     string? Result,
-    double DurationSeconds);
+    double DurationSeconds,
+    string? AgentModel = null,
+    string? AgentReasoningEffort = null,
+    string? AgentSelectionReason = null,
+    string? AgentRoutingError = null);
 
 /// <summary>Dapper binds a no-default-constructor type's (a record's) constructor parameters to the query's
 /// columns POSITIONALLY, not by name - <see cref="TaskListSql"/> in Program.cs must list its columns in exactly
@@ -43,12 +47,17 @@ public sealed record TaskRow(
     int? ReviewMinutes,
     bool RequireHumanMerge,
     string? Result,
-    decimal DurationSeconds)
+    decimal DurationSeconds,
+    string? AgentModel,
+    string? AgentReasoningEffort,
+    string? AgentSelectionReason,
+    string? AgentRoutingError)
 {
     private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     private static DateTimeOffset? Offset(DateTime? value) => value is null ? null : Offset(value.Value);
 
     public TaskResponse ToResponse() => new(Id, Title, Repository, IssueNumber, Status, Priority, Agent,
         Offset(CreatedAt), Offset(StartedAt), Offset(CompletedAt), BranchName, WorktreePath, FailureReason,
-        ReviewMinutes, RequireHumanMerge, Result, (double)DurationSeconds);
+        ReviewMinutes, RequireHumanMerge, Result, (double)DurationSeconds, AgentModel, AgentReasoningEffort,
+        AgentSelectionReason, AgentRoutingError);
 }

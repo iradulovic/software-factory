@@ -196,7 +196,7 @@ internal sealed class FakeTaskStore : ITaskStore
         Task.FromResult<IReadOnlyList<PersistedReviewFinding>>(ReviewFindings.Where(f => f.TaskId == taskId).ToList());
 
     public List<string?> CurrentAgentCalls { get; } = [];
-    public Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken)
+    public Task SetCurrentAgentAsync(Guid taskId, string? agentName, string? selectionReason, CancellationToken cancellationToken)
     {
         CurrentAgentCalls.Add(agentName);
         return Task.CompletedTask;

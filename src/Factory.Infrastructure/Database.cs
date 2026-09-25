@@ -59,10 +59,13 @@ internal sealed class TaskRow
     public string? FailureReason { get; init; }
     public string? ResumableSessionId { get; init; }
     public string? ResumableSessionAgent { get; init; }
+    public string? PreferredAgentReason { get; init; }
+    public string? AgentRoutingError { get; init; }
 
     public FactoryTask ToModel() => new(Id, RepositoryId, GitHubIssueId, IssueNumber, Title, Description, TaskType, Priority,
         Enum.Parse<FactoryTaskStatus>(Status), PreferredAgent, BaseBranch, BranchName, WorktreePath, ClaimedBy, Offset(ClaimedAt), Offset(LeaseUntil),
-        Offset(CreatedAt), Offset(StartedAt), Offset(CompletedAt), Offset(FailedAt), FailureReason, ResumableSessionId, ResumableSessionAgent);
+        Offset(CreatedAt), Offset(StartedAt), Offset(CompletedAt), Offset(FailedAt), FailureReason, ResumableSessionId, ResumableSessionAgent,
+        PreferredAgentReason, AgentRoutingError);
 
     private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     private static DateTimeOffset? Offset(DateTime? value) => value is null ? null : Offset(value.Value);
@@ -134,7 +137,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               FROM candidate c WHERE c.recovered AND r.task_id=c.id AND r.status='Running'
             ), claimed AS (
               UPDATE factory.task t SET status='Claimed',claimed_by=@workerId,claimed_at=now(),lease_until=now()+@lease,
-                started_at=COALESCE(started_at,now()),failure_reason=NULL,current_agent=NULL
+                started_at=COALESCE(started_at,now()),failure_reason=NULL,current_agent=NULL,current_agent_reason=NULL
               FROM candidate c WHERE t.id=c.id
               RETURNING t.id,
                 t.repository_id AS "RepositoryId",
@@ -143,6 +146,8 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
                 t.task_type AS "TaskType",
                 t.priority,t.status,
                 t.preferred_agent AS "PreferredAgent",
+                t.preferred_agent_reason AS "PreferredAgentReason",
+                t.agent_routing_error AS "AgentRoutingError",
                 t.base_branch AS "BaseBranch",
                 t.branch_name AS "BranchName",
                 t.worktree_path AS "WorktreePath",
@@ -171,6 +176,8 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               claimed."TaskType",
               claimed.priority,claimed.status,
               claimed."PreferredAgent",
+              claimed."PreferredAgentReason",
+              claimed."AgentRoutingError",
               claimed."BaseBranch",
               claimed."BranchName",
               claimed."WorktreePath",
@@ -230,7 +237,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               FROM candidates c WHERE r.task_id=c.id AND r.status='Running'
             ), updated AS (
               UPDATE factory.task t SET status='Cancelled',failure_reason=COALESCE(failure_reason,'Cancelled by operator'),
-                claimed_by=NULL,claimed_at=NULL,lease_until=NULL,current_agent=NULL
+                claimed_by=NULL,claimed_at=NULL,lease_until=NULL,current_agent=NULL,current_agent_reason=NULL
               FROM candidates c WHERE t.id=c.id AND t.status='Stopping'
               RETURNING t.id
             ), logged AS (
@@ -269,7 +276,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             await connection.ExecuteAsync(new CommandDefinition("""
                 WITH updated AS (
                   UPDATE factory.task SET status='Cancelled',failure_reason='Cancelled by operator',
-                    claimed_by=NULL,claimed_at=NULL,lease_until=NULL,current_agent=NULL
+                    claimed_by=NULL,claimed_at=NULL,lease_until=NULL,current_agent=NULL,current_agent_reason=NULL
                   WHERE id=@taskId AND status='Stopping'
                   RETURNING id
                 )
@@ -280,7 +287,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         else
         {
             await connection.ExecuteAsync(new CommandDefinition("""
-                UPDATE factory.task SET claimed_by=NULL,claimed_at=NULL,lease_until=NULL,current_agent=NULL
+                UPDATE factory.task SET claimed_by=NULL,claimed_at=NULL,lease_until=NULL,current_agent=NULL,current_agent_reason=NULL
                 WHERE id=@taskId AND status='Cancelled'
                 """, new { taskId }, transaction, cancellationToken: cancellationToken));
         }
@@ -298,13 +305,19 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public async Task<bool> CreateForIssueIfEligibleAsync(GitHubIssue issue, string baseBranch, CancellationToken cancellationToken)
     {
         if (!issue.Labels.Contains("factory:ready", StringComparer.OrdinalIgnoreCase) || !issue.State.Equals("OPEN", StringComparison.OrdinalIgnoreCase)) return false;
+        var route = CodexIssueRouter.Resolve(issue.Labels);
         const string sql = """
-            INSERT INTO factory.task(id,repository_id,github_issue_id,title,description,status,base_branch)
-            VALUES(@id,@repositoryId,@issueId,@title,@body,'Pending',@baseBranch)
+            INSERT INTO factory.task(id,repository_id,github_issue_id,title,description,status,preferred_agent,
+              preferred_agent_reason,agent_routing_error,base_branch)
+            VALUES(@id,@repositoryId,@issueId,@title,@body,'Pending',@preferredAgent,@preferredAgentReason,@agentRoutingError,@baseBranch)
             ON CONFLICT DO NOTHING;
             """;
         await using var connection = Connection();
-        return await connection.ExecuteAsync(new CommandDefinition(sql, new { id = Guid.NewGuid(), repositoryId = issue.RepositoryId, issueId = issue.Id, issue.Title, issue.Body, baseBranch }, cancellationToken: cancellationToken)) == 1;
+        return await connection.ExecuteAsync(new CommandDefinition(sql, new
+        {
+            id = Guid.NewGuid(), repositoryId = issue.RepositoryId, issueId = issue.Id, issue.Title, issue.Body, baseBranch,
+            preferredAgent = route.PreferredAgent, preferredAgentReason = route.Reason, agentRoutingError = route.Error
+        }, cancellationToken: cancellationToken)) == 1;
     }
 
     public async Task TransitionAsync(Guid taskId, FactoryTaskStatus expected, FactoryTaskStatus next, string? failureReason, CancellationToken cancellationToken)
@@ -318,7 +331,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         var releaseOwnership = TaskStateMachine.RetainsWorkerOwnership(next) ? "" : ", claimed_by=NULL, claimed_at=NULL, lease_until=NULL";
         var sql = $"""
             WITH updated AS (
-              UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion}{releaseOwnership}, current_agent=NULL WHERE id=@taskId AND status=@expected
+              UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion}{releaseOwnership}, current_agent=NULL,current_agent_reason=NULL WHERE id=@taskId AND status=@expected
               RETURNING id
             ), logged AS (
               INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
@@ -544,10 +557,12 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             INSERT INTO factory.agent_run(
               id,task_id,run_id,step_id,agent,started_at,completed_at,duration_seconds,exit_code,status,stdout,stderr,
               quota_detected,quota_reset_at,attempt_number,needs_human,counts_as_implementation_attempt,provider_session_id,
+              model,reasoning_effort,selection_reason,purpose,
               result_json,result_summary,tests_run,tests_passed,files_changed,risks,human_reason)
             VALUES(
               @Id,@TaskId,@RunId,@StepId,@Agent,@StartedAt,@CompletedAt,@DurationSeconds,@ExitCode,@Status,@StandardOutput,@StandardError,
               @QuotaDetected,@QuotaResetAt,@AttemptNumber,@NeedsHuman,@CountsAsImplementationAttempt,@ProviderSessionId,
+              @Model,@ReasoningEffort,@SelectionReason,@Purpose,
               CAST(@ResultJson AS jsonb),@ResultSummary,CAST(@TestsRun AS jsonb),@TestsPassed,
               CAST(@FilesChanged AS jsonb),CAST(@Risks AS jsonb),@HumanReason)
             """;
@@ -750,10 +765,10 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return rows.Select(r => r.ToModel()).ToList();
     }
 
-    public async Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken)
+    public async Task SetCurrentAgentAsync(Guid taskId, string? agentName, string? selectionReason, CancellationToken cancellationToken)
     {
         await using var c = Connection();
-        await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET current_agent=@agentName WHERE id=@taskId", new { taskId, agentName }, cancellationToken: cancellationToken));
+        await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET current_agent=@agentName,current_agent_reason=@selectionReason WHERE id=@taskId", new { taskId, agentName, selectionReason }, cancellationToken: cancellationToken));
     }
 
     public async Task SetResumableSessionAsync(Guid taskId, string agentName, string? sessionId, CancellationToken cancellationToken)
@@ -961,7 +976,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     {
         await using var c = Connection();
         return await c.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT count(*)::int FROM factory.agent_run WHERE task_id=@taskId AND NOT counts_as_implementation_attempt", new { taskId }, cancellationToken: cancellationToken));
+            "SELECT count(*)::int FROM factory.agent_run WHERE task_id=@taskId AND NOT counts_as_implementation_attempt AND quota_detected", new { taskId }, cancellationToken: cancellationToken));
     }
 
     public async Task<PreviousAttemptSummary?> GetPreviousAttemptAsync(Guid taskId, CancellationToken cancellationToken)

@@ -749,6 +749,7 @@ public sealed class TaskExecutorTests
         public string? ConfigurationBaseRef { get; private set; }
         public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
         public string? PreferredAgent { get; init; }
+        public string ReviewPreferredAgent { get; init; } = "Codex";
         public string? ResumableSessionAgent { get; init; }
         public string? ResumableSessionId { get; init; }
         public string IssueTitle { get; init; } = "Add invoice export";
@@ -792,7 +793,7 @@ public sealed class TaskExecutorTests
                 new ValidateStep(Store, new FakeProcessRunner(this), Options.Create(new FactoryOptions())),
                 new SmokeTestStep(Store, new FakeProcessRunner(this), new UnusedBrowserSmokeTestRunner(), new UnusedHttpClientFactory(), Options.Create(new FactoryOptions())),
                 new PreparePublicationStep(Store, new FakeInspector(this)),
-                new ReviewStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), NullLogger<ReviewStep>.Instance),
+                new ReviewStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions { ReviewPreferredAgent = ReviewPreferredAgent }), NullLogger<ReviewStep>.Instance),
                 new TaskGitHubNotifier(Store, new FakeGitHubPublisher(this), Options.Create(new FactoryOptions()), NullLogger<TaskGitHubNotifier>.Instance),
                 NullLogger<TaskExecutor>.Instance);
             await executor.ExecuteAsync(ClaimedTask, runId, cancellationToken);

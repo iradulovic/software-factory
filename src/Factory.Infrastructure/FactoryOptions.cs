@@ -40,14 +40,16 @@ public sealed class FactoryOptions
     /// <summary>Maximum rows returned from an ad-hoc <c>/api/database/query</c> SELECT (SF-717); the response reports
     /// whether the result was truncated by this cap.</summary>
     public int DatabaseQueryRowLimit { get; set; } = 500;
+
+    /// <summary>Profile reserved for judgment-heavy review invocations, independently of task implementation routing.</summary>
+    public string ReviewPreferredAgent { get; set; } = CodexIssueRouter.SolPreset;
 }
 
-/// <summary>The configured set of CLI coding agents. Defaults to a single "Codex" profile matching the
-/// bootstrap spec's original hardcoded behavior; adding "Claude" or any other CLI agent is a configuration
-/// addition here, never a new class.</summary>
+/// <summary>The configured set of CLI coding-agent profiles. Adding a provider or model preset is a configuration
+/// addition here, never a new runner class.</summary>
 public sealed class AgentProfilesOptions
 {
-    /// <summary>The single "Codex" profile used when no <c>Agents:Profiles</c> configuration section is present
+    /// <summary>The default profile set used when no <c>Agents:Profiles</c> configuration section is present
     /// at all. Deliberately not <see cref="Profiles"/>'s own default value: <c>ConfigurationBinder.Get{T}</c>
     /// binds a configured <c>List{T}</c> section by appending to whatever the target list already contains
     /// rather than replacing it, so if <see cref="Profiles"/> started non-empty, an explicitly configured
@@ -55,9 +57,14 @@ public sealed class AgentProfilesOptions
     /// it instead of in place of it — registering every configured agent twice.</summary>
     public static readonly IReadOnlyList<AgentProfile> DefaultProfiles =
     [
-        new("Codex", "codex", ["exec", "-m", "gpt-5.6-terra", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
+        new("Codex-Luna", "codex", ["exec", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--approve-for-me", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
             SessionIdPattern: @"session id: (?<sessionId>[0-9a-fA-F-]{36})",
-            ResumeArguments: ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-terra", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"])
+            ResumeArguments: ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--dangerously-bypass-approvals-and-sandbox", "-"],
+            Provider: "Codex", Model: "gpt-5.6-luna", ReasoningEffort: "max"),
+        new("Codex-Sol", "codex", ["exec", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
+            SessionIdPattern: @"session id: (?<sessionId>[0-9a-fA-F-]{36})",
+            ResumeArguments: ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"],
+            Provider: "Codex", Model: "gpt-5.6-sol", ReasoningEffort: "medium")
     ];
 
     public List<AgentProfile> Profiles { get; set; } = [];

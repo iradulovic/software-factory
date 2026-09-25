@@ -103,6 +103,11 @@ Multi-machine execution, multiple concurrent coding workers, additional agent pr
 
 ## Completed
 
+- [x] **SF-719 — Route Codex model presets by issue complexity and explicit labels (GitHub issue #125)**
+  - Completed 2026-09-25. GitHub issue labels route deterministically to Codex-Sol (`codex:sol`) or Codex-Luna (`codex:luna`), default to Luna when absent, and stop conflicting labels before an agent runs. The chosen route and reason persist across retries; every implementation and review invocation records its profile, model, effort, purpose, and selection reason. The review preset is independent of implementation routing, and the dashboard exposes the effective selection.
+  - Verification: `dotnet build --no-restore`; `dotnet test --no-build` (556 passed across all .NET suites); frontend `npm run test`, `npm run lint`, `npm run type-check`, and `npm run build` passed.
+  - Limitation and follow-up: subscription-backed Codex CLI v0.154.0 rejected the requested `gpt-6-luna` and `gpt-6-sol` IDs for ChatGPT accounts. Configured and smoke-checked the compatible `gpt-5.6-luna` at `max` and `gpt-5.6-sol` at `medium`, preserving the preset split and requested efforts. Revisit GPT-6 when the installed CLI/account supports it. Representative merged-task comparisons for outcome and efficiency remain outstanding; no measured efficiency gain is claimed.
+
 - [x] **SF-718 — Make operator cancellation stop active tasks end to end (GitHub issue #112)**
   - Completed 2026-09-25. Active stops persist as `Stopping`, cancel agent/validation process trees promptly, close run and step records as `Cancelled`, and allow the next task to claim after cleanup. Publication and merge are guarded against cancelled tasks, and the dashboard distinguishes stopping from stopped.
   - Verification: `dotnet build --no-restore`; `dotnet test --no-restore` (550 passed across Core, API, Orchestrator, Infrastructure, and PostgreSQL integration suites); frontend lint, tests, type-check, and isolated Next.js production build passed. Integration tests used a temporary database that was dropped after the run.

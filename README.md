@@ -59,22 +59,22 @@ file directly.
 
 The main settings cover the PostgreSQL connection, factory root, polling intervals, task concurrency, task lease and heartbeat intervals, configured CLI coding agents, default branch, and configured repositories. Environment-variable examples are in `.env.example`; no real credentials belong in configuration.
 
-Every CLI coding agent — Codex, Claude Code, or anything else with a CLI and a prompt — is configured under `Agents:Profiles`, never a new class:
+Every CLI coding agent — Codex, Claude Code, or anything else with a CLI and a prompt — is configured under `Agents:Profiles`, never a new class. The default Codex profiles use the same `Provider: "Codex"`, so pause and quota state is shared:
 
-```json
-{
-  "Agents": {
-    "Profiles": [
-      { "Name": "Codex", "Executable": "codex", "Arguments": ["exec", "-m", "gpt-5.6-terra", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], "PromptDelivery": "stdin", "TimeoutMinutes": 90, "QuotaSignatures": ["quota", "usage limit"], "VersionArguments": ["--version"], "AvailabilityTimeoutSeconds": 5, "QuotaCooldownHours": 5, "QuotaResetPattern": "(?:resets?|try again)\\s+(?:at|in)\\s+(?<value>\\d{1,2}(?::\\d{2})?\\s*[ap]\\.?m\\.?|\\d+(?:\\.\\d+)?\\s*(?:hours?|hrs?|h|minutes?|mins?|m|days?|d))" },
-      { "Name": "Claude", "Executable": "claude", "Arguments": ["--print", "--model", "claude-sonnet-5", "--effort", "medium", "--dangerously-skip-permissions"], "PromptDelivery": "argument", "TimeoutMinutes": 90, "QuotaSignatures": ["rate limited"], "VersionArguments": ["--version"], "AvailabilityTimeoutSeconds": 5, "QuotaCooldownHours": 5, "QuotaResetPattern": "(?:resets?|try again)\\s+(?:at|in)\\s+(?<value>\\d{1,2}(?::\\d{2})?\\s*[ap]\\.?m\\.?|\\d+(?:\\.\\d+)?\\s*(?:hours?|hrs?|h|minutes?|mins?|m|days?|d))" }
-    ]
-  }
-}
-```
+| Profile | Model | Reasoning effort | Selection |
+| --- | --- | --- | --- |
+| `Codex-Luna` | `gpt-5.6-luna` | `max` | Default for issues without a Codex routing label; explicit `codex:luna` also selects it |
+| `Codex-Sol` | `gpt-5.6-sol` | `medium` | Explicit `codex:sol` label |
 
-`PromptDelivery` is `"stdin"` (the prompt is piped in, like Codex) or `"argument"` (the prompt is appended to `Arguments`). A task's `preferredAgent` picks a profile by name; if that agent is currently at quota, the next configured profile that isn't runs the attempt instead, and only if every configured agent is at quota does the task wait. Authentication for every agent is inherited from whatever local CLI session (`codex login`, `claude login`, ...) is active in this environment — the factory never handles credentials itself.
+Compatibility note: issue #125 proposed GPT-6 model IDs, but the subscription-backed Codex CLI v0.154.0 explicitly rejected both as unsupported for ChatGPT accounts. The matching `gpt-5.6-luna` at `max` and `gpt-5.6-sol` at `medium` passed minimal read-only CLI smoke calls, so the defaults use those supported model IDs while preserving the issue's complexity split and effort settings. Revisit the GPT-6 IDs when the installed Codex CLI/account supports them.
 
-Both default profiles' `Arguments` pin an explicit model and reasoning/thinking effort rather than leaving it to whatever each CLI currently defaults to: Codex runs `gpt-5.6-terra` at `model_reasoning_effort="medium"` (via `-m`/`-c`, the CLI's own per-invocation override flags — see `codex --help`), and Claude Code runs `claude-sonnet-5` at `--effort medium`. A model/reasoning preset (SF-704) is configured the same way, as an additional profile with its own `Arguments` and a shared `Provider` — see `AgentProfile.Provider`'s doc comment.
+At most one routing label is valid. An issue carrying both reaches `NeedsHuman` with the conflict recorded before any model invocation. A `codex:sol` request never falls through to Luna just because both presets exist: they share Codex provider quota/pause state, so the existing fallback can select another provider when Codex is unavailable. The selected preset and its reason stay on the task across retries; each implementation and review invocation records its actual preset, model, effort, and selection reason.
+
+The judgment-heavy review profile is configured independently through `Factory:ReviewPreferredAgent` (default `Codex-Sol`), so an implementation routed to Luna does not make its review use Luna. If the configured review profile is missing, the optional review is skipped with a warning instead of silently selecting the implementation preset.
+
+`PromptDelivery` is `"stdin"` (the prompt is piped in, like Codex) or `"argument"` (the prompt is appended to `Arguments`). Codex uses the CLI's per-invocation `-m`/ `-c` model settings; Claude Code's profile can remain configured with `--model`/ `--effort`. Authentication for every agent is inherited from the active local CLI session (`codex login`, `claude login`, ...); the factory never handles credentials itself.
+
+The configured model and reasoning effort are exposed on Overview and Task Details, and persisted per invocation alongside the route reason. Codex's `exec` flags are checked against the installed CLI; session-resume arguments remain profile-specific because the installed CLI exposes different approval flags for fresh and resumed sessions.
 
 A task's shown `agent` always reflects who is actually invoking it: whoever is invoking it right now (persisted the moment it is selected, before the process starts) if an attempt is in flight, else whoever last actually ran it, else the preference for a task that hasn't run yet — never just the preference, which a fallback can disagree with. The dashboard's agent status (the header pill and the Overview panel) resolves each configured agent's operational state from actual evidence rather than a fixed label: `Unavailable` (the version check failed or the executable is missing), `Unknown` (the check itself errored unexpectedly), `Paused` (the operator reserved this agent's capacity — see below), `QuotaBlocked` (currently at quota, with the reset time labeled `Reported`/`Estimated`/`Unknown` matching how it was actually derived), `Busy` (a task is invoking it right now), `Verified` (idle, with at least one prior successful invocation — real evidence of working authentication, not just an installed executable), or `Installed` (idle, version check passed, no successful invocation yet). "Successful runs" in that table counts CLI process-level success only — the process exited cleanly — which is deliberately distinct from a task's own validated result (build/test passing, shown separately on the task itself); one is evidence the CLI ran, the other is evidence the change actually works.
 

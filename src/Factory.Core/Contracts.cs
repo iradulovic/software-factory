@@ -10,6 +10,12 @@ public interface IAgentRunner
     /// same field, no separate preset concept required.</summary>
     string Name { get; }
 
+    /// <summary>The configured model for this invocation preset, when the runner has a model setting.</summary>
+    string? Model => null;
+
+    /// <summary>The configured reasoning effort for this invocation preset, when applicable.</summary>
+    string? ReasoningEffort => null;
+
     /// <summary>Matches <see cref="AgentProfile.Provider"/> — the underlying subscription/CLI this runner shares
     /// with any other preset profile of the same provider (SF-704). Quota and pause state are always keyed by
     /// this, never by <see cref="Name"/>, so presets of one provider correctly share that provider's quota
@@ -120,7 +126,7 @@ public interface ITaskStore
     /// clear it) — the live signal of which provider is really running a task right now, distinct from
     /// <see cref="FactoryTask.PreferredAgent"/> (a preference, not necessarily who ends up invoked after a
     /// fallback) and from <c>factory.agent_run.agent</c> (only recorded after an invocation finishes).</summary>
-    Task SetCurrentAgentAsync(Guid taskId, string? agentName, CancellationToken cancellationToken);
+    Task SetCurrentAgentAsync(Guid taskId, string? agentName, string? selectionReason, CancellationToken cancellationToken);
 
     /// <summary>Persists the provider session id this task's just-finished invocation reported, alongside the
     /// agent it belongs to (SF-701) — read back from <see cref="FactoryTask.ResumableSessionId"/>/<see cref="FactoryTask.ResumableSessionAgent"/>
