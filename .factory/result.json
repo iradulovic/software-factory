@@ -1,32 +1,40 @@
 {
   "status": "completed",
-  "summary": "Added a bounded review-fix loop that returns structured findings to the original implementing agent, re-reviews fixes, and revalidates the final commit. Added repository configuration, structured invocation tracking, symmetric provider-role coverage, and a platform-stable assertion for the full test suite.",
+  "summary": "Unified the Ask page around deterministic-first routing with a read-only CLI-backed conversational fallback, recent-history context, and a separate bounded conversation quota lane. Existing executable actions remain on the deterministic confirm-and-recheck path, and the prior Windows line-ending validation failure is fixed portably.",
   "testsRun": [
-    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-restore --filter \"FullyQualifiedName~ReviewStepTests|FullyQualifiedName~RunAgentStepTests|FullyQualifiedName~TaskExecutorTests\"",
-    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-restore --filter \"FullyQualifiedName~CliAgentRunnerTests|FullyQualifiedName~RepositoryConfigurationReaderTests\"",
-    "dotnet test tests/Factory.Core.Tests/Factory.Core.Tests.csproj --no-restore --filter FullyQualifiedName~RepositoryBootstrapTests",
-    "dotnet build",
-    "dotnet test --no-build"
+    "dotnet build SoftwareFactory.slnx",
+    "dotnet test SoftwareFactory.slnx --no-build --no-restore --filter \"FullyQualifiedName!~ProcessRunnerTests\"",
+    "dotnet test tests/Factory.Api.Tests/Factory.Api.Tests.csproj --no-build --no-restore --filter \"FullyQualifiedName~OperatorChatTests|FullyQualifiedName~AgentProfileRegistrationTests\"",
+    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-restore --filter \"FullyQualifiedName~CliAgentRunnerTests\"",
+    "dotnet test tests/Factory.Core.Tests/Factory.Core.Tests.csproj --no-restore --filter \"FullyQualifiedName~RepositoryBootstrapTests\"",
+    "npm run lint",
+    "npm run type-check",
+    "npm test",
+    "npm run build"
   ],
   "testsPassed": true,
   "filesChanged": [
+    ".factory/result.json",
+    "README.md",
+    "src/Factory.Api/AssistantConversation.cs",
+    "src/Factory.Api/OperatorChat.cs",
+    "src/Factory.Api/Program.cs",
+    "src/Factory.Api/appsettings.json",
+    "src/Factory.Core/Contracts.cs",
     "src/Factory.Core/Models.cs",
     "src/Factory.Infrastructure/CliAgentRunner.cs",
-    "src/Factory.Infrastructure/TaskFiles.cs",
-    "src/Factory.Orchestrator/AgentSelector.cs",
-    "src/Factory.Orchestrator/Pipeline.cs",
-    "src/Factory.Orchestrator/ReviewStep.cs",
-    "src/Factory.Orchestrator/RunAgentStep.cs",
-    "src/Factory.Orchestrator/TaskExecutor.cs",
+    "src/Factory.Infrastructure/FactoryOptions.cs",
+    "src/Factory.Infrastructure/ServiceCollectionExtensions.cs",
+    "tests/Factory.Api.Tests/AgentProfileRegistrationTests.cs",
+    "tests/Factory.Api.Tests/OperatorChatTests.cs",
     "tests/Factory.Core.Tests/RepositoryBootstrapTests.cs",
     "tests/Factory.Infrastructure.Tests/CliAgentRunnerTests.cs",
-    "tests/Factory.Infrastructure.Tests/RepositoryConfigurationReaderTests.cs",
-    "tests/Factory.Orchestrator.Tests/ReviewStepTests.cs",
-    "tests/Factory.Orchestrator.Tests/RunAgentStepTests.cs",
-    "tests/Factory.Orchestrator.Tests/TaskExecutorTests.cs",
-    ".factory/result.json"
+    "web/Factory.Web/app/operator/page.tsx"
   ],
-  "risks": [],
+  "risks": [
+    "The conversation request budget is intentionally in memory and resets when the API restarts; both lanes still consume the same underlying provider subscription.",
+    "The unfiltered suite's pre-existing ProcessRunnerTests require a POSIX shell with sleep/touch; this restricted Windows session's Git shell could not locate those utilities, so the final full-solution run excluded that unrelated fixture."
+  ],
   "needsHuman": false,
   "humanReason": null
 }

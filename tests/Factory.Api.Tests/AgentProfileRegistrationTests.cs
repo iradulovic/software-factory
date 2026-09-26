@@ -31,6 +31,8 @@ public sealed class AgentProfileRegistrationTests : IClassFixture<AgentProfileRe
         Assert.True(runners[0].SupportsTaskClass("quick"));
         Assert.True(runners[0].SupportsTaskClass("deep"));
         Assert.False(runners[0].SupportsTaskClass("unknown"));
+        Assert.Contains("read-only", configuredProfiles[0].ConversationArguments ?? []);
+        Assert.NotNull(configuredProfiles[1].ConversationArguments);
         Assert.Equal(("MoonshotAI", "moonshotai/kimi-k2.6", null), (runners[2].Provider, runners[2].Model, runners[2].ReasoningEffort));
 
         var piProfile = configuredProfiles.Single(p => p.Name == "Pi");
