@@ -3,13 +3,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, githubStatusSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { agentStateDescription } from "@/components/ui";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Sidebar,
   SidebarContent,
@@ -119,6 +120,7 @@ function ThemeToggle() {
 }
 
 const agentDotTones: Record<string, string> = { Verified: "bg-emerald-500", Busy: "bg-sky-500", Unavailable: "bg-red-500", Paused: "bg-amber-500", QuotaBlocked: "bg-amber-500" };
+const agentStateBadgeTones: Record<string, string> = { Verified: "green", Busy: "blue", Unavailable: "red", Paused: "amber", QuotaBlocked: "amber", Unknown: "amber", Installed: "amber" };
 
 function formatAgentDate(value: string | null) {
   if (!value) return "unknown";
@@ -166,6 +168,10 @@ function GitHubStatusIndicator() {
 export function AgentStatusPill() {
   const client = useQueryClient();
   const { data } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)) });
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openedFromKeyboard = useRef(false);
+  const suppressFocusOpen = useRef(false);
   const refresh = () => Promise.all([
     client.invalidateQueries({ queryKey: ["agents-status"] }),
     client.invalidateQueries({ queryKey: ["dashboard"] })
@@ -178,20 +184,106 @@ export function AgentStatusPill() {
     mutationFn: (agent: string) => postPause(`/api/agents/${agent}/resume`),
     onSuccess: refresh
   });
+  const cancelClose = () => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+  const openPanel = (fromKeyboard = false) => {
+    cancelClose();
+    openedFromKeyboard.current = fromKeyboard;
+    setOpen(true);
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => {
+      closeTimer.current = null;
+      setOpen(false);
+    }, 150);
+  };
+  useEffect(() => () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+  }, []);
   if (!data?.length) return <div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-muted-foreground">No agents configured</div>;
-  return <div className="flex items-center gap-1 rounded-full border border-[var(--border)] px-2 py-1 text-xs text-muted-foreground">
-    {data.map(a => {
-      const paused = a.state === "Paused";
-      const title = agentStatusTitle(a);
-      return <span className="flex items-center gap-1 rounded-full px-1" key={a.agent} title={title} aria-label={title}>
-        <span className={`size-1.5 shrink-0 rounded-full ${agentDotTones[a.state] ?? "bg-amber-500"}`} aria-hidden="true" />
-        <span className="max-w-24 truncate">{a.agent}</span>
-        {paused
-          ? <button type="button" className="grid size-5 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40" disabled={agentResume.isPending} onClick={() => agentResume.mutate(a.agent)} aria-label={`Resume ${a.agent}`} title={`Resume ${a.agent}`}><Play className="size-3" /></button>
-          : <button type="button" className="grid size-5 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40" disabled={a.state === "Unavailable" || agentPause.isPending} onClick={() => agentPause.mutate(a.agent)} aria-label={`Pause ${a.agent}`} title={`Pause ${a.agent}`}><Pause className="size-3" /></button>}
-      </span>;
-    })}
-  </div>;
+  return <Popover open={open} onOpenChange={nextOpen => { cancelClose(); setOpen(nextOpen); }}>
+    <PopoverTrigger asChild>
+      <button
+        type="button"
+        className="flex items-center gap-1 rounded-full border border-[var(--border)] bg-transparent px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+        aria-label={`View status for ${data.length} configured agent${data.length === 1 ? "" : "s"}`}
+        onPointerEnter={() => openPanel()}
+        onPointerLeave={scheduleClose}
+        onFocus={event => {
+          if (suppressFocusOpen.current) {
+            suppressFocusOpen.current = false;
+          } else if (event.currentTarget.matches(":focus-visible")) {
+            openPanel(true);
+          }
+        }}
+      >
+        {data.map(a => <span className="flex items-center gap-1 rounded-full px-1" key={a.agent}>
+          <span className={`size-1.5 shrink-0 rounded-full ${agentDotTones[a.state] ?? "bg-amber-500"}`} aria-hidden="true" />
+          <span className="max-w-24 truncate">{a.agent}</span>
+        </span>)}
+      </button>
+    </PopoverTrigger>
+    <PopoverContent
+      align="end"
+      sideOffset={8}
+      className="w-80 max-w-[calc(100vw-2rem)] overflow-hidden p-0"
+      aria-label="Agent status"
+      onPointerEnter={cancelClose}
+      onPointerLeave={scheduleClose}
+      onFocusCapture={cancelClose}
+      onOpenAutoFocus={event => {
+        if (!openedFromKeyboard.current) event.preventDefault();
+        openedFromKeyboard.current = false;
+      }}
+      onCloseAutoFocus={() => {
+        suppressFocusOpen.current = true;
+        setTimeout(() => { suppressFocusOpen.current = false; }, 0);
+      }}
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2.5">
+        <div>
+          <p className="text-sm font-semibold">Agent status</p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">Configured agents and invocation controls</p>
+        </div>
+        <span className="text-xs text-muted-foreground">{data.length} configured</span>
+      </div>
+      <div className="max-h-[min(70vh,32rem)] overflow-y-auto">
+        {data.map(a => {
+          const paused = a.state === "Paused";
+          const pausing = agentPause.isPending && agentPause.variables === a.agent;
+          const resuming = agentResume.isPending && agentResume.variables === a.agent;
+          return <article className="space-y-3 border-b border-[var(--border)] p-3 last:border-b-0" key={a.agent}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`size-1.5 shrink-0 rounded-full ${agentDotTones[a.state] ?? "bg-amber-500"}`} aria-hidden="true" />
+                  <span className="font-medium">{a.agent}</span>
+                  <span className={`badge ${agentStateBadgeTones[a.state] ?? "blue"}`}>{a.state.replace(/([a-z])([A-Z])/g, "$1 $2")}</span>
+                </div>
+                <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{agentStateDescription(a.state)}</p>
+              </div>
+              {paused
+                ? <button type="button" className="tone-green flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs disabled:opacity-40" disabled={agentResume.isPending} onClick={() => agentResume.mutate(a.agent)} aria-label={`Resume ${a.agent}`}><Play className="size-3" />{resuming ? "Resuming…" : "Resume"}</button>
+                : <button type="button" className="flex shrink-0 items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-40" disabled={a.state === "Unavailable" || agentPause.isPending} onClick={() => agentPause.mutate(a.agent)} aria-label={`Pause ${a.agent}`}><Pause className="size-3" />{pausing ? "Pausing…" : "Pause"}</button>}
+            </div>
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs sm:grid-cols-3">
+              <div><dt className="text-muted-foreground">Active task</dt><dd className="mt-0.5 truncate">{a.activeTask ?? "Idle"}</dd></div>
+              <div><dt className="text-muted-foreground">Runs today</dt><dd className="mt-0.5 tabular-nums">{a.runsToday}</dd></div>
+              <div><dt className="text-muted-foreground">Invocations OK</dt><dd className="mt-0.5 tabular-nums">{a.successfulRuns}</dd></div>
+              <div className="col-span-2 border-t border-[var(--border)] pt-2 sm:col-span-3"><dt className="text-muted-foreground">Quota</dt><dd className="mt-0.5 leading-4">{agentQuotaDescription(a)}</dd></div>
+            </dl>
+            {a.pauseReason ? <p className="text-[11px] leading-4 text-[var(--badge-amber-fg)]"><span className="font-medium">Pause reason:</span> {a.pauseReason}</p> : null}
+            {a.error ? <p className="text-[11px] leading-4 text-[var(--badge-red-fg)]"><span className="font-medium">Error:</span> {a.error}</p> : null}
+          </article>;
+        })}
+      </div>
+    </PopoverContent>
+  </Popover>;
 }
 
 function WorkerStatus({ worker }: { worker?: Worker }) {
