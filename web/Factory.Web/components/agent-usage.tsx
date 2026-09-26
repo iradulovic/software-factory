@@ -22,6 +22,9 @@ export function AgentUsageDetails({ agent }: { agent: AgentStatus }) {
     return <p className="text-[11px] text-muted-foreground">Usage unknown{agent.usage.unknownReason ? ` · ${agent.usage.unknownReason}` : ""}</p>;
   }
   return <div className="grid grid-cols-2 gap-2 text-[11px]">
+    {agent.usage.isStale && <p className="col-span-2 text-amber-700 dark:text-amber-400">
+      Usage stale · as of {new Date(agent.usage.capturedAt).toLocaleString()}
+    </p>}
     <UsageWindow label="5 hour" {...agent.usage.fiveHour} warning={agent.usageWarningThresholdPercent} critical={agent.usageCriticalThresholdPercent} />
     <UsageWindow label="Weekly" {...agent.usage.weekly} warning={agent.usageWarningThresholdPercent} critical={agent.usageCriticalThresholdPercent} />
   </div>;

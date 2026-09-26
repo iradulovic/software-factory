@@ -57,7 +57,7 @@ export const agentStatusSchema = z.object({
   agent:z.string(),state:z.string(),version:z.string().nullable(),error:z.string().nullable(),activeTask:z.string().nullable(),taskClass:z.string().nullable(),
   runsToday:z.number(),successfulRuns:z.number(),quotaDetectedAt:z.string().nullable(),
   quotaResetAt:z.string().nullable(),quotaWindow:z.string().nullable(),quotaResetKind:z.string().nullable(),pauseReason:z.string().nullable(),
-  usage:z.object({provider:z.string(),isKnown:z.boolean(),fiveHour:z.object({usedPercent:z.number(),resetsAt:z.string()}).nullable(),weekly:z.object({usedPercent:z.number(),resetsAt:z.string()}).nullable(),capturedAt:z.string(),unknownReason:z.string().nullable()}),
+  usage:z.object({provider:z.string(),isKnown:z.boolean(),isStale:z.boolean(),fiveHour:z.object({usedPercent:z.number(),resetsAt:z.string()}).nullable(),weekly:z.object({usedPercent:z.number(),resetsAt:z.string()}).nullable(),capturedAt:z.string(),unknownReason:z.string().nullable()}),
   usageWarningThresholdPercent:z.number(),usageCriticalThresholdPercent:z.number()
 });
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
