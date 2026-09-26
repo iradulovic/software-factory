@@ -259,6 +259,22 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task Merge_conflict_feedback_selects_specialized_agent_purpose_and_republishes_the_existing_pr()
+    {
+        var harness = new Harness();
+        harness.Store.Feedback = [new TaskFeedback(Guid.NewGuid(), harness.ClaimedTask.Id, MergeConflictRepair.Feedback,
+            DateTimeOffset.UtcNow, MergeConflictRepair.CreatedBy)];
+
+        var runId = await harness.ExecuteAsync();
+
+        Assert.Equal(AgentRunPurpose.MergeConflict, harness.LastAgentRunRequest!.Purpose);
+        Assert.Equal(nameof(AgentRunPurpose.MergeConflict), Assert.Single(harness.Store.AgentRuns).Purpose);
+        var publication = Assert.Single(harness.Store.PublicationRequests);
+        Assert.Equal(runId, publication.RunId);
+        Assert.Equal(MergeConflictRepair.CreatedBy, publication.RequestedBy);
+    }
+
+    [Fact]
     public async Task Exceeding_the_attempt_limit_fails_before_invoking_the_agent_again()
     {
         var harness = new Harness { Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 1, 1, true) };

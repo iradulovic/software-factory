@@ -56,15 +56,16 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
     {
         var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", context.AttemptNumber, cancellationToken);
         var agentRunId = Guid.NewGuid();
-        logger.LogInformation("Task {TaskId} run {RunId} step {StepId} agent run {AgentRunId} starting initial implementation attempt {Attempt}",
-            context.Task.Id, context.RunId, stepId, agentRunId, context.AttemptNumber);
+        logger.LogInformation("Task {TaskId} run {RunId} step {StepId} agent run {AgentRunId} starting {Purpose} attempt {Attempt}",
+            context.Task.Id, context.RunId, stepId, agentRunId, context.AgentPurpose, context.AttemptNumber);
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
         // A previously recorded session is only ever offered back to the *same* agent that produced it (SF-701) —
         // a fallback to a different agent (quota, pause) always gets a fresh invocation, exactly as before this
         // task, since a different provider's CLI cannot use another provider's private session id.
         var resumeSessionId = context.Task.ResumableSessionAgent == agent.Name ? context.Task.ResumableSessionId : null;
         var taskClass = context.Task.TaskClass ?? "quick";
-        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath, resumeSessionId, TaskClass: taskClass), cancellationToken);
+        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber,
+            logPath, resumeSessionId, context.AgentPurpose, TaskClass: taskClass), cancellationToken);
         context.ImplementingAgent = agent.Name;
         context.ImplementationSessionId = result.ProviderSessionId;
         // A quota-interrupted invocation never got a real chance to implement anything, so it is excluded from
@@ -75,7 +76,7 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
             result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result,
             CountsAsImplementationAttempt: !result.QuotaDetected, ProviderSessionId: result.ProviderSessionId,
             Model: result.Model ?? agent.Model, ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort,
-            SelectionReason: selectionReason, TaskClass: taskClass), cancellationToken);
+            SelectionReason: selectionReason, Purpose: context.AgentPurpose.ToString(), TaskClass: taskClass), cancellationToken);
 
         // Quota status is persisted independently of this task's run: every invocation updates it, whether or not
         // quota was detected, so a status that cleared is reflected immediately for AgentSelector rather than only

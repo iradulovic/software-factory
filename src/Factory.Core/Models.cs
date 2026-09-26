@@ -39,6 +39,15 @@ public sealed record IssueDependencyRef(string? Owner, string? Name, int IssueNu
 /// row stays permanently, so prior instructions remain auditable even once superseded by a later one.</summary>
 public sealed record TaskFeedback(Guid Id, Guid TaskId, string Body, DateTimeOffset CreatedAt, string CreatedBy);
 
+/// <summary>Durable marker and instructions for an operator-requested merge-conflict repair. The marker is
+/// stored with task feedback so the next orchestrator run can select the specialized agent purpose without
+/// adding workflow state to the coding agent.</summary>
+public static class MergeConflictRepair
+{
+    public const string CreatedBy = "merge-conflict";
+    public const string Feedback = "GitHub confirmed that this pull request conflicts with the base branch. Fetch the latest base branch, merge it into the existing task branch, preserve both sides' intent, resolve every conflict, and commit the fix before validation.";
+}
+
 /// <param name="ResumableSessionId">The provider session id this task's most recent invocation reported, paired
 /// with <paramref name="ResumableSessionAgent"/> (SF-701) — <see langword="null"/> if that invocation's agent
 /// does not support or report one. Only ever resumed by a following invocation of the *same* agent; a different
@@ -118,14 +127,15 @@ public sealed record ProcessResult(
 
 /// <summary>Whether an <see cref="IAgentRunner"/> invocation is implementing the task (the default, and the only
 /// purpose that existed before SF-702), performing a bounded, opt-in second-agent review pass over already
-/// committed work, or fixing structured review findings. <see cref="CliAgentRunner"/> uses this to choose the
-/// prompt it sends and which result file (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads.</summary>
-public enum AgentRunPurpose { Implement, Review, Fix }
+/// committed work, fixing structured review findings, or repairing a merge conflict on an existing pull-request
+/// branch. <see cref="CliAgentRunner"/> uses this to choose the prompt it sends and which result file
+/// (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads.</summary>
+public enum AgentRunPurpose { Implement, Review, Fix, MergeConflict }
 
 /// <param name="ResumeSessionId">The provider session id to resume (SF-701), if the selected agent matches the
 /// one <see cref="FactoryTask.ResumableSessionAgent"/> recorded and that agent's <see cref="AgentProfile.SupportsSessionResume"/>
 /// is enabled — <see langword="null"/> for a fresh session, exactly as before this task.</param>
-/// <param name="Purpose">Implement (default), Review, or Fix — see <see cref="AgentRunPurpose"/>.</param>
+/// <param name="Purpose">Implement (default), Review, Fix, or MergeConflict — see <see cref="AgentRunPurpose"/>.</param>
 /// <param name="ReviewFindings">Structured findings supplied only to a Fix invocation.</param>
 public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null,
     string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement, string? TaskClass = null,

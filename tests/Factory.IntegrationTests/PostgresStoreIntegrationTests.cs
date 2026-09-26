@@ -50,6 +50,37 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Merge_conflict_repair_requeues_a_published_task_on_its_existing_workspace_and_is_idempotent()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var ct = CancellationToken.None;
+            var branch = $"factory/merge-conflict-{Guid.NewGuid():N}";
+            var worktree = Path.Combine(Path.GetTempPath(), "factory-merge-conflict", Guid.NewGuid().ToString("N"));
+            await fixture.Connection.ExecuteAsync("""
+                UPDATE factory.task SET status='Published',branch_name=@branch,worktree_path=@worktree WHERE id=@TaskId;
+                INSERT INTO factory.publication(id,task_id,status,requested_by,pull_request_number,pull_request_url,completed_at)
+                VALUES(@publicationId,@TaskId,'PullRequestCreated','operator',23,'https://example.invalid/pull/23',now());
+                """, new { fixture.TaskId, branch, worktree, publicationId = Guid.NewGuid() });
+            await fixture.Tasks.SetMergeStatusAsync(fixture.TaskId,
+                new PullRequestMergeResult(true, true, "head1", "base1", "CONFLICTING", "DIRTY", null), ct);
+
+            Assert.True(await fixture.Tasks.TriggerMergeConflictRepairAsync(fixture.TaskId, ct));
+            Assert.Equal("Pending", await fixture.Connection.ExecuteScalarAsync<string>(
+                "SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+            var workspace = await fixture.Connection.QuerySingleAsync<(string Branch, string Worktree)>(
+                "SELECT branch_name AS \"Branch\",worktree_path AS \"Worktree\" FROM factory.task WHERE id=@TaskId", new { fixture.TaskId });
+            Assert.Equal((branch, worktree), workspace);
+            var feedback = Assert.Single(await fixture.Tasks.GetFeedbackAsync(fixture.TaskId, ct));
+            Assert.Equal(MergeConflictRepair.CreatedBy, feedback.CreatedBy);
+            Assert.Equal(MergeConflictRepair.Feedback, feedback.Body);
+            Assert.False(await fixture.Tasks.TriggerMergeConflictRepairAsync(fixture.TaskId, ct));
+        }
+    }
+
+    [Fact]
     public async Task Paused_published_task_cannot_start_a_CI_repair()
     {
         var fixture = await LeaseFixture.CreateAsync();
