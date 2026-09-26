@@ -88,6 +88,27 @@ public sealed class ProcessRunnerTests
     }
 
     [Fact]
+    public async Task An_extension_less_command_resolving_only_to_a_windows_batch_shim_still_runs()
+    {
+        if (!OperatingSystem.IsWindows()) return; // The bug this guards against (CreateProcess only auto-appends
+        // .exe, never .cmd/.bat) is Windows-specific; a real shebang script runs directly everywhere else.
+
+        var root = Directory.CreateTempSubdirectory("factory-process-cmd-shim-");
+        try
+        {
+            var name = $"factory-shim-{Guid.NewGuid():N}";
+            await File.WriteAllTextAsync(Path.Combine(root.FullName, name + ".cmd"), "@ECHO OFF\r\nECHO shim-output\r\n");
+            var runner = new ProcessRunner(new SystemClock());
+
+            var result = await runner.RunAsync(new ProcessRequest(name, [], root.FullName), CancellationToken.None);
+
+            Assert.True(result.Succeeded);
+            Assert.Contains("shim-output", result.StandardOutput);
+        }
+        finally { root.Delete(true); }
+    }
+
+    [Fact]
     public async Task Output_larger_than_the_preview_limit_is_fully_logged_but_the_returned_preview_is_bounded()
     {
         var root = Directory.CreateTempSubdirectory("factory-process-log-");

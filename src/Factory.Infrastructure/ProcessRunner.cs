@@ -17,7 +17,7 @@ public sealed class ProcessRunner(IClock clock) : IProcessRunner
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = request.FileName,
+                FileName = ResolveFileName(request.FileName, request.WorkingDirectory),
                 WorkingDirectory = request.WorkingDirectory,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -96,6 +96,31 @@ public sealed class ProcessRunner(IClock clock) : IProcessRunner
 
     private static string Bounded(StringBuilder buffer) =>
         buffer.Length <= PreviewLimit ? buffer.ToString() : buffer.ToString(buffer.Length - PreviewLimit, PreviewLimit);
+
+    /// <summary>Windows' CreateProcess only ever appends ".exe" to an extension-less command name (never the other
+    /// PATHEXT extensions), so a CLI whose Windows entry point is a .cmd/.bat shim — e.g. a node-based tool installed
+    /// without a companion .exe, such as the Pi agent's launcher — fails to start with "file not found" even though
+    /// the same bare name resolves fine in a real shell. Resolving PATHEXT ourselves and handing back the full path
+    /// (extension and all) fixes this: .NET's Process class already knows how to run a resolved .cmd/.bat directly.
+    /// A no-op everywhere else (already-rooted names, names that already carry an extension, and non-Windows).</summary>
+    private static string ResolveFileName(string fileName, string workingDirectory)
+    {
+        if (!OperatingSystem.IsWindows()) return fileName;
+        if (Path.IsPathRooted(fileName) || fileName.Contains(Path.DirectorySeparatorChar) || fileName.Contains(Path.AltDirectorySeparatorChar)) return fileName;
+        if (Path.HasExtension(fileName)) return fileName;
+
+        var extensions = (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").Split(';', StringSplitOptions.RemoveEmptyEntries);
+        var directories = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries).Prepend(workingDirectory);
+
+        foreach (var directory in directories)
+            foreach (var extension in extensions)
+            {
+                var candidate = Path.Combine(directory, fileName + extension);
+                if (File.Exists(candidate)) return candidate;
+            }
+
+        return fileName;
+    }
 
     /// <summary>Reads one stream to completion, appending every chunk to <paramref name="buffer"/> and, when
     /// <paramref name="log"/> is set, flushing the same chunk to the shared log file under <paramref name="logLock"/>
