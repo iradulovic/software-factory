@@ -4,6 +4,7 @@ using Factory.Api;
 public sealed class AgentStatsRow
 {
     public string? ActiveTask { get; init; }
+    public string? TaskClass { get; init; }
     public int RunsToday { get; init; }
     public int SuccessfulRuns { get; init; }
     public DateTimeOffset? QuotaDetectedAt { get; init; }
@@ -77,7 +78,7 @@ public static class AgentOperationalStateResolver
 /// configuration that isn't set up anywhere else in this project.</param>
 /// <param name="PauseReason">Only meaningful when <see cref="State"/> is "Paused".</param>
 public sealed record AgentStatus(
-    string Agent, string State, string? Version, string? Error, string? ActiveTask,
+    string Agent, string State, string? Version, string? Error, string? ActiveTask, string? TaskClass,
     int RunsToday, int SuccessfulRuns, DateTimeOffset? QuotaDetectedAt,
     DateTimeOffset? QuotaResetAt, string? QuotaWindow, string? QuotaResetKind, string? PauseReason,
     UsageSnapshot Usage, double UsageWarningThresholdPercent, double UsageCriticalThresholdPercent);
