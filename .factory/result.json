@@ -1,18 +1,22 @@
 {
   "status": "completed",
-  "summary": "Added a Clear button to the Ask page that resets the local conversation and inline error state without affecting dispatch-control audit history.",
+  "summary": "Replaced per-agent navbar tooltips and adjacent controls with one keyboard-accessible popover showing every configured agent's status, activity, quota, and pause/resume control.",
   "testsRun": [
     "npm run lint",
     "npm run type-check",
+    "npm test",
     "npm run build",
-    "npm test"
+    "dotnet build",
+    "dotnet test"
   ],
   "testsPassed": true,
   "filesChanged": [
-    "web/Factory.Web/app/operator/page.tsx",
+    "web/Factory.Web/components/shell.tsx",
     ".factory/result.json"
   ],
-  "risks": [],
+  "risks": [
+    "The hover-to-panel handoff and keyboard focus behavior were validated by lint, type-check, and build but not manually exercised in a browser."
+  ],
   "needsHuman": false,
   "humanReason": null
 }
