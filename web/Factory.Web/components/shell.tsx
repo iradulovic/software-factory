@@ -137,18 +137,6 @@ function agentQuotaDescription(agent: AgentStatus) {
   return agent.quotaDetectedAt ? `Last quota hit ${formatAgentDate(agent.quotaDetectedAt)}` : "Quota clear";
 }
 
-export function agentStatusTitle(agent: AgentStatus) {
-  return [
-    `${agent.agent}: ${agentStateDescription(agent.state)}`,
-    agent.pauseReason ? `Pause reason: ${agent.pauseReason}` : null,
-    agent.error ? `Error: ${agent.error}` : null,
-    `Active task: ${agent.activeTask ?? "Idle"}`,
-    `Runs today: ${agent.runsToday}`,
-    `Invocations OK: ${agent.successfulRuns}`,
-    agentQuotaDescription(agent)
-  ].filter(Boolean).join(" · ");
-}
-
 function GitHubStatusIndicator() {
   const { data, error, isLoading } = useQuery({
     queryKey: ["github-status"],
@@ -238,9 +226,10 @@ export function AgentStatusPill() {
       onFocusCapture={cancelClose}
       onOpenAutoFocus={event => {
         if (!openedFromKeyboard.current) event.preventDefault();
-        openedFromKeyboard.current = false;
       }}
-      onCloseAutoFocus={() => {
+      onCloseAutoFocus={event => {
+        if (!openedFromKeyboard.current) event.preventDefault();
+        openedFromKeyboard.current = false;
         suppressFocusOpen.current = true;
         setTimeout(() => { suppressFocusOpen.current = false; }, 0);
       }}

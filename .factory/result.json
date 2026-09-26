@@ -1,13 +1,11 @@
 {
   "status": "completed",
-  "summary": "Replaced per-agent navbar tooltips and adjacent controls with one keyboard-accessible popover showing every configured agent's status, activity, quota, and pause/resume control.",
+  "summary": "Prevented hover-triggered agent status popover closes from moving keyboard focus to the trigger and removed the unused agentStatusTitle helper. Keyboard-opened panels retain their existing content autofocus and return-focus behavior.",
   "testsRun": [
     "npm run lint",
     "npm run type-check",
-    "npm test",
-    "npm run build",
-    "dotnet build",
-    "dotnet test"
+    "npm run test",
+    "npm run build"
   ],
   "testsPassed": true,
   "filesChanged": [
@@ -15,7 +13,7 @@
     ".factory/result.json"
   ],
   "risks": [
-    "The hover-to-panel handoff and keyboard focus behavior were validated by lint, type-check, and build but not manually exercised in a browser."
+    "Popover hover and keyboard focus behavior was validated by source checks and the production build but not manually exercised in a browser."
   ],
   "needsHuman": false,
   "humanReason": null
