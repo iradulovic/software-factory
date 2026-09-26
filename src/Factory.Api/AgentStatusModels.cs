@@ -1,4 +1,5 @@
 using Factory.Core;
+using Factory.Api;
 
 public sealed class AgentStatsRow
 {
@@ -78,7 +79,8 @@ public static class AgentOperationalStateResolver
 public sealed record AgentStatus(
     string Agent, string State, string? Version, string? Error, string? ActiveTask,
     int RunsToday, int SuccessfulRuns, DateTimeOffset? QuotaDetectedAt,
-    DateTimeOffset? QuotaResetAt, string? QuotaWindow, string? QuotaResetKind, string? PauseReason);
+    DateTimeOffset? QuotaResetAt, string? QuotaWindow, string? QuotaResetKind, string? PauseReason,
+    UsageSnapshot Usage, double UsageWarningThresholdPercent, double UsageCriticalThresholdPercent);
 
 public sealed record GitHubStatus(string State, string? Error);
 
