@@ -1,19 +1,24 @@
 {
   "status": "completed",
-  "summary": "Prevented hover-triggered agent status popover closes from moving keyboard focus to the trigger and removed the unused agentStatusTitle helper. Keyboard-opened panels retain their existing content autofocus and return-focus behavior.",
+  "summary": "Added an API-backed repository bootstrap flow that creates from app-base or safely seeds an empty existing repository, registers it for runtime sync, and opens one labeled derivation issue with a typed product brief.",
   "testsRun": [
-    "npm run lint",
-    "npm run type-check",
-    "npm run test",
-    "npm run build"
+    "dotnet build SoftwareFactory.slnx",
+    "dotnet test SoftwareFactory.slnx --no-build"
   ],
   "testsPassed": true,
   "filesChanged": [
-    "web/Factory.Web/components/shell.tsx",
-    ".factory/result.json"
+    ".factory/result.json",
+    "README.md",
+    "src/Factory.Api/Program.cs",
+    "src/Factory.Api/RepositoryModels.cs",
+    "src/Factory.Core/RepositoryBootstrap.cs",
+    "src/Factory.Infrastructure/RepositoryBootstrapper.cs",
+    "src/Factory.Infrastructure/ServiceCollectionExtensions.cs",
+    "tests/Factory.Core.Tests/RepositoryBootstrapTests.cs",
+    "tests/Factory.Infrastructure.Tests/RepositoryBootstrapperTests.cs"
   ],
   "risks": [
-    "Popover hover and keyboard focus behavior was validated by source checks and the production build but not manually exercised in a browser."
+    "The end-to-end GitHub write flow was not run against a live disposable repository; README.md documents the manual verification sequence."
   ],
   "needsHuman": false,
   "humanReason": null

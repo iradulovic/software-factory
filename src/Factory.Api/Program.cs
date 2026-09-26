@@ -740,6 +740,41 @@ app.MapPost("/api/repositories", async (AddRepositoryRequest body, IGitHubStore 
     return Results.Ok(repository);
 });
 
+app.MapPost("/api/repositories/bootstrap", async (BootstrapRepositoryRequest body, IRepositoryBootstrapper bootstrapper, CancellationToken ct) =>
+{
+    var owner = body.Owner?.Trim() ?? "";
+    var name = body.Name?.Trim() ?? "";
+    if (!RepositoryNameValidator.IsValid(owner) || !RepositoryNameValidator.IsValid(name))
+        return Results.BadRequest(new { error = "Owner and name must be non-empty and use only letters, digits, '.', '_', or '-'." });
+    if (!Enum.TryParse<ApplicationShell>(body.Shell, ignoreCase: true, out var shell))
+        return Results.BadRequest(new { error = "Shell must be dashboard, mobile, or both." });
+    var visibility = string.IsNullOrWhiteSpace(body.Visibility) ? "private" : body.Visibility.Trim().ToLowerInvariant();
+    if (visibility is not ("private" or "public" or "internal"))
+        return Results.BadRequest(new { error = "Visibility must be private, public, or internal." });
+    if (new[] { body.ProductName, body.FirstJourney, body.BackendChoice, body.AuthenticationProvider, body.DeployTarget }.Any(string.IsNullOrWhiteSpace))
+        return Results.BadRequest(new { error = "Every product brief field is required." });
+
+    if (body.ExistingRepositoryUrl is not null)
+    {
+        var expected = $"https://github.com/{owner}/{name}";
+        var supplied = body.ExistingRepositoryUrl.Trim().TrimEnd('/');
+        if (!string.Equals(supplied, expected, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(supplied, expected + ".git", StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { error = $"ExistingRepositoryUrl must identify {owner}/{name} on github.com." });
+    }
+
+    var brief = new ProductBrief(body.ProductName, body.FirstJourney, body.BackendChoice, body.AuthenticationProvider, body.DeployTarget, shell);
+    try
+    {
+        var result = await bootstrapper.BootstrapAsync(new RepositoryBootstrapRequest(owner, name, brief, visibility, body.ExistingRepositoryUrl), ct);
+        return Results.Ok(result);
+    }
+    catch (RepositoryBootstrapException exception)
+    {
+        return Results.Json(new { error = exception.Message }, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
 app.MapPatch("/api/repositories/{id:long}", async (long id, SetRepositoryEnabledRequest body, IGitHubStore github, CancellationToken ct) =>
 {
     var updated = await github.SetRepositoryEnabledAsync(id, body.IsEnabled, ct);

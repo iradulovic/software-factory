@@ -48,6 +48,10 @@ The development credentials in Compose are local-only defaults. Override `Factor
 
 Open the dashboard's **Repositories** page, enter the GitHub owner and repository name, and select **Add repository**. The new enabled repository is picked up on the next sync cycle; no service restart or tracked settings edit is needed. The form uses main as the default branch.
 
+To start a new application, `POST /api/repositories/bootstrap` creates `owner/name` from the `iradulovic/app-base` GitHub template, registers it as an enabled runtime repository, and opens exactly one issue labeled `factory:ready` and `coding:deep`. The request includes `owner`, `name`, `productName`, `firstJourney`, `backendChoice`, `authenticationProvider`, `deployTarget`, and `shell` (`dashboard`, `mobile`, or `both`); `visibility` defaults to `private`. Supplying `existingRepositoryUrl` instead seeds that GitHub repository only when its root is empty or contains a single README. Repositories with any other content are rejected without modification.
+
+Registration is automatic rather than an edit to `GitHub:Repositories`: the sync worker reads enabled database rows on every poll. For manual verification without creating live resources in CI, call the endpoint with a disposable repository, confirm it appears enabled in `GET /api/repositories`, then confirm its labeled issue appears in `GET /api/issues` and produces a pending task after the next configured sync interval.
+
 ## Repository and agent configuration
 Every CLI provider is configured under `Agents:Profiles`. Codex is one provider and one operational agent. Its `Classes` map chooses invocation arguments, model ID, and reasoning effort immediately before each run:
 
