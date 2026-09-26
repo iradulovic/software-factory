@@ -1,0 +1,33 @@
+{
+  "status": "completed",
+  "summary": "Added a bounded review-fix loop that returns structured findings to the original implementing agent, re-reviews fixes, and revalidates the final commit. Added repository configuration, structured invocation tracking, and symmetric provider-role coverage.",
+  "testsRun": [
+    "dotnet build",
+    "dotnet test --no-build",
+    "dotnet test --no-build --filter \"FullyQualifiedName!~Factory.Core.Tests.RepositoryBootstrapTests.Product_brief_renders_a_stable_readable_handoff_issue\"",
+    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-restore --filter \"FullyQualifiedName~ReviewStepTests|FullyQualifiedName~RunAgentStepTests|FullyQualifiedName~TaskExecutorTests\"",
+    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-restore --filter \"FullyQualifiedName~RepositoryConfigurationReaderTests|FullyQualifiedName~CliAgentRunnerTests\""
+  ],
+  "testsPassed": false,
+  "filesChanged": [
+    "src/Factory.Core/Models.cs",
+    "src/Factory.Infrastructure/CliAgentRunner.cs",
+    "src/Factory.Infrastructure/TaskFiles.cs",
+    "src/Factory.Orchestrator/AgentSelector.cs",
+    "src/Factory.Orchestrator/Pipeline.cs",
+    "src/Factory.Orchestrator/ReviewStep.cs",
+    "src/Factory.Orchestrator/RunAgentStep.cs",
+    "src/Factory.Orchestrator/TaskExecutor.cs",
+    "tests/Factory.Infrastructure.Tests/CliAgentRunnerTests.cs",
+    "tests/Factory.Infrastructure.Tests/RepositoryConfigurationReaderTests.cs",
+    "tests/Factory.Orchestrator.Tests/ReviewStepTests.cs",
+    "tests/Factory.Orchestrator.Tests/RunAgentStepTests.cs",
+    "tests/Factory.Orchestrator.Tests/TaskExecutorTests.cs",
+    ".factory/result.json"
+  ],
+  "risks": [
+    "The unfiltered full test run has one unrelated pre-existing failure in RepositoryBootstrapTests.Product_brief_renders_a_stable_readable_handoff_issue because its raw-string expectation uses CRLF while BootstrapIssueBody.Render intentionally emits LF. The full suite excluding that test passes (610 tests), and all 64 focused orchestrator plus 52 focused infrastructure tests pass."
+  ],
+  "needsHuman": false,
+  "humanReason": null
+}
