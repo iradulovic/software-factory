@@ -53,6 +53,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
         services.AddSingleton<IWorktreeInspector, GitWorktreeInspector>();
         services.AddSingleton<IRepositoryConfigurationReader, RepositoryConfigurationReader>();
+        services.AddSingleton<IEnvironmentVariableReader, EnvironmentVariableReader>();
+        services.AddSingleton<IDeploymentProvider, VercelDeploymentProvider>();
+        services.AddSingleton<IDeploymentProvider, SupabaseDeploymentProvider>();
+        services.AddSingleton<IDeploymentStore, PostgresDeploymentStore>();
+        services.AddSingleton<IDeploymentProvisioner, DeploymentProvisioner>();
         services.AddSingleton<ITaskContextWriter, TaskContextWriter>();
         services.AddSingleton<IGitHubClient, GhCliClient>();
         services.AddSingleton<IGitHubPublisher, GhCliPublisher>();

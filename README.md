@@ -151,6 +151,30 @@ A repository can optionally opt into local browser smoke tests (SF-703) with a `
 
 `installCommand` (optional, absent by default) runs once, before `startCommand`. A task's Git worktree only ever contains tracked files, so a `startCommand` that depends on gitignored, installable dependencies (e.g. a Node app's `node_modules`) never finds them in a freshly created worktree without this — the fix for a real per-task run's `startCommand` structurally failing every time (SF-712). It fails the step (same repairable failure as a failed check) if it exits non-zero, and its own output is logged next to `startCommand`'s.
 
+Deployment targets are provisioned explicitly from Repository Details (`POST /api/repositories/{id}/deployments/provision`), never from the task pipeline. A repository declares target metadata and the *names* of host environment variables in `.factory/config.json`; secret values remain in the API host environment and are sent to provider CLIs through stdin or the child-process environment, never written to the deployment registry or logs:
+
+```json
+{
+  "deployments": {
+    "vercel": {
+      "projectName": "acme-web",
+      "environmentVariables": ["DATABASE_URL", "API_KEY"],
+      "environment": "production"
+    },
+    "supabase": {
+      "projectName": "acme-db",
+      "organizationId": "org-id",
+      "region": "eu-central-1",
+      "dbPasswordEnvironmentVariable": "ACME_DB_PASSWORD"
+    }
+  }
+}
+```
+
+For an existing Supabase project, set `projectRef` instead of `organizationId`; provisioning links it and runs `supabase db push`. Vercel provisioning runs `vercel link`, adds the configured environment variables, and runs `vercel git connect`, so future default-branch merges deploy through Vercel's own Git integration. Successful links are upserted into `factory.deployment` with provider, external project ID, project URL, and non-secret linkage metadata.
+
+Railway was evaluated against its current CLI documentation but is not included in this change. Its CLI supports `railway init`/`link`, variables, and direct `railway up`, but its GitHub-source/service setup is not a thin equivalent of Vercel's one-time `git connect`; adding it cleanly requires a provider-specific service/source policy and should be a follow-up rather than silently introducing factory-driven production deploys. See the official [Railway CLI command list](https://docs.railway.com/cli) and [`railway link` reference](https://docs.railway.com/cli/link).
+
 A quota-interrupted invocation never got a real chance to implement anything, so it does not count toward `maxImplementationAttempts`, and the "previous attempt" context above always reflects the last invocation that actually tried, never a quota blip. Excluding quota interruptions from that budget is bounded separately by `maxQuotaInterruptions`: once a task has accumulated that many quota-interrupted invocations without a successful attempt, it moves to `NeedsHuman` instead of waiting again, so a persistently blocked provider cannot make a task wait forever.
 
 A `WaitingForQuota` task resumes from real-time provider availability, not its own history: even a task that was interrupted before ever being invoked (every configured provider was already at quota) resumes automatically the moment any configured provider becomes available again, and a task that last used a now-still-blocked provider still resumes as soon as a different configured one frees up — no manual Retry needed either way.

@@ -37,6 +37,16 @@ public sealed class PostgreSqlContractTests
         Assert.Contains("Implementing", sql);
     }
 
+    [Fact]
+    public void Deployment_registry_is_repository_scoped_and_provider_unique()
+    {
+        var sql = File.ReadAllText(Path.Combine(Root(), "database", "migrations", "037_deployment_registry.sql"));
+        Assert.Contains("CREATE TABLE factory.deployment", sql);
+        Assert.Contains("REFERENCES github.repository(id)", sql);
+        Assert.Contains("UNIQUE(repository_id,provider)", sql);
+        Assert.Contains("linkage_metadata JSONB", sql);
+    }
+
     private static string ReadMigration() => File.ReadAllText(Path.Combine(Root(), "database", "migrations", "001_initial.sql"));
     private static string Root()
     {

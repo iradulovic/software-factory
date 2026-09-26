@@ -498,6 +498,29 @@ public interface IWorktreeManager
 }
 public sealed record WorktreeLocation(string BranchName, string Path);
 public interface IRepositoryConfigurationReader { Task<RepositoryConfiguration> ReadAsync(string worktreePath, string baseRef, CancellationToken cancellationToken); }
+
+/// <summary>One external deployment platform boundary. Implementations only provision/link infrastructure;
+/// steady-state production deployments remain owned by each platform's Git integration.</summary>
+public interface IDeploymentProvider
+{
+    string Provider { get; }
+    Task<DeploymentProvisioningResult> ProvisionAsync(DeploymentProvisioningRequest request, CancellationToken cancellationToken);
+}
+
+public interface IDeploymentStore
+{
+    Task<DeploymentRecord> UpsertAsync(long repositoryId, DeploymentProvisioningResult result, CancellationToken cancellationToken);
+    Task<IReadOnlyList<DeploymentRecord>> ListAsync(long repositoryId, CancellationToken cancellationToken);
+}
+
+public interface IDeploymentProvisioner
+{
+    Task<DeploymentRecord> ProvisionAsync(GitHubRepository repository, string provider, CancellationToken cancellationToken);
+}
+
+/// <summary>Reads secrets from the API host's existing environment. This is deliberately a reader, not a new
+/// persistent secret store.</summary>
+public interface IEnvironmentVariableReader { string? Get(string name); }
 public interface IWorktreeInspector
 {
     Task<bool> HasChangesAsync(string worktreePath, string baseRef, CancellationToken cancellationToken);
