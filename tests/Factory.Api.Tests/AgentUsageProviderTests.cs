@@ -51,6 +51,76 @@ public sealed class AgentUsageProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task Codex_reads_a_rollout_while_it_is_open_for_writing_and_skips_an_incomplete_record()
+    {
+        var sessions = Path.Combine(directory, "sessions");
+        Directory.CreateDirectory(sessions);
+        var path = Path.Combine(sessions, "rollout-active.jsonl");
+        var writer = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+        await using (writer)
+        {
+            var completeEvent = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"rate_limits\":{\"primary\":{\"used_percent\":35,\"resets_at\":1790416800},\"secondary\":{\"used_percent\":65,\"resets_at\":1790848800}}}}\n";
+            await writer.WriteAsync(Encoding.UTF8.GetBytes(completeEvent + "{\"type\":\"event_msg\",\"payload\":{\"type\":"));
+            await writer.FlushAsync();
+
+            var result = await Codex().GetUsageAsync(CancellationToken.None);
+
+            Assert.True(result.IsKnown);
+            Assert.Equal(35, result.FiveHour!.UsedPercent);
+            Assert.Equal(65, result.Weekly!.UsedPercent);
+        }
+    }
+
+    [Theory]
+    [InlineData("Codex")]
+    [InlineData("Claude")]
+    public void Snapshot_store_keeps_the_last_known_usage_as_stale_after_an_unknown_poll(string provider)
+    {
+        var store = new AgentUsageSnapshotStore();
+        var lastKnown = UsageSnapshot.Known(provider,
+            new UsageWindow(25, Now.AddHours(2)), new UsageWindow(70, Now.AddDays(3)), Now);
+
+        store.Set(lastKnown);
+        store.Set(UsageSnapshot.Unknown(provider, Now.AddMinutes(5), "Usage endpoint is unavailable"));
+
+        var result = store.GetOrUnknown(provider, Now.AddMinutes(5));
+        Assert.True(result.IsKnown);
+        Assert.True(result.IsStale);
+        Assert.Equal(lastKnown.CapturedAt, result.CapturedAt);
+        Assert.Equal(lastKnown.FiveHour, result.FiveHour);
+        Assert.Equal(lastKnown.Weekly, result.Weekly);
+    }
+
+    [Fact]
+    public void Snapshot_store_does_not_mark_the_first_unknown_poll_as_stale()
+    {
+        var store = new AgentUsageSnapshotStore();
+        store.Set(UsageSnapshot.Unknown("Codex", Now, "No usage data"));
+
+        var result = store.GetOrUnknown("Codex", Now.AddMinutes(1));
+
+        Assert.False(result.IsKnown);
+        Assert.False(result.IsStale);
+        Assert.Equal("No usage data", result.UnknownReason);
+    }
+
+    [Fact]
+    public void Snapshot_store_clears_stale_state_after_a_successful_poll()
+    {
+        var store = new AgentUsageSnapshotStore();
+        store.Set(UsageSnapshot.Known("Codex", new UsageWindow(10, Now.AddHours(2)), new UsageWindow(20, Now.AddDays(3)), Now));
+        store.Set(UsageSnapshot.Unknown("Codex", Now.AddMinutes(5), "Temporary failure"));
+        store.Set(UsageSnapshot.Known("Codex", new UsageWindow(11, Now.AddHours(2)), new UsageWindow(21, Now.AddDays(3)), Now.AddMinutes(10)));
+
+        var result = store.GetOrUnknown("Codex", Now.AddMinutes(10));
+
+        Assert.True(result.IsKnown);
+        Assert.False(result.IsStale);
+        Assert.Equal(Now.AddMinutes(10), result.CapturedAt);
+        Assert.Equal(11, result.FiveHour!.UsedPercent);
+    }
+
+    [Fact]
     public async Task Claude_reads_both_usage_windows_without_exposing_the_token()
     {
         await WriteCredentialsAsync(Now.AddHours(1));

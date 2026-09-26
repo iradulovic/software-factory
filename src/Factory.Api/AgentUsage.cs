@@ -23,6 +23,8 @@ public sealed record UsageWindow(double UsedPercent, DateTimeOffset ResetsAt);
 public sealed record UsageSnapshot(string Provider, bool IsKnown, UsageWindow? FiveHour, UsageWindow? Weekly,
     DateTimeOffset CapturedAt, string? UnknownReason)
 {
+    public bool IsStale { get; init; }
+
     public static UsageSnapshot Unknown(string provider, DateTimeOffset capturedAt, string reason) =>
         new(provider, false, null, null, capturedAt, reason);
 
@@ -49,7 +51,11 @@ public sealed class AgentUsageSnapshotStore : IAgentUsageSnapshotStore
     public UsageSnapshot GetOrUnknown(string provider, DateTimeOffset now) => snapshots.TryGetValue(provider, out var snapshot)
         ? snapshot : UsageSnapshot.Unknown(provider, now, "Usage has not been checked yet");
 
-    public void Set(UsageSnapshot snapshot) => snapshots[snapshot.Provider] = snapshot;
+    public void Set(UsageSnapshot snapshot) => snapshots.AddOrUpdate(snapshot.Provider,
+        snapshot,
+        (_, previous) => !snapshot.IsKnown && previous.IsKnown
+            ? previous with { IsStale = true }
+            : snapshot with { IsStale = false });
 }
 
 public sealed class CodexUsageProvider(IOptions<AgentUsageOptions> options, IClock clock) : IAgentUsageProvider
@@ -73,20 +79,51 @@ public sealed class CodexUsageProvider(IOptions<AgentUsageOptions> options, IClo
             if (latest is null) return UsageSnapshot.Unknown(Provider, now, "No Codex rollout file is available");
 
             UsageSnapshot? snapshot = null;
-            foreach (var line in await File.ReadAllLinesAsync(latest.Path, cancellationToken))
+            var malformedEvent = false;
+            await using var stream = new FileStream(latest.Path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            using var reader = new StreamReader(stream);
+            while (await reader.ReadLineAsync(cancellationToken) is { } line)
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
-                using var document = JsonDocument.Parse(line);
-                var root = document.RootElement;
-                var payload = root.TryGetProperty("payload", out var nestedPayload) ? nestedPayload : root;
-                if (!payload.TryGetProperty("type", out var type) || type.GetString() != "token_count") continue;
-                if (!payload.TryGetProperty("rate_limits", out var limits)
-                    || !TryReadWindow(limits, "primary", out var fiveHour)
-                    || !TryReadWindow(limits, "secondary", out var weekly))
-                    return UsageSnapshot.Unknown(Provider, now, "The latest Codex usage event is malformed");
-                snapshot = UsageSnapshot.Known(Provider, fiveHour!, weekly!, now);
+                JsonDocument document;
+                try { document = JsonDocument.Parse(line); }
+                catch (JsonException)
+                {
+                    // The active Codex process may be halfway through appending this JSONL record.
+                    // Keep any complete usage event already read from the same rollout.
+                    malformedEvent = true;
+                    continue;
+                }
+
+                using (document)
+                {
+                    var root = document.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        malformedEvent = true;
+                        continue;
+                    }
+                    var payload = root.TryGetProperty("payload", out var nestedPayload) ? nestedPayload : root;
+                    if (payload.ValueKind != JsonValueKind.Object)
+                    {
+                        malformedEvent = true;
+                        continue;
+                    }
+                    if (!payload.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String || type.GetString() != "token_count") continue;
+                    if (!payload.TryGetProperty("rate_limits", out var limits)
+                        || !TryReadWindow(limits, "primary", out var fiveHour)
+                        || !TryReadWindow(limits, "secondary", out var weekly))
+                    {
+                        malformedEvent = true;
+                        continue;
+                    }
+                    snapshot = UsageSnapshot.Known(Provider, fiveHour!, weekly!, now);
+                }
             }
-            return snapshot ?? UsageSnapshot.Unknown(Provider, now, "The latest Codex rollout has no usage event");
+            return snapshot ?? UsageSnapshot.Unknown(Provider, now, malformedEvent
+                ? "The latest Codex usage event is malformed"
+                : "The latest Codex rollout has no usage event");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception) { return UsageSnapshot.Unknown(Provider, now, "Codex usage data could not be read"); }
@@ -95,7 +132,8 @@ public sealed class CodexUsageProvider(IOptions<AgentUsageOptions> options, IClo
     private static bool TryReadWindow(JsonElement limits, string name, out UsageWindow? window)
     {
         window = null;
-        if (!limits.TryGetProperty(name, out var value)
+        if (limits.ValueKind != JsonValueKind.Object || !limits.TryGetProperty(name, out var value)
+            || value.ValueKind != JsonValueKind.Object
             || !value.TryGetProperty("used_percent", out var usedElement) || !usedElement.TryGetDouble(out var used)
             || !value.TryGetProperty("resets_at", out var resetElement) || !resetElement.TryGetInt64(out var reset)
             || !double.IsFinite(used) || used is < 0 or > 100) return false;

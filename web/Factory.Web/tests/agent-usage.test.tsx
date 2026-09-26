@@ -12,14 +12,22 @@ function status(usage: AgentStatus["usage"]): AgentStatus {
 
 test("shows both usage windows with warning levels", () => {
   const html = renderToStaticMarkup(<AgentUsageDetails agent={status({provider:"Codex",isKnown:true,
+    isStale:false,
     fiveHour:{usedPercent:82,resetsAt:"2026-09-26T12:00:00Z"},weekly:{usedPercent:96,resetsAt:"2026-09-30T12:00:00Z"},
     capturedAt:"2026-09-26T10:00:00Z",unknownReason:null})} />);
   assert.match(html, /5 hour/); assert.match(html, /82\.0%/); assert.match(html, /tone-amber/);
   assert.match(html, /Weekly/); assert.match(html, /96\.0%/); assert.match(html, /tone-red/);
 });
 
+test("shows when known usage is stale and when it was captured", () => {
+  const html = renderToStaticMarkup(<AgentUsageDetails agent={status({provider:"Codex",isKnown:true,isStale:true,
+    fiveHour:{usedPercent:35,resetsAt:"2026-09-26T12:00:00Z"},weekly:{usedPercent:65,resetsAt:"2026-09-30T12:00:00Z"},
+    capturedAt:"2026-09-26T10:00:00Z",unknownReason:null})} />);
+  assert.match(html, /Usage stale · as of/); assert.match(html, /35\.0%/);
+});
+
 test("shows an explicit unknown state", () => {
-  const html = renderToStaticMarkup(<AgentUsageDetails agent={status({provider:"Codex",isKnown:false,fiveHour:null,weekly:null,
+  const html = renderToStaticMarkup(<AgentUsageDetails agent={status({provider:"Codex",isKnown:false,isStale:false,fiveHour:null,weekly:null,
     capturedAt:"2026-09-26T10:00:00Z",unknownReason:"No rollout"})} />);
   assert.match(html, /Usage unknown/); assert.match(html, /No rollout/);
 });
