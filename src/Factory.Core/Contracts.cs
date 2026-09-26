@@ -26,6 +26,12 @@ public interface IAgentRunner
     bool SupportsTaskClass(string taskClass) => true;
 
     Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken);
+
+    /// <summary>Runs a read-only conversational turn through the same configured CLI/process boundary as task
+    /// execution. Conversation calls are deliberately not task runs: callers must not persist their quota signal
+    /// into the provider state that gates implementation dispatch.</summary>
+    Task<AgentConversationResult> ConverseAsync(AgentConversationRequest request, CancellationToken cancellationToken) =>
+        throw new NotSupportedException($"Agent {Name} does not support conversational runs.");
 }
 public interface IAgentAvailabilityChecker
 {

@@ -50,6 +50,7 @@ static TaskResponse AddConfiguredAgentMetadata(TaskResponse task, IEnumerable<IA
 const string AgentStatsSql = """
     SELECT
       (SELECT t.title FROM factory.task t WHERE t.current_agent=ANY(@names) ORDER BY t.started_at DESC LIMIT 1) AS "ActiveTask",
+      (SELECT t.task_class FROM factory.task t WHERE t.current_agent=ANY(@names) ORDER BY t.started_at DESC LIMIT 1) AS "TaskClass",
       (SELECT count(*) FROM factory.agent_run WHERE agent=ANY(@names) AND started_at >= CURRENT_DATE) AS "RunsToday",
       (SELECT count(*) FROM factory.agent_run WHERE agent=ANY(@names) AND status='Succeeded') AS "SuccessfulRuns",
       (SELECT started_at FROM factory.agent_run WHERE agent=ANY(@names) AND quota_detected=true ORDER BY started_at DESC LIMIT 1) AS "QuotaDetectedAt"
@@ -65,9 +66,21 @@ builder.Services.AddFactoryInfrastructure(builder.Configuration);
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.AddSingleton(sp => new NpgsqlDataSourceBuilder(sp.GetRequiredService<IOptions<FactoryOptions>>().Value.ConnectionString).Build());
 builder.Services.AddSingleton<NudgeStore>();
-builder.Services.AddScoped<OperatorChat>();
+builder.Services.AddScoped<IOperatorStateResponder, OperatorChat>();
+builder.Services.AddSingleton<IAssistantConversation, AssistantConversation>();
+builder.Services.AddScoped<OperatorAskRouter>();
 builder.Services.AddHttpClient();
-if (!builder.Environment.IsEnvironment("Testing")) builder.Services.AddHostedService<NudgeWorker>();
+builder.Services.Configure<AgentUsageOptions>(builder.Configuration.GetSection("AgentUsage"));
+builder.Services.AddSingleton<IAgentUsageSnapshotStore, AgentUsageSnapshotStore>();
+var configuredUsageProviders = (builder.Configuration.GetSection("Agents").Get<AgentProfilesOptions>()?.Profiles
+    ?? [.. AgentProfilesOptions.DefaultProfiles]).Select(profile => profile.EffectiveProvider).ToHashSet(StringComparer.OrdinalIgnoreCase);
+if (configuredUsageProviders.Contains("Codex")) builder.Services.AddSingleton<IAgentUsageProvider, CodexUsageProvider>();
+if (configuredUsageProviders.Contains("Claude")) builder.Services.AddSingleton<IAgentUsageProvider, ClaudeUsageProvider>();
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddHostedService<NudgeWorker>();
+    builder.Services.AddHostedService<AgentUsageWorker>();
+}
 
 var app = builder.Build();
 app.UseCors();
@@ -100,7 +113,7 @@ app.MapGet("/health", async (NpgsqlDataSource db, CancellationToken ct) =>
     }
 });
 
-app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, IEnumerable<IAgentRunner> agents, ITaskStore tasks, IOptions<FactoryOptions> options, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
+app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, IEnumerable<IAgentRunner> agents, ITaskStore tasks, IAgentUsageSnapshotStore usageSnapshots, IOptions<AgentUsageOptions> usageOptions, IOptions<FactoryOptions> options, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
     var metrics = await c.QuerySingleAsync<DashboardMetricsRow>(new CommandDefinition("""
@@ -157,7 +170,7 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvail
             OR (SELECT count(*) FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.quota_detected AND NOT ar.counts_as_implementation_attempt) >= 2)
         ORDER BY t.created_at DESC LIMIT 20
         """, cancellationToken: ct));
-    var agentStatus = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct);
+    var agentStatus = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, usageSnapshots, usageOptions.Value, ct);
 
     // A cap on outstanding review work (SF-612) — ReadyForPublish + Published tasks — so unattended
     // implementation can never outrun the operator's own review capacity. Zero or negative disables it.
@@ -188,16 +201,31 @@ app.MapGet("/api/execution/current", async (NpgsqlDataSource db, CancellationTok
     return Results.Ok(CurrentExecutionProjection.Create(row, dashboardUrl, DateTimeOffset.UtcNow));
 });
 
-app.MapPost("/api/operator/ask", async (OperatorQuestion question, OperatorChat chat, CancellationToken ct) =>
+app.MapPost("/api/operator/ask", async (OperatorQuestion question, OperatorAskRouter chat, CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(question.Text) || question.Text.Length > 1000)
         return Results.BadRequest(new { error = "Enter a question of at most 1000 characters." });
-    return Results.Ok(await chat.AnswerAsync(question.Text.Trim(), ct));
+    var history = question.History ?? [];
+    if (history.Count > 20 || history.Sum(message => message.Content?.Length ?? 0) > 12_000 ||
+        history.Any(message => message.Role is not ("user" or "assistant") || string.IsNullOrWhiteSpace(message.Content)))
+        return Results.BadRequest(new { error = "Conversation history must contain at most 20 valid user/assistant messages and 12,000 characters." });
+    try
+    {
+        return Results.Ok(await chat.AnswerAsync(question.Text.Trim(), history, ct));
+    }
+    catch (AssistantCapacityException ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status429TooManyRequests);
+    }
+    catch (AssistantUnavailableException ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
 });
 
 app.MapGet("/api/attention", async (NpgsqlDataSource db, IOptions<FactoryOptions> options,
     IOptions<GitHubSyncOptions> githubOptions, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers,
-    ITaskStore tasks, CancellationToken ct) =>
+    ITaskStore tasks, IAgentUsageSnapshotStore usageSnapshots, IOptions<AgentUsageOptions> usageOptions, CancellationToken ct) =>
 {
     var now = DateTimeOffset.UtcNow;
     await using var c = await db.OpenConnectionAsync(ct);
@@ -209,7 +237,7 @@ app.MapGet("/api/attention", async (NpgsqlDataSource db, IOptions<FactoryOptions
     if (reviewLimit > 0 && reviewCount >= reviewLimit)
         sources.Add(new AttentionSourceRow { Id = "global", Kind = "ReviewBacklog", Title = "Review backlog limit reached",
             Reason = $"{reviewCount}/{reviewLimit} tasks await publication or merge.", FirstObservedAt = now, LastObservedAt = now });
-    var agents = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct);
+    var agents = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, usageSnapshots, usageOptions.Value, ct);
     if (agents.Count > 0 && agents.All(agent => agent.State is "QuotaBlocked" or "Unavailable" or "Unknown" or "Paused"))
         sources.Add(new AttentionSourceRow { Id = "global", Kind = "AllAgentsUnavailable", Title = "No agent can claim work",
             Reason = "Every configured agent is quota blocked, paused, or unavailable.", FirstObservedAt = now, LastObservedAt = now });
@@ -241,10 +269,10 @@ app.MapGet("/api/nudges", async (NudgeStore nudges, CancellationToken ct) =>
 app.MapPost("/api/nudges/{id:guid}/read", async (Guid id, NudgeStore nudges, CancellationToken ct) =>
     await nudges.MarkReadAsync(id, ct) ? Results.NoContent() : Results.NotFound());
 
-app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct) =>
+app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, IAgentUsageSnapshotStore usageSnapshots, IOptions<AgentUsageOptions> usageOptions, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
-    return Results.Ok(await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct));
+    return Results.Ok(await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, usageSnapshots, usageOptions.Value, ct));
 });
 
 app.MapGet("/api/github/status", async (IGitHubAvailabilityChecker checker, CancellationToken ct) =>
@@ -905,7 +933,7 @@ static Func<NpgsqlDataSource, CancellationToken, Task<IResult>> Query(string sql
 
 // Shared by /api/dashboard and /api/agents/status so the header's compact status pill and the full Overview
 // panel can never disagree about an agent's state.
-static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct)
+static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, IAgentUsageSnapshotStore usageSnapshots, AgentUsageOptions usageOptions, CancellationToken ct)
 {
     var agentStatus = new List<AgentStatus>();
     foreach (var checker in availabilityCheckers)
@@ -936,8 +964,9 @@ static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c,
             ? (quotaStatus.ResetAt, quotaStatus.Window.ToString(), quotaStatus.ResetKind.ToString())
             : (null, null, null);
         agentStatus.Add(new AgentStatus(checker.Agent, state.ToString(), version, error,
-            stats.ActiveTask, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, quotaResetAt, quotaWindow, quotaResetKind,
-            pause.Paused ? pause.Reason : null));
+            stats.ActiveTask, stats.TaskClass, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, quotaResetAt, quotaWindow, quotaResetKind,
+            pause.Paused ? pause.Reason : null, usageSnapshots.GetOrUnknown(checker.Provider, DateTimeOffset.UtcNow),
+            usageOptions.WarningThresholdPercent, usageOptions.CriticalThresholdPercent));
     }
     return agentStatus;
 }

@@ -39,10 +39,11 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
             string.IsNullOrWhiteSpace(file?.Publish) ? defaults.Publish : file.Publish.Trim(),
             file?.MaxQuotaInterruptions ?? defaults.MaxQuotaInterruptions,
             ParseSmokeTest(file?.SmokeTest, source),
+            file?.MaxReviewFixAttempts ?? defaults.MaxReviewFixAttempts,
             ParseDeployments(file?.Deployments, source));
 
-        if (configuration.MaxImplementationAttempts < 1 || configuration.MaxReviewAttempts < 0)
-            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxImplementationAttempts must be at least 1 and maxReviewAttempts must not be negative.");
+        if (configuration.MaxImplementationAttempts < 1 || configuration.MaxReviewAttempts < 0 || configuration.MaxReviewFixAttempts < 0)
+            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxImplementationAttempts must be at least 1 and maxReviewAttempts and maxReviewFixAttempts must not be negative.");
         if (configuration.MaxQuotaInterruptions < 1)
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxQuotaInterruptions must be at least 1.");
         if (configuration.BuildCommands.Any(c => string.IsNullOrWhiteSpace(c.Executable)) || configuration.TestCommands.Any(c => string.IsNullOrWhiteSpace(c.Executable)))
@@ -103,6 +104,7 @@ internal sealed class RepositoryConfigurationFile
     public IReadOnlyList<ValidationCommand>? TestCommands { get; init; }
     public int? MaxImplementationAttempts { get; init; }
     public int? MaxReviewAttempts { get; init; }
+    public int? MaxReviewFixAttempts { get; init; }
     public bool? RequireHumanMerge { get; init; }
     public string? Publish { get; init; }
     public int? MaxQuotaInterruptions { get; init; }

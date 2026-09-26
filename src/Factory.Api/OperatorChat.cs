@@ -7,18 +7,20 @@ using Npgsql;
 
 namespace Factory.Api;
 
-public sealed record OperatorQuestion(string Text);
+public sealed record OperatorConversationMessage(string Role, string Content);
+public sealed record OperatorQuestion(string Text, IReadOnlyList<OperatorConversationMessage>? History = null);
 public sealed record OperatorEvidence(string Label, string Detail, string Href);
 public sealed record OperatorAction(string Label, string Path, string OutcomePath, bool? ExpectedPaused = null);
 public sealed record OperatorReply(string Observed, string? Explanation, string? Suggestion,
-    IReadOnlyList<OperatorEvidence> Evidence, OperatorAction? Action, DateTimeOffset AsOf);
+    IReadOnlyList<OperatorEvidence> Evidence, OperatorAction? Action, DateTimeOffset AsOf,
+    string Route = "deterministic", string? Agent = null);
 
 public static partial class OperatorQuestionParser
 {
     [GeneratedRegex(@"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")]
     private static partial Regex TaskIdPattern();
 
-    public static (string Intent, Guid? TaskId, bool Ambiguous) Parse(string question)
+    public static (string? Intent, Guid? TaskId, bool Ambiguous) Parse(string question)
     {
         var ids = TaskIdPattern().Matches(question).Select(m => Guid.Parse(m.Value)).Distinct().ToArray();
         var q = question.ToLowerInvariant();
@@ -34,7 +36,7 @@ public static partial class OperatorQuestionParser
             : q.Contains("need") && (q.Contains("me") || q.Contains("attention")) ? "attention"
             : q.Contains("do next") ? "attention"
             : q.Contains("next") ? "next"
-            : "help";
+            : null;
         return (intent, ids.Length == 1 ? ids[0] : null, ids.Length > 1);
     }
 }
@@ -65,13 +67,20 @@ public static class OperatorMergeEligibility
         && (row.MergeStatus == "Mergeable" || row.MergeStateStatus == "DRAFT" && row.Mergeable == "MERGEABLE");
 }
 
+public interface IOperatorStateResponder
+{
+    Task<OperatorReply> AnswerAsync(string question, CancellationToken ct);
+}
+
 public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, IOptions<GitHubSyncOptions> githubOptions,
     IOptions<FactoryOptions> factoryOptions)
+    : IOperatorStateResponder
 {
     public async Task<OperatorReply> AnswerAsync(string question, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
         var (intent, taskId, ambiguous) = OperatorQuestionParser.Parse(question);
+        if (intent is null) throw new InvalidOperationException("The deterministic operator responder received an unmatched question.");
         if (ambiguous) return Reply("The request names more than one task.", "I cannot choose which task to change.",
             "Ask again with exactly one task ID.", now);
         await using var db = await dataSource.OpenConnectionAsync(ct);
@@ -225,9 +234,7 @@ public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, 
                     "The worker makes the final claim after rechecking state.", now,
                     [new("Task", next.Title, $"/tasks/{next.TaskId}")]);
         }
-        return Reply("I can answer from recorded factory state.", null,
-            "Try: What is running? Why idle? What changed today? What needs me? What is next? Why did task <ID> retry? For controls, name one task ID or ask to pause or resume dispatch.",
-            now);
+        throw new InvalidOperationException($"Unsupported deterministic operator intent '{intent}'.");
     }
 
     private static async Task<bool> IsMergeReadyAsync(NpgsqlConnection db, Guid taskId, string? branchName, CancellationToken ct)

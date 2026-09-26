@@ -31,8 +31,8 @@ public sealed class RepositoryBootstrapTests
             ## First journey
 
             A signed-in researcher creates a note and sees it in the dashboard.
-            """.ReplaceLineEndings("\n");
+            """;
 
-        Assert.Equal(expected, body);
+        Assert.Equal(expected.ReplaceLineEndings("\n"), body);
     }
 }

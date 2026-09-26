@@ -13,6 +13,7 @@ public sealed class RepositoryConfigurationReaderTests
         Assert.Equal(RepositoryConfiguration.Default.TestCommands, configuration.TestCommands);
         Assert.Equal(3, configuration.MaxImplementationAttempts);
         Assert.Equal(RepositoryConfiguration.Default.MaxReviewAttempts, configuration.MaxReviewAttempts);
+        Assert.Equal(RepositoryConfiguration.Default.MaxReviewFixAttempts, configuration.MaxReviewFixAttempts);
         Assert.Equal("main", configuration.BaseBranch);
         Assert.True(configuration.RequireHumanMerge);
         Assert.Equal("manual", configuration.Publish);
@@ -115,9 +116,20 @@ public sealed class RepositoryConfigurationReaderTests
         Assert.Equal(RepositoryConfiguration.Default.MaxQuotaInterruptions, defaulted.MaxQuotaInterruptions);
     }
 
+    [Fact]
+    public void Max_review_fix_attempts_is_read_and_defaulted()
+    {
+        var configured = RepositoryConfigurationReader.Parse("""{"maxReviewFixAttempts":3}""", "origin/main");
+        var defaulted = RepositoryConfigurationReader.Parse("{}", "origin/main");
+
+        Assert.Equal(3, configured.MaxReviewFixAttempts);
+        Assert.Equal(RepositoryConfiguration.Default.MaxReviewFixAttempts, defaulted.MaxReviewFixAttempts);
+    }
+
     [Theory]
     [InlineData("""{"maxImplementationAttempts":0}""")]
     [InlineData("""{"maxQuotaInterruptions":0}""")]
+    [InlineData("""{"maxReviewFixAttempts":-1}""")]
     [InlineData("""{"testCommands":["dotnet test",""]}""")]
     [InlineData("""{"testCommands":[[]]}""")]
     [InlineData("""{"testCommands":[[""]]}""")]
