@@ -704,6 +704,29 @@ public sealed class TaskExecutorTests
     }
 
     [Fact]
+    public async Task A_review_fix_is_re_reviewed_and_the_final_commit_is_revalidated()
+    {
+        var harness = new Harness
+        {
+            IssueBody = "request review please",
+            PreferredAgent = "Codex",
+            ReviewPreferredAgent = "Claude",
+            ConfiguredAgents = ["Codex", "Claude"]
+        };
+        harness.ReviewAgentResults.Enqueue(new AgentReviewResult("blocked", "Found a bug",
+            [new ReviewFinding("high", "src/Export.cs", 5, "Handle empty exports")], false, null));
+        harness.ReviewAgentResults.Enqueue(new AgentReviewResult("completed", "Fixed", [], false, null));
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+        Assert.Equal(["Codex", "Claude", "Codex", "Claude"], harness.AgentInvocationNames);
+        Assert.Equal(2, harness.Store.StepOrder.Count(step => step == "Build"));
+        Assert.Equal(2, harness.Store.StepOrder.Count(step => step == "Test"));
+        Assert.Equal(2, harness.Store.ValidatedHeadCommits.Count);
+    }
+
+    [Fact]
     public async Task Setting_max_review_attempts_to_zero_disables_review_even_with_a_marker_present()
     {
         var harness = new Harness
@@ -734,6 +757,7 @@ public sealed class TaskExecutorTests
         public RepositoryConfiguration Configuration { get; init; } = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 2, 1, true);
         public AgentRunResult AgentResult { get; init; } = Agent("completed", "Implemented the export");
         public AgentReviewResult ReviewAgentResult { get; init; } = new("completed", "Nothing to flag", [], false, null);
+        public Queue<AgentReviewResult> ReviewAgentResults { get; } = new();
         public bool RepositoryFound { get; init; } = true;
         public bool HasChanges { get; init; } = true;
         public bool IsClean { get; init; } = true;
@@ -788,7 +812,7 @@ public sealed class TaskExecutorTests
                 new PrepareRepositoryStep(Store, new FakeGitHubStore(this)),
                 new CreateWorktreeStep(Store, new FakeWorktrees(this)),
                 new WriteContextStep(Store, new FakeContextWriter(this), new FakeConfigurationReader(this)),
-                new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions())),
+                new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), NullLogger<RunAgentStep>.Instance),
                 new CollectDiffStep(Store, new FakeInspector(this)),
                 new ValidateStep(Store, new FakeProcessRunner(this), Options.Create(new FactoryOptions())),
                 new SmokeTestStep(Store, new FakeProcessRunner(this), new UnusedBrowserSmokeTestRunner(), new UnusedHttpClientFactory(), Options.Create(new FactoryOptions())),
@@ -854,7 +878,8 @@ public sealed class TaskExecutorTests
                 if (harness.AgentThrows is not null) throw harness.AgentThrows;
                 if (harness.WaitForAgentCancellation) return WaitForCancellationAsync(harness.AgentStarted, cancellationToken);
                 if (request.Purpose == AgentRunPurpose.Review)
-                    return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: harness.ReviewAgentResult));
+                    return Task.FromResult(new AgentRunResult(Process(), null, null, false,
+                        ReviewResult: harness.ReviewAgentResults.TryDequeue(out var review) ? review : harness.ReviewAgentResult));
                 return Task.FromResult(harness.AgentResult);
             }
 
