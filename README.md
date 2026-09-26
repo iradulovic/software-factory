@@ -2,7 +2,7 @@
 
 A local, observable development orchestrator that turns labeled GitHub issues into isolated Codex worktree runs, independently validates the result, and displays task/run state in an operational dashboard.
 
-Planned work and completed features are tracked in [`TASKS.md`](TASKS.md). Future coding runs use its ordered **Next up** queue when no task is selected explicitly.
+Work enters the factory only through GitHub issues labeled `factory:ready`; PostgreSQL stores the resulting factory task state. [`TASKS.md`](TASKS.md) is an archived historical record and is no longer ingested or updated.
 
 ## What works
 
@@ -98,8 +98,7 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
   "maxReviewAttempts": 1,
   "requireHumanMerge": true,
   "publish": "manual",
-  "maxQuotaInterruptions": 20,
-  "serializeSameBatchTrackerTasks": false
+  "maxQuotaInterruptions": 20
 }
 ```
 
@@ -253,18 +252,6 @@ gh issue create --repo acme/billing --title "HUMAN REVIEW: Add a health endpoint
 Within the configured polling interval, Sync imports the issue and creates a task. The Orchestrator invokes the configured agent, runs deterministic validation, and records the outcome, posting a comment and updating the issue state label as it goes. Follow progress and policy on Overview, Tasks, and Task Details, or on the issue itself. If publication is manual, select Publish from Task Details after validation; with auto-draft it is requested automatically.
 
 Sync is incremental: each repository records the point in time through which it is fully synchronized, and the next cycle asks `gh` only for issues updated at or after that checkpoint (fully paginated, never capped at a single page), so a repository with thousands of issues eventually converges without re-fetching its whole history every cycle. The checkpoint only advances once a cycle finishes fetching everything it found, using the time the cycle started rather than when it finished (backdated by a small fixed safety margin to absorb GitHub's search-indexing lag), so an issue that changes mid-cycle, or just before it, is safely picked up again next time rather than skipped. Every comment is fetched per issue rather than trusting `gh issue list`'s own capped nested field, and `closed_at` is persisted alongside `state`. A closed issue or one that loses its `factory:ready` label converges automatically: its still-`Pending` task (never one already in flight) is cancelled with an explicit reason recorded on the task; a reopened, still-eligible issue is picked up again like any other eligible issue on its next sync. `gh` CLI failures, including rate limiting, are persisted per repository as operational state and surfaced on the Repositories page.
-
-## 5b. Use a repository's own TASKS.md instead of, or alongside, GitHub issues
-
-A greenfield repository with a hand-written `TASKS.md` tracker (this repository's own `TASKS.md` is the running example) needs no GitHub issue at all: place the tracker file at the repository root, following this exact convention —
-
-- `## In progress` / `## Next up` / `## Completed` / `## Blocked` section headings (a `### Priority N` sub-heading inside `## Next up` is fine; it does not change which section an item belongs to).
-- Each item as `- [ ] **SF-123 — Title**` (open) or `- [x] **SF-123 — Title**` (done).
-- An optional nested `- Dependencies: SF-1, SF-2.` line — the only machine-readable dependency form; a `Depends on SF-1` clause folded into an item's own prose is deliberately not parsed.
-
-Every unchecked item under `## Next up` becomes a `Pending` factory task on the next sync cycle, without requiring a `factory:ready`-labeled issue first; a task it produces carries its own `tracker_item_id` (never a `github_issue_id`), so a repository that uses both sources at once runs them side by side without double-claiming the same work. As a task's status moves it into a different section — claimed work into `## In progress`, a merged pull request into `## Completed` (with a short trailing note pointing back at the task for full evidence), a failure or a needs-human outcome into `## Blocked` (with the task's own failure reason as the unblock condition) — `Factory.GitHubSync` writes that back into `TASKS.md` on the base branch directly, the same way it already writes a GitHub issue's own labels and comments. That write is always a plain (never forced) push: if the base branch moved since the file was last read — a human's own edit, most commonly — the push is simply rejected and retried fresh on the next sync cycle, so a human editing the tracker file is never overwritten or raced.
-
-Several items queued in the same batch with no `Dependencies:` line between them are independently claimable by default, so they can start implementing in parallel against the same stale base branch and collide with each other on publication. Declaring an explicit `Dependencies:` chain between them is the direct fix. A repository that queues tasks in batches and would rather not hand-author that chain every time can instead opt into `.factory/config.json`'s `"serializeSameBatchTrackerTasks": true` (default `false`): every task `Factory.GitHubSync` creates from the same `TASKS.md` sync pass is then automatically chained to the one it created immediately before it, in file order — tagged its own dependency `source` (`tracker-batch`) so it never interferes with a hand-authored `Dependencies:` line's own reconciliation.
 
 ## 6. Back up and restore local state
 

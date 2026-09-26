@@ -61,7 +61,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGitHubStore, PostgresGitHubStore>();
         services.AddSingleton<ITaskStore, PostgresTaskStore>();
         services.AddSingleton<IDigestStore, PostgresDigestStore>();
-        services.AddSingleton<ITrackerFileSync, TrackerFileSync>();
         services.AddSingleton<IBrowserSmokeTestRunner, PlaywrightSmokeTestRunner>();
         services.AddSingleton<DatabaseMigrator>();
         return services;

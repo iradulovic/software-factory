@@ -61,7 +61,6 @@ public sealed class TaskStateMachineTests
         Assert.True(Factory.Core.TaskStateMachine.RetainsWorkerOwnership(Factory.Core.FactoryTaskStatus.Stopping));
         Assert.True(Factory.Core.TaskStateMachine.IsCancellationRequested(Factory.Core.FactoryTaskStatus.Stopping));
         Assert.False(Factory.Core.TaskStateMachine.IsCancellationRequested(Factory.Core.FactoryTaskStatus.Implementing));
-        Assert.Equal(Factory.Core.TrackerSection.InProgress, Factory.Core.TrackerSectionMapper.From(Factory.Core.FactoryTaskStatus.Stopping));
     }
 
     [Fact]
