@@ -90,10 +90,10 @@ public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, 
             var wanted = intent == "pause";
             return pause.Paused == wanted
                 ? Reply(wanted ? "Dispatch is already paused." : "Dispatch is already running.", null,
-                    "No action is needed.", now, [new("Dispatch control", pause.Reason ?? "Current persisted control state", "/")])
+                    "No action is needed.", now, [new("Dispatch control", "Current persisted control state", "/")])
                 : Reply(wanted ? "Dispatch is currently running." : "Dispatch is currently paused.", null,
                     "Confirm the proposed control action below.", now,
-                    [new("Dispatch control", pause.Reason ?? "Current persisted control state", "/")],
+                    [new("Dispatch control", "Current persisted control state", "/")],
                     new(wanted ? "Pause new dispatch" : "Resume new dispatch", wanted ? "/api/control/pause" : "/api/control/resume", "/api/control/pause", pause.Paused));
         }
         if (intent is "cancel" or "stop-repairs" or "merge" or "retry")
@@ -174,7 +174,7 @@ public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, 
             var workerStaleAfter = TimeSpan.FromSeconds(Math.Max(factoryOptions.Value.PollingIntervalSeconds,
                 factoryOptions.Value.LeaseHeartbeatSeconds) * 3);
             var reason = active > 0 ? "A task is executing."
-                : paused.Paused ? $"Dispatch is paused{(paused.Reason is null ? "." : $": {paused.Reason}")}"
+                : paused.Paused ? "Dispatch is paused."
                 : pending == 0 ? "No tasks are pending."
                 : lastWorker is null || now - lastWorker > workerStaleAfter ? "The orchestrator has no recent worker heartbeat."
                 : next is null ? "Pending tasks exist, but none is currently eligible under dependencies and dispatch policy."

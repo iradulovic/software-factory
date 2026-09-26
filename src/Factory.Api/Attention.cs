@@ -119,7 +119,7 @@ public static class AttentionQuery
 {
     public const string Sources = """
         SELECT scope AS "Id",'DispatchPaused' AS "Kind",'Dispatch paused' AS "Title",
-          COALESCE(reason,'New tasks are not being claimed.') AS "Reason",COALESCE(paused_at,now()) AS "FirstObservedAt",
+          'New tasks are not being claimed.' AS "Reason",COALESCE(paused_at,now()) AS "FirstObservedAt",
           COALESCE(paused_at,now()) AS "LastObservedAt",NULL::text AS "Repository"
         FROM factory.dispatch_pause WHERE scope='__global__' AND paused
         UNION ALL

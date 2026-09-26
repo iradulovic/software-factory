@@ -296,7 +296,7 @@ app.MapGet("/api/github/status", async (IGitHubAvailabilityChecker checker, Canc
 // Durable pause/resume (SF-610). Pausing stops new dispatch only — a task already claimed and executing always
 // finishes, and publication of already-validated work is untouched, since it consumes no agent's subscription.
 app.MapGet("/api/control/pause", async (ITaskStore tasks, CancellationToken ct) =>
-    Results.Ok(await tasks.GetAllDispatchPausesAsync(ct)));
+    Results.Ok((await tasks.GetAllDispatchPausesAsync(ct)).Select(PauseState.From)));
 
 app.MapGet("/api/control/history", async (NpgsqlDataSource db, CancellationToken ct) =>
 {
@@ -307,12 +307,12 @@ app.MapGet("/api/control/history", async (NpgsqlDataSource db, CancellationToken
         """, cancellationToken: ct)));
 });
 
-app.MapPost("/api/control/pause", async (PauseRequest? body, HttpRequest request, ITaskStore tasks, CancellationToken ct) =>
+app.MapPost("/api/control/pause", async (HttpRequest request, ITaskStore tasks, CancellationToken ct) =>
 {
     var header = request.Headers["X-Expected-Paused"].ToString();
     if (header.Length > 0 && !bool.TryParse(header, out _)) return Results.BadRequest(new { error = "Invalid expected pause state." });
     bool? expected = header.Length == 0 ? null : bool.Parse(header);
-    return await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, true, body?.Reason, "operator", ct, expected)
+    return await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, true, null, "operator", ct, expected)
         ? Results.NoContent() : Results.Conflict(new { error = "Dispatch state changed. Refresh before pausing." });
 });
 

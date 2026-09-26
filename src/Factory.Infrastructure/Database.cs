@@ -1619,7 +1619,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         foreach (var pause in pauses.Where(p => p.Paused))
         {
             var title = pause.Scope == DispatchPauseScope.Global ? "Factory dispatch paused" : $"Agent {pause.Scope} paused";
-            var detail = pause.Reason is { Length: > 0 } ? $"Paused by {pause.PausedBy}: {pause.Reason}" : $"Paused by {pause.PausedBy}";
+            var detail = pause.Scope == DispatchPauseScope.Global
+                ? $"Paused by {pause.PausedBy}"
+                : pause.Reason is { Length: > 0 } ? $"Paused by {pause.PausedBy}: {pause.Reason}" : $"Paused by {pause.PausedBy}";
             alerts.Add(new DigestAlertCandidate("Pause", $"pause:{pause.Scope}", title, detail, null, null, pause.PausedAt ?? clock.UtcNow));
         }
 
