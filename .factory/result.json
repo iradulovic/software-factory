@@ -1,27 +1,25 @@
 {
   "status": "completed",
-  "summary": "Added the active task coding class to the agent-status API and navbar popover, with Idle and not recorded fallbacks. Updated the affected frontend status fixture and verified the live API response for a busy task and idle agents.",
+  "summary": "Moved nudges from the Overview panel into a persistent navbar popover with shared polling and mark-read behavior, an accessible unread count, and a reduced-motion-safe attention cue.",
   "testsRun": [
-    "dotnet build",
-    "dotnet test (elevated host; 622 tests passed)",
+    "npm test",
     "npm run lint",
     "npm run type-check",
-    "npm test",
-    "npm run build (elevated host)",
-    "GET http://localhost:5081/api/agents/status (live contract check)"
+    "npm run build",
+    "dotnet build"
   ],
   "testsPassed": true,
   "filesChanged": [
-    "src/Factory.Api/AgentStatusModels.cs",
-    "src/Factory.Api/Program.cs",
+    ".factory/result.json",
+    "web/Factory.Web/app/globals.css",
+    "web/Factory.Web/app/page.tsx",
+    "web/Factory.Web/components/nudge-inbox.tsx",
     "web/Factory.Web/components/shell.tsx",
-    "web/Factory.Web/lib/api.ts",
-    "web/Factory.Web/tests/agent-usage.test.tsx",
-    ".factory/result.json"
+    "web/Factory.Web/tests/run-shell-layout-test.cjs"
   ],
   "risks": [
-    "The computer-use environment exposed no browser surface, so visual verification of the open navbar popover could not be completed; the live API contract and frontend automated checks passed.",
-    "Model and reasoning effort remain intentionally absent for in-flight agent status because the exact live invocation values are not persisted yet."
+    "Manual browser verification of an unread nudge and mark-read clearing was not completed because no browser surface was available in this session.",
+    "The unfiltered repository-wide dotnet test run has two pre-existing Windows ProcessRunner timing failures even with Git sh available; all frontend checks and dotnet build pass."
   ],
   "needsHuman": false,
   "humanReason": null
