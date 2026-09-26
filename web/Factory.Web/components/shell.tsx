@@ -6,7 +6,7 @@ import { useTheme } from "next-themes";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { Activity, Bell, Boxes, CircleGauge, Database, ListTodo, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
-import { agentStatusSchema, getJson, githubStatusSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
+import { agentStatusSchema, getJson, globalPauseScope, githubStatusSchema, pauseStateSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { AgentUsageDetails } from "@/components/agent-usage";
 import { NudgeCard, useFixNudgeConflict, useMarkNudgeRead, useNudges } from "@/components/nudge-inbox";
@@ -86,6 +86,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <DispatchPausePill />
             <ThemeToggle />
             <GitHubStatusIndicator />
             <NudgePill />
@@ -154,6 +155,42 @@ function GitHubStatusIndicator() {
     error: isLoading ? "Checking GitHub availability" : error ? "GitHub status endpoint unavailable" : "GitHub availability is unknown"
   };
   return <GitHubStatusPill status={status} />;
+}
+
+export function DispatchPausePill() {
+  const client = useQueryClient();
+  const { data, error, isLoading } = useQuery({
+    queryKey: ["control-pause"],
+    queryFn: () => getJson("/api/control/pause", z.array(pauseStateSchema)),
+    refetchInterval: 5000,
+    refetchIntervalInBackground: false
+  });
+  const globalPaused = data?.some(pause => pause.scope === globalPauseScope && pause.paused) ?? false;
+  const ready = data !== undefined && !error;
+  const action = globalPaused ? "Resume dispatch" : "Pause dispatch";
+  const mutation = useMutation({
+    mutationFn: () => postPause(globalPaused ? "/api/control/resume" : "/api/control/pause"),
+    onSuccess: () => Promise.all([
+      client.invalidateQueries({ queryKey: ["control-pause"] }),
+      client.invalidateQueries({ queryKey: ["dashboard"] }),
+      client.invalidateQueries({ queryKey: ["agents-status"] })
+    ])
+  });
+  const status = error ? "Unavailable" : isLoading ? "Checking…" : globalPaused ? "Paused" : "Running";
+  return <div className={`flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${globalPaused ? "tone-amber" : ""}`} title={mutation.error instanceof Error ? mutation.error.message : `Dispatch ${status.toLowerCase()}`}>
+    <span className={`size-1.5 shrink-0 rounded-full ${error ? "bg-red-500" : globalPaused ? "bg-amber-500" : "bg-emerald-500"}`} aria-hidden="true" />
+    <span>{status}</span>
+    <button
+      type="button"
+      className="ml-0.5 rounded p-0.5 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+      aria-label={action}
+      disabled={!ready || mutation.isPending}
+      onClick={() => mutation.mutate()}
+    >
+      {globalPaused ? <Play className="size-3" aria-hidden="true" /> : <Pause className="size-3" aria-hidden="true" />}
+    </button>
+    {mutation.error instanceof Error ? <span className="sr-only" role="status">{mutation.error.message}</span> : null}
+  </div>;
 }
 
 export function NudgePill() {

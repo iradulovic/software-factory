@@ -51,7 +51,7 @@ export type AgentStatus = z.infer<typeof agentStatusSchema>;
 export const githubStatusSchema = z.object({ state:z.string(), error:z.string().nullable() });
 export type GitHubStatus = z.infer<typeof githubStatusSchema>;
 export const pauseStateSchema = z.object({
-  scope:z.string(),paused:z.boolean(),reason:z.string().nullable(),pausedAt:z.string().nullable(),pausedBy:z.string().nullable()
+  scope:z.string(),paused:z.boolean(),pausedAt:z.string().nullable(),pausedBy:z.string().nullable()
 });
 export type PauseState = z.infer<typeof pauseStateSchema>;
 export const globalPauseScope = "__global__";
@@ -121,11 +121,9 @@ export type DatabaseQueryResult = z.infer<typeof databaseQueryResultSchema>;
 
 export const apiBase = process.env.NEXT_PUBLIC_FACTORY_API_URL ?? "http://localhost:5080";
 
-export async function postPause(path: string, reason?: string): Promise<void> {
+export async function postPause(path: string): Promise<void> {
   const response = await fetch(`${apiBase}${path}`, {
-    method: "POST",
-    headers: reason ? { "Content-Type": "application/json" } : undefined,
-    body: reason ? JSON.stringify({ reason }) : undefined
+    method: "POST"
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { error?: string } | null;
