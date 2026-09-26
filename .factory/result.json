@@ -1,17 +1,17 @@
 {
   "status": "completed",
-  "summary": "Added cached, non-mutating CLI authentication pre-flight checks for every configured agent profile, with selector fallback/logging and dashboard re-authentication visibility. Added configuration wiring and coverage for authenticated, unauthenticated, timeout, missing-executable, caching, fallback, and registration behavior.",
+  "summary": "Added cached, non-mutating authentication preflight checks for every configured CLI agent, with selector fallback, structured failure logging, dashboard visibility, and coverage for auth failure modes. The implementation is committed on this branch; focused validation passes, while the full .NET suite retains unrelated Windows-only baseline failures.",
   "testsRun": [
-    "dotnet build SoftwareFactory.slnx --no-restore",
-    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-build --filter \"FullyQualifiedName~InfrastructureTests\"",
-    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-build --filter \"FullyQualifiedName~AgentSelectorTests\"",
-    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-build --filter \"FullyQualifiedName~TaskExecutorTests.Waits_for_quota_when_every_configured_agent_is_exhausted\"",
-    "dotnet test tests/Factory.Api.Tests/Factory.Api.Tests.csproj --no-build --filter \"FullyQualifiedName~AgentProfileRegistrationTests\"",
-    "dotnet test SoftwareFactory.slnx",
+    "dotnet restore SoftwareFactory.slnx",
+    "dotnet build SoftwareFactory.slnx",
+    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-restore --filter FullyQualifiedName~InfrastructureTests",
+    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-restore --filter FullyQualifiedName~AgentSelectorTests|FullyQualifiedName~TaskExecutorTests.Waits_for_quota_when_every_configured_agent_is_exhausted",
+    "dotnet test tests/Factory.Api.Tests/Factory.Api.Tests.csproj --no-restore --filter FullyQualifiedName~AgentProfileRegistrationTests|FullyQualifiedName~AgentOperationalStateResolverTests",
+    "dotnet test SoftwareFactory.slnx --no-restore",
     "npm run lint",
     "npm run type-check",
     "npm test",
-    "npm run build"
+    "npm run build (network-enabled retry)"
   ],
   "testsPassed": false,
   "filesChanged": [
@@ -38,8 +38,8 @@
     "web/Factory.Web/components/ui.tsx"
   ],
   "risks": [
-    "The complete dotnet test command still has six pre-existing Windows ProcessRunner tests that invoke the Unix-only sh executable, plus one pre-existing CRLF-sensitive RepositoryBootstrapTests raw-string assertion; all task-specific tests and the other test assemblies pass.",
-    "The factory never performs login or credential handling; availability depends on the configured CLI status command and the operator's existing local authentication session."
+    "The full dotnet test command has seven unrelated baseline failures in this Windows worktree: one CRLF-sensitive RepositoryBootstrapTests assertion and six ProcessRunnerTests that invoke the Unix-only sh executable; all task-specific tests pass.",
+    "Authentication probes depend on each configured CLI's existing local session and never perform login or credential refresh; the frontend production build requires network access for the repository's existing Google Font import."
   ],
   "needsHuman": false,
   "humanReason": null
