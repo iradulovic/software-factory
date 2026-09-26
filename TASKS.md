@@ -1,5 +1,7 @@
 ﻿# Software Factory Task Tracker
 
+> **Archived:** Task tracking has moved to GitHub issues labeled `factory:ready` and PostgreSQL. Historical entries below are preserved for reference and are no longer updated.
+
 This file is the ordered handoff queue for feature work. `BOOTSTRAP_SPEC.md` describes the architecture; this file records what to build next.
 
 Last reviewed: 2026-09-26

@@ -1,20 +1,35 @@
 {
   "status": "completed",
-  "summary": "Prevented hover-triggered agent status popover closes from moving keyboard focus to the trigger and removed the unused agentStatusTitle helper. Keyboard-opened panels retain their existing content autofocus and return-focus behavior.",
+  "summary": "Removed TASKS.md ingestion and status write-back so GitHub issues labeled factory:ready are the sole task source, while preserving TASKS.md as an archived historical record.",
   "testsRun": [
-    "npm run lint",
-    "npm run type-check",
-    "npm run test",
-    "npm run build"
+    "dotnet build SoftwareFactory.slnx --no-restore",
+    "C:\\Program Files\\Git\\bin\\bash.exe -lc 'dotnet test SoftwareFactory.slnx --no-build'"
   ],
   "testsPassed": true,
   "filesChanged": [
-    "web/Factory.Web/components/shell.tsx",
-    ".factory/result.json"
+    ".factory/result.json",
+    "AGENTS.md",
+    "README.md",
+    "TASKS.md",
+    "docs/architecture.md",
+    "src/Factory.Core/Contracts.cs",
+    "src/Factory.Core/Models.cs",
+    "src/Factory.Core/TasksMdParser.cs",
+    "src/Factory.Core/TasksMdWriter.cs",
+    "src/Factory.GitHubSync/Worker.cs",
+    "src/Factory.Infrastructure/Database.cs",
+    "src/Factory.Infrastructure/ServiceCollectionExtensions.cs",
+    "src/Factory.Infrastructure/TaskFiles.cs",
+    "src/Factory.Infrastructure/TrackerFileSync.cs",
+    "tests/Factory.Core.Tests/TasksMdParserTests.cs",
+    "tests/Factory.Core.Tests/TasksMdWriterTests.cs",
+    "tests/Factory.Core.Tests/UnitTest1.cs",
+    "tests/Factory.Infrastructure.Tests/RepositoryConfigurationReaderTests.cs",
+    "tests/Factory.Infrastructure.Tests/TrackerFileSyncTests.cs",
+    "tests/Factory.IntegrationTests/PostgresStoreIntegrationTests.cs",
+    "tests/Factory.Orchestrator.Tests/FakeTaskStore.cs"
   ],
-  "risks": [
-    "Popover hover and keyboard focus behavior was validated by source checks and the production build but not manually exercised in a browser."
-  ],
+  "risks": [],
   "needsHuman": false,
   "humanReason": null
 }
