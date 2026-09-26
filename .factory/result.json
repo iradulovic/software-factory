@@ -1,32 +1,27 @@
 {
   "status": "completed",
-  "summary": "Added proactive Codex and Claude usage polling with explicit unknown states, cached 5-hour and weekly snapshots, configurable warning thresholds, and dashboard display. Added provider fixture coverage for normal, missing or expired, and malformed inputs.",
+  "summary": "Added the active task coding class to the agent-status API and navbar popover, with Idle and not recorded fallbacks. Updated the affected frontend status fixture and verified the live API response for a busy task and idle agents.",
   "testsRun": [
     "dotnet build",
-    "dotnet test tests/Factory.Api.Tests/Factory.Api.Tests.csproj --no-build --filter FullyQualifiedName~AgentUsageProviderTests",
-    "dotnet test --no-build -m:1",
-    "npm test",
+    "dotnet test (elevated host; 622 tests passed)",
     "npm run lint",
     "npm run type-check",
-    "npm run build"
+    "npm test",
+    "npm run build (elevated host)",
+    "GET http://localhost:5081/api/agents/status (live contract check)"
   ],
   "testsPassed": true,
   "filesChanged": [
-    ".factory/result.json",
     "src/Factory.Api/AgentStatusModels.cs",
-    "src/Factory.Api/AgentUsage.cs",
     "src/Factory.Api/Program.cs",
-    "src/Factory.Api/appsettings.json",
-    "tests/Factory.Api.Tests/AgentUsageProviderTests.cs",
-    "web/Factory.Web/components/agent-usage.tsx",
     "web/Factory.Web/components/shell.tsx",
     "web/Factory.Web/lib/api.ts",
-    "web/Factory.Web/package.json",
     "web/Factory.Web/tests/agent-usage.test.tsx",
-    "web/Factory.Web/tests/run-agent-usage-test.cjs"
+    ".factory/result.json"
   ],
   "risks": [
-    "Claude usage depends on Anthropic's undocumented, reverse-engineered OAuth usage endpoint. The installed Claude 2.1.283 binary contains both the configured endpoint path and OAuth beta identifier, but Anthropic may change or remove this contract without notice; failures intentionally degrade to an unknown snapshot."
+    "The computer-use environment exposed no browser surface, so visual verification of the open navbar popover could not be completed; the live API contract and frontend automated checks passed.",
+    "Model and reasoning effort remain intentionally absent for in-flight agent status because the exact live invocation values are not persisted yet."
   ],
   "needsHuman": false,
   "humanReason": null

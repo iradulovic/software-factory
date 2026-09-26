@@ -40,7 +40,7 @@ export type RepositoryDetail = z.infer<typeof repositoryDetailSchema>;
 export const issueSchema=z.object({id:z.number(),issueNumber:z.number(),title:z.string(),state:z.string(),author:z.string(),createdAt:z.string(),updatedAt:z.string(),repository:z.string(),labels:z.array(z.string()).nullable(),eligible:z.boolean(),taskCount:z.number()});
 export type GitHubIssue=z.infer<typeof issueSchema>;
 export const agentStatusSchema = z.object({
-  agent:z.string(),state:z.string(),version:z.string().nullable(),error:z.string().nullable(),activeTask:z.string().nullable(),
+  agent:z.string(),state:z.string(),version:z.string().nullable(),error:z.string().nullable(),activeTask:z.string().nullable(),taskClass:z.string().nullable(),
   runsToday:z.number(),successfulRuns:z.number(),quotaDetectedAt:z.string().nullable(),
   quotaResetAt:z.string().nullable(),quotaWindow:z.string().nullable(),quotaResetKind:z.string().nullable(),pauseReason:z.string().nullable(),
   usage:z.object({provider:z.string(),isKnown:z.boolean(),fiveHour:z.object({usedPercent:z.number(),resetsAt:z.string()}).nullable(),weekly:z.object({usedPercent:z.number(),resetsAt:z.string()}).nullable(),capturedAt:z.string(),unknownReason:z.string().nullable()}),
