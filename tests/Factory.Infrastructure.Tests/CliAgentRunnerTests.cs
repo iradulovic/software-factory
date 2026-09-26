@@ -232,6 +232,29 @@ public sealed class CliAgentRunnerTests
         Assert.Null(result.ReviewResult);
     }
 
+    [Fact]
+    public async Task Conversation_uses_configured_read_only_arguments_and_returns_cli_output()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "A conversational answer\n", "", false, false));
+        var profile = Codex() with
+        {
+            ConversationArguments = ["exec", "--sandbox", "read-only", "-"],
+            ConversationTimeoutMinutes = 3
+        };
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.ConverseAsync(new AgentConversationRequest(
+            [new("user", "First question"), new("assistant", "First answer"), new("user", "Follow up")], "."), CancellationToken.None);
+
+        Assert.Equal(["exec", "--sandbox", "read-only", "-"], runner.Request!.Arguments);
+        Assert.Contains("Operator: First question", runner.Request.StandardInput);
+        Assert.Contains("Assistant: First answer", runner.Request.StandardInput);
+        Assert.Contains("Operator: Follow up", runner.Request.StandardInput);
+        Assert.Contains("do not modify files", runner.Request.StandardInput);
+        Assert.Equal(TimeSpan.FromMinutes(3), runner.Request.Timeout);
+        Assert.Equal("A conversational answer", result.Response);
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : IClock { public DateTimeOffset UtcNow => now; }
     private sealed class NoResultReader : IAgentResultReader
     {

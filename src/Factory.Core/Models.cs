@@ -143,6 +143,25 @@ public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, 
     string? QuotaDetail = null, string? ProviderSessionId = null, AgentReviewResult? ReviewResult = null,
     string? Model = null, string? ReasoningEffort = null);
 
+public sealed record AgentConversationTurn(string Role, string Content);
+
+public sealed record AgentConversationRequest(
+    IReadOnlyList<AgentConversationTurn> Turns,
+    string WorkingDirectory,
+    string? TaskClass = null,
+    TimeSpan? Timeout = null);
+
+public sealed record AgentConversationResult(
+    ProcessResult Process,
+    string Response,
+    bool QuotaDetected,
+    DateTimeOffset? QuotaResetAt = null,
+    QuotaWindow Window = QuotaWindow.None,
+    QuotaResetKind ResetKind = QuotaResetKind.None,
+    string? QuotaDetail = null,
+    string? Model = null,
+    string? ReasoningEffort = null);
+
 public sealed record AgentAvailability(string Agent, bool Available, string? Version, string? Error);
 
 public enum GitHubAvailabilityState { Available, Unavailable, Unknown }
@@ -559,7 +578,10 @@ public sealed record AgentProfile(
     string? Model = null,
     string? ReasoningEffort = null,
     bool AllowAutomaticFallback = true,
-    IReadOnlyList<AgentClassProfile>? Classes = null)
+    IReadOnlyList<AgentClassProfile>? Classes = null,
+    IReadOnlyList<string>? ConversationArguments = null,
+    string? ConversationPromptDelivery = null,
+    int ConversationTimeoutMinutes = 5)
 {
     /// <summary>Configuration binding constructor. Defaults let a profile omit optional settings such as quota
     /// signatures without the binder trying to construct the positional record from a missing constructor value.</summary>

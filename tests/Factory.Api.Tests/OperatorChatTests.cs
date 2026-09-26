@@ -1,4 +1,7 @@
 using Factory.Api;
+using Factory.Core;
+using Factory.Infrastructure;
+using Microsoft.Extensions.Options;
 
 namespace Factory.Api.Tests;
 
@@ -14,6 +17,62 @@ public sealed class OperatorChatTests
     [InlineData("Pause dispatch", "pause")]
     public void Common_questions_have_deterministic_intents(string question, string expected) =>
         Assert.Equal(expected, OperatorQuestionParser.Parse(question).Intent);
+
+    [Fact]
+    public void Free_form_questions_do_not_claim_a_deterministic_intent() =>
+        Assert.Null(OperatorQuestionParser.Parse("Help me reason about a good review workflow").Intent);
+
+    [Fact]
+    public async Task Deterministic_match_never_invokes_the_assistant_agent_path()
+    {
+        var deterministic = new StubStateResponder();
+        var assistant = new StubAssistant();
+        var router = new OperatorAskRouter(deterministic, assistant);
+
+        var reply = await router.AnswerAsync("What is running?", [], CancellationToken.None);
+
+        Assert.Equal("deterministic", reply.Route);
+        Assert.Equal(1, deterministic.Calls);
+        Assert.Equal(0, assistant.Calls);
+    }
+
+    [Fact]
+    public async Task Free_form_question_invokes_cli_conversation_and_preserves_history()
+    {
+        var deterministic = new StubStateResponder();
+        var assistant = new StubAssistant();
+        var router = new OperatorAskRouter(deterministic, assistant);
+
+        var reply = await router.AnswerAsync("Compare those approaches", [new("user", "Suggest two approaches")], CancellationToken.None);
+
+        Assert.Equal("assistant", reply.Route);
+        Assert.Equal(0, deterministic.Calls);
+        Assert.Equal(1, assistant.Calls);
+        Assert.Single(assistant.History!);
+        Assert.Null(reply.Action);
+    }
+
+    [Fact]
+    public async Task Conversation_quota_is_bounded_without_touching_implementation_quota_state()
+    {
+        var now = DateTimeOffset.Parse("2026-09-26T10:00:00Z");
+        var agent = new StubAgent(now, quotaDetected: true);
+        using var conversation = new AssistantConversation([agent], Options.Create(new AssistantOptions
+        {
+            PreferredAgent = agent.Name,
+            MaxConcurrentConversations = 1,
+            MaxRequestsPerHour = 1
+        }), new FixedClock(now));
+
+        await Assert.ThrowsAsync<AssistantUnavailableException>(() =>
+            conversation.AnswerAsync("Hello", [], CancellationToken.None));
+        await Assert.ThrowsAsync<AssistantCapacityException>(() =>
+            conversation.AnswerAsync("Try again", [], CancellationToken.None));
+
+        Assert.Equal(1, agent.Calls);
+        // AssistantConversation intentionally has no ITaskStore dependency, so this quota signal cannot set the
+        // durable provider quota consulted by implementation dispatch.
+    }
 
     [Fact]
     public void Mutations_require_one_exact_task_id()
@@ -51,4 +110,42 @@ public sealed class OperatorChatTests
             { CiHead = "stale" }), "factory/issue-27"));
         Assert.False(OperatorMergeEligibility.CanOffer(row, null));
     }
+
+    private sealed class StubStateResponder : IOperatorStateResponder
+    {
+        public int Calls { get; private set; }
+        public Task<OperatorReply> AnswerAsync(string question, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(new OperatorReply("state", null, null, [], null, DateTimeOffset.UtcNow));
+        }
+    }
+
+    private sealed class StubAssistant : IAssistantConversation
+    {
+        public int Calls { get; private set; }
+        public IReadOnlyList<OperatorConversationMessage>? History { get; private set; }
+        public Task<OperatorReply> AnswerAsync(string question, IReadOnlyList<OperatorConversationMessage> history, CancellationToken ct)
+        {
+            Calls++;
+            History = history;
+            return Task.FromResult(new OperatorReply("answer", null, null, [], null, DateTimeOffset.UtcNow, "assistant", "Codex"));
+        }
+    }
+
+    private sealed class StubAgent(DateTimeOffset now, bool quotaDetected) : IAgentRunner
+    {
+        public string Name => "Codex";
+        public string Provider => "Codex";
+        public int Calls { get; private set; }
+        public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<AgentConversationResult> ConverseAsync(AgentConversationRequest request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            var process = new ProcessResult("codex", [], request.WorkingDirectory, now, now, 1, "", "quota", false, false);
+            return Task.FromResult(new AgentConversationResult(process, "", quotaDetected));
+        }
+    }
+
+    private sealed class FixedClock(DateTimeOffset now) : IClock { public DateTimeOffset UtcNow => now; }
 }

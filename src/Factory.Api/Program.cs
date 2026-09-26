@@ -65,7 +65,9 @@ builder.Services.AddFactoryInfrastructure(builder.Configuration);
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.AddSingleton(sp => new NpgsqlDataSourceBuilder(sp.GetRequiredService<IOptions<FactoryOptions>>().Value.ConnectionString).Build());
 builder.Services.AddSingleton<NudgeStore>();
-builder.Services.AddScoped<OperatorChat>();
+builder.Services.AddScoped<IOperatorStateResponder, OperatorChat>();
+builder.Services.AddSingleton<IAssistantConversation, AssistantConversation>();
+builder.Services.AddScoped<OperatorAskRouter>();
 builder.Services.AddHttpClient();
 if (!builder.Environment.IsEnvironment("Testing")) builder.Services.AddHostedService<NudgeWorker>();
 
@@ -188,11 +190,26 @@ app.MapGet("/api/execution/current", async (NpgsqlDataSource db, CancellationTok
     return Results.Ok(CurrentExecutionProjection.Create(row, dashboardUrl, DateTimeOffset.UtcNow));
 });
 
-app.MapPost("/api/operator/ask", async (OperatorQuestion question, OperatorChat chat, CancellationToken ct) =>
+app.MapPost("/api/operator/ask", async (OperatorQuestion question, OperatorAskRouter chat, CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(question.Text) || question.Text.Length > 1000)
         return Results.BadRequest(new { error = "Enter a question of at most 1000 characters." });
-    return Results.Ok(await chat.AnswerAsync(question.Text.Trim(), ct));
+    var history = question.History ?? [];
+    if (history.Count > 20 || history.Sum(message => message.Content?.Length ?? 0) > 12_000 ||
+        history.Any(message => message.Role is not ("user" or "assistant") || string.IsNullOrWhiteSpace(message.Content)))
+        return Results.BadRequest(new { error = "Conversation history must contain at most 20 valid user/assistant messages and 12,000 characters." });
+    try
+    {
+        return Results.Ok(await chat.AnswerAsync(question.Text.Trim(), history, ct));
+    }
+    catch (AssistantCapacityException ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status429TooManyRequests);
+    }
+    catch (AssistantUnavailableException ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
 });
 
 app.MapGet("/api/attention", async (NpgsqlDataSource db, IOptions<FactoryOptions> options,
