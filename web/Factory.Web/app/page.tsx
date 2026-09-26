@@ -2,11 +2,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, Bot, CheckCircle2, Clock3, GitPullRequest, Pause, Play, UserCheck } from "lucide-react";
+import { CheckCircle2, Clock3, GitPullRequest, Pause, Play, UserCheck } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { z } from "zod";
-import { agentStatusSchema, apiBase, getJson, globalPauseScope, pauseStateSchema, taskSchema } from "@/lib/api";
-import { AgentStateBadge, Empty, RelativeTime } from "@/components/ui";
+import { agentStatusSchema, getJson, globalPauseScope, pauseStateSchema, postPause, taskSchema } from "@/lib/api";
+import { RelativeTime } from "@/components/ui";
 import { CurrentWork } from "@/components/current-work";
 import { AttentionQueue } from "@/components/attention-queue";
 import { NudgeInbox } from "@/components/nudge-inbox";
@@ -32,18 +32,6 @@ const outcomeCards = [
   ["Quota waiting","quotaWaitingEvents"],["Human interventions","humanInterventions"]
 ] as const;
 
-async function postPause(path: string, reason?: string) {
-  const response = await fetch(`${apiBase}${path}`, {
-    method: "POST",
-    headers: reason ? { "Content-Type": "application/json" } : undefined,
-    body: reason ? JSON.stringify({ reason }) : undefined
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: string } | null;
-    throw new Error(body?.error ?? `Factory API returned ${response.status}`);
-  }
-}
-
 export default function Overview() {
   const client = useQueryClient();
   const { data, error } = useQuery<Dashboard>({ queryKey:["dashboard"], queryFn:()=>getJson("/api/dashboard",dashboardSchema), refetchInterval:5000, retry:false });
@@ -66,17 +54,6 @@ export default function Overview() {
     onSuccess: async () => { setOutcome({ tone: "success", message: "Dispatch resumed." }); await refresh(); },
     onError: (e: Error) => setOutcome({ tone: "error", message: e.message })
   });
-  const agentPause = useMutation({
-    mutationFn: (agent: string) => postPause(`/api/agents/${agent}/pause`),
-    onSuccess: async (_r, agent) => { setOutcome({ tone: "success", message: `${agent} paused.` }); await refresh(); },
-    onError: (e: Error) => setOutcome({ tone: "error", message: e.message })
-  });
-  const agentResume = useMutation({
-    mutationFn: (agent: string) => postPause(`/api/agents/${agent}/resume`),
-    onSuccess: async (_r, agent) => { setOutcome({ tone: "success", message: `${agent} resumed.` }); await refresh(); },
-    onError: (e: Error) => setOutcome({ tone: "error", message: e.message })
-  });
-
   const global = pauses?.find(p => p.scope === globalPauseScope);
   const globalPaused = global?.paused ?? false;
   return <div className="min-w-0 space-y-5"><div><p className="eyebrow">Overview</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Factory operations</h1><p className="mt-1 text-sm text-muted-foreground">Live view of autonomous development work.</p></div>
@@ -98,8 +75,9 @@ export default function Overview() {
     <NudgeInbox />
     <section className="panel p-4" aria-label="Recent outcomes"><div className="flex items-center justify-between"><h2 className="text-sm font-semibold">Recent outcomes</h2><Link href="/runs" className="text-xs text-emerald-400 hover:underline">All runs →</Link></div><div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{data?.activity.slice(0,4).map((a,i)=><div className="rounded border border-[var(--border)] p-3 text-xs" key={`${a.occurredAt}-${i}`}><p className="truncate font-medium">{a.title}</p><p className="mt-1 text-muted-foreground">{a.type} · {a.status}</p></div>)}{data?.activity.length===0&&<p className="text-xs text-muted-foreground">No recent execution events.</p>}</div></section>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{cards.map(([label,key,Icon])=><div className="panel p-4" key={key}><div className="flex items-center justify-between"><span className="eyebrow">{label}</span><Icon className="size-4 text-muted-foreground/60" /></div><p className="mt-3 text-3xl font-semibold tabular-nums">{data ? `${data.metrics[key]}`:"—"}</p></div>)}</div>
-    <section className="panel min-w-0 overflow-hidden"><div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3"><div><p className="text-sm font-semibold">Agent status</p><p className="text-xs text-muted-foreground">Coding agent operational state and throughput</p></div><Bot className="size-4 text-emerald-500" /></div>{data?.agentStatus.length?<div className="overflow-x-auto"><table className="min-w-[52rem]"><thead><tr><th>Agent</th><th>Status</th><th>Active task</th><th>Runs today</th><th title="Invocations whose CLI process exited successfully — not the same as the task itself passing validation">Invocations OK</th><th>Quota</th><th>Control</th></tr></thead><tbody>{data.agentStatus.map(a=><tr key={a.agent}><td className="font-medium">{a.agent}</td><td><AgentStateBadge state={a.state}/>{a.state==="Paused"&&a.pauseReason&&<span className="ml-2 text-xs text-muted-foreground">{a.pauseReason}</span>}{(a.state==="Unavailable"||a.state==="Unknown")&&a.error&&<span className="ml-2 text-xs text-muted-foreground">{a.error}</span>}</td><td className="max-w-56 truncate text-muted-foreground">{a.activeTask??"Idle"}</td><td className="tabular-nums">{a.runsToday}</td><td className="tabular-nums">{a.successfulRuns}</td><td>{a.state==="QuotaBlocked"?<span className="inline-flex items-center gap-1 text-[var(--badge-amber-fg)]"><AlertTriangle className="size-3.5"/>Until <RelativeTime value={a.quotaResetAt}/> {a.quotaResetKind==="Reported"?"(reported)":a.quotaResetKind==="Estimated"?"(estimated)":a.quotaResetKind==="Unknown"?"(reset time unknown)":""}</span>:a.quotaDetectedAt?<span className="text-xs text-muted-foreground">Last hit <RelativeTime value={a.quotaDetectedAt}/></span>:<span className="text-muted-foreground/60">—</span>}</td><td>{a.state==="Paused"?<button className="tone-green rounded border px-2 py-1 text-[11px] disabled:opacity-40" disabled={agentResume.isPending} onClick={()=>agentResume.mutate(a.agent)}>Resume</button>:<button className="rounded border border-[var(--border)] px-2 py-1 text-[11px] text-muted-foreground disabled:opacity-40" disabled={a.state==="Unavailable"||agentPause.isPending} onClick={()=>agentPause.mutate(a.agent)}>Pause</button>}</td></tr>)}</tbody></table></div>:<Empty>No agents configured</Empty>}</section>
-    <section className="panel p-4"><div className="mb-4"><p className="text-sm font-semibold">Throughput</p><p className="text-xs text-muted-foreground">Completed tasks · last 7 days</p></div><div className="h-52"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data?.throughput??[]}><defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={.3}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#1c2734" vertical={false}/><XAxis dataKey="day" stroke="#526071" fontSize={11}/><YAxis allowDecimals={false} stroke="#526071" fontSize={11}/><Tooltip contentStyle={{background:"#0e1520",border:"1px solid #202a38"}}/><Area type="monotone" dataKey="completed" stroke="#10b981" fill="url(#fill)" strokeWidth={2}/></AreaChart></ResponsiveContainer></div></section>
-    <section className="panel p-4"><div className="mb-3"><p className="text-sm font-semibold">Outcomes</p><p className="text-xs text-muted-foreground">Since {outcomes?new Date(outcomes.since).toLocaleDateString():"—"} · excludes lines changed and consumed quota as productivity signals</p></div><div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">{outcomeCards.map(([label,key])=><div className="rounded border border-[var(--border)] p-3" key={key}><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 text-xl font-semibold tabular-nums">{outcomes?outcomes[key]:"—"}</p></div>)}</div><div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3"><div className="rounded border border-[var(--border)] p-3"><p className="text-[11px] text-muted-foreground">Agent process</p><p className="mt-1 text-sm tabular-nums"><span className="text-emerald-400">{outcomes?.agentProcessSuccesses??"—"} ok</span> <span className="text-red-400">{outcomes?.agentProcessFailures??"—"} failed</span></p></div><div className="rounded border border-[var(--border)] p-3"><p className="text-[11px] text-muted-foreground">CI</p><p className="mt-1 text-sm tabular-nums"><span className="text-emerald-400">{outcomes?.ciSuccesses??"—"} passed</span> <span className="text-red-400">{outcomes?.ciFailures??"—"} failed</span></p></div><div className="rounded border border-[var(--border)] p-3"><p className="text-[11px] text-muted-foreground">Review time (optional entries)</p><p className="mt-1 text-sm tabular-nums">{outcomes?.reviewedTaskCount?`${Math.round(outcomes.averageReviewMinutes??0)} min avg over ${outcomes.reviewedTaskCount}`:"No entries logged"}</p></div></div></section>
+    <div className="grid gap-5 xl:grid-cols-2">
+      <section className="panel p-4"><div className="mb-4"><p className="text-sm font-semibold">Throughput</p><p className="text-xs text-muted-foreground">Completed tasks · last 7 days</p></div><div className="h-52"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data?.throughput??[]}><defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={.3}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#1c2734" vertical={false}/><XAxis dataKey="day" stroke="#526071" fontSize={11}/><YAxis allowDecimals={false} stroke="#526071" fontSize={11}/><Tooltip contentStyle={{background:"#0e1520",border:"1px solid #202a38"}}/><Area type="monotone" dataKey="completed" stroke="#10b981" fill="url(#fill)" strokeWidth={2}/></AreaChart></ResponsiveContainer></div></section>
+      <section className="panel p-4"><div className="mb-3"><p className="text-sm font-semibold">Outcomes</p><p className="text-xs text-muted-foreground">Since {outcomes?new Date(outcomes.since).toLocaleDateString():"—"} · excludes lines changed and consumed quota as productivity signals</p></div><div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">{outcomeCards.map(([label,key])=><div className="rounded border border-[var(--border)] p-3" key={key}><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 text-xl font-semibold tabular-nums">{outcomes?outcomes[key]:"—"}</p></div>)}</div><div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3"><div className="rounded border border-[var(--border)] p-3"><p className="text-[11px] text-muted-foreground">Agent process</p><p className="mt-1 text-sm tabular-nums"><span className="text-emerald-400">{outcomes?.agentProcessSuccesses??"—"} ok</span> <span className="text-red-400">{outcomes?.agentProcessFailures??"—"} failed</span></p></div><div className="rounded border border-[var(--border)] p-3"><p className="text-[11px] text-muted-foreground">CI</p><p className="mt-1 text-sm tabular-nums"><span className="text-emerald-400">{outcomes?.ciSuccesses??"—"} passed</span> <span className="text-red-400">{outcomes?.ciFailures??"—"} failed</span></p></div><div className="rounded border border-[var(--border)] p-3"><p className="text-[11px] text-muted-foreground">Review time (optional entries)</p><p className="mt-1 text-sm tabular-nums">{outcomes?.reviewedTaskCount?`${Math.round(outcomes.averageReviewMinutes??0)} min avg over ${outcomes.reviewedTaskCount}`:"No entries logged"}</p></div></div></section>
+    </div>
   </div>;
 }

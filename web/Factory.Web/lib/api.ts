@@ -118,6 +118,18 @@ export type DatabaseQueryResult = z.infer<typeof databaseQueryResultSchema>;
 
 export const apiBase = process.env.NEXT_PUBLIC_FACTORY_API_URL ?? "http://localhost:5080";
 
+export async function postPause(path: string, reason?: string): Promise<void> {
+  const response = await fetch(`${apiBase}${path}`, {
+    method: "POST",
+    headers: reason ? { "Content-Type": "application/json" } : undefined,
+    body: reason ? JSON.stringify({ reason }) : undefined
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error ?? `Factory API returned ${response.status}`);
+  }
+}
+
 export async function getJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, { cache: "no-store" });
   if (!response.ok) throw new Error(`Factory API returned ${response.status}`);
