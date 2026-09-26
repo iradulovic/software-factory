@@ -8,6 +8,7 @@ import { z } from "zod";
 import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, githubStatusSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
+import { AgentUsageDetails } from "@/components/agent-usage";
 import { agentStateDescription } from "@/components/ui";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -155,7 +156,7 @@ function GitHubStatusIndicator() {
 
 export function AgentStatusPill() {
   const client = useQueryClient();
-  const { data } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)) });
+  const { data } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)), refetchInterval: 60_000 });
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openedFromKeyboard = useRef(false);
@@ -265,6 +266,7 @@ export function AgentStatusPill() {
               <div><dt className="text-muted-foreground">Runs today</dt><dd className="mt-0.5 tabular-nums">{a.runsToday}</dd></div>
               <div><dt className="text-muted-foreground">Invocations OK</dt><dd className="mt-0.5 tabular-nums">{a.successfulRuns}</dd></div>
               <div className="col-span-2 border-t border-[var(--border)] pt-2 sm:col-span-3"><dt className="text-muted-foreground">Quota</dt><dd className="mt-0.5 leading-4">{agentQuotaDescription(a)}</dd></div>
+              <div className="col-span-2 sm:col-span-3"><dt className="mb-1 text-muted-foreground">Current usage</dt><dd><AgentUsageDetails agent={a} /></dd></div>
             </dl>
             {a.pauseReason ? <p className="text-[11px] leading-4 text-[var(--badge-amber-fg)]"><span className="font-medium">Pause reason:</span> {a.pauseReason}</p> : null}
             {a.error ? <p className="text-[11px] leading-4 text-[var(--badge-red-fg)]"><span className="font-medium">Error:</span> {a.error}</p> : null}

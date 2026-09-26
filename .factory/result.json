@@ -1,32 +1,33 @@
 {
   "status": "completed",
-  "summary": "Added a bounded review-fix loop that returns structured findings to the original implementing agent, re-reviews fixes, and revalidates the final commit. Added repository configuration, structured invocation tracking, symmetric provider-role coverage, and a platform-stable assertion for the full test suite.",
+  "summary": "Added proactive Codex and Claude usage polling with explicit unknown states, cached 5-hour and weekly snapshots, configurable warning thresholds, and dashboard display. Added provider fixture coverage for normal, missing or expired, and malformed inputs.",
   "testsRun": [
-    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-restore --filter \"FullyQualifiedName~ReviewStepTests|FullyQualifiedName~RunAgentStepTests|FullyQualifiedName~TaskExecutorTests\"",
-    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-restore --filter \"FullyQualifiedName~CliAgentRunnerTests|FullyQualifiedName~RepositoryConfigurationReaderTests\"",
-    "dotnet test tests/Factory.Core.Tests/Factory.Core.Tests.csproj --no-restore --filter FullyQualifiedName~RepositoryBootstrapTests",
     "dotnet build",
-    "dotnet test --no-build"
+    "dotnet test tests/Factory.Api.Tests/Factory.Api.Tests.csproj --no-build --filter FullyQualifiedName~AgentUsageProviderTests",
+    "dotnet test --no-build -m:1",
+    "npm test",
+    "npm run lint",
+    "npm run type-check",
+    "npm run build"
   ],
   "testsPassed": true,
   "filesChanged": [
-    "src/Factory.Core/Models.cs",
-    "src/Factory.Infrastructure/CliAgentRunner.cs",
-    "src/Factory.Infrastructure/TaskFiles.cs",
-    "src/Factory.Orchestrator/AgentSelector.cs",
-    "src/Factory.Orchestrator/Pipeline.cs",
-    "src/Factory.Orchestrator/ReviewStep.cs",
-    "src/Factory.Orchestrator/RunAgentStep.cs",
-    "src/Factory.Orchestrator/TaskExecutor.cs",
-    "tests/Factory.Core.Tests/RepositoryBootstrapTests.cs",
-    "tests/Factory.Infrastructure.Tests/CliAgentRunnerTests.cs",
-    "tests/Factory.Infrastructure.Tests/RepositoryConfigurationReaderTests.cs",
-    "tests/Factory.Orchestrator.Tests/ReviewStepTests.cs",
-    "tests/Factory.Orchestrator.Tests/RunAgentStepTests.cs",
-    "tests/Factory.Orchestrator.Tests/TaskExecutorTests.cs",
-    ".factory/result.json"
+    ".factory/result.json",
+    "src/Factory.Api/AgentStatusModels.cs",
+    "src/Factory.Api/AgentUsage.cs",
+    "src/Factory.Api/Program.cs",
+    "src/Factory.Api/appsettings.json",
+    "tests/Factory.Api.Tests/AgentUsageProviderTests.cs",
+    "web/Factory.Web/components/agent-usage.tsx",
+    "web/Factory.Web/components/shell.tsx",
+    "web/Factory.Web/lib/api.ts",
+    "web/Factory.Web/package.json",
+    "web/Factory.Web/tests/agent-usage.test.tsx",
+    "web/Factory.Web/tests/run-agent-usage-test.cjs"
   ],
-  "risks": [],
+  "risks": [
+    "Claude usage depends on Anthropic's undocumented, reverse-engineered OAuth usage endpoint. The installed Claude 2.1.283 binary contains both the configured endpoint path and OAuth beta identifier, but Anthropic may change or remove this contract without notice; failures intentionally degrade to an unknown snapshot."
+  ],
   "needsHuman": false,
   "humanReason": null
 }
