@@ -57,6 +57,16 @@ public sealed class TaskExecutor(
             {
                 await TransitionAsync(context, FactoryTaskStatus.Reviewing, null, cancellationToken);
                 if (!await RunStepAsync(review, context, cancellationToken)) return;
+                // A review fix changes the commit that was validated before review. Re-run every deterministic
+                // publication prerequisite against the final, re-reviewed commit so the persisted validated HEAD
+                // and change summary cannot point at the pre-fix implementation.
+                if (context.ReviewFixAttempts > 0)
+                {
+                    if (!await RunStepAsync(collectDiff, context, cancellationToken)) return;
+                    if (!await RunStepAsync(validate, context, cancellationToken)) return;
+                    if (!await RunStepAsync(smokeTest, context, cancellationToken)) return;
+                    if (!await RunStepAsync(preparePublication, context, cancellationToken)) return;
+                }
             }
 
             // ReadyForPublish is a resting state: a validated implementation waits here for a human (or, for an

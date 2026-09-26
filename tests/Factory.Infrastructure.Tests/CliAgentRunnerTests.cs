@@ -255,11 +255,33 @@ public sealed class CliAgentRunnerTests
         Assert.Equal("A conversational answer", result.Response);
     }
 
+    [Fact]
+    public async Task Fix_purpose_includes_structured_review_findings_and_reads_the_implementation_result()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agentResult = new AgentResult("completed", "Fixed", [], true, ["src/Export.cs"], [], false, null);
+        var agent = new CliAgentRunner(Codex(), runner, new StubResultReader(agentResult), new NoReviewResultReader(), new FixedClock(Now));
+        var finding = new ReviewFinding("high", "src/Export.cs", 42, "Handle empty input");
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            Purpose: AgentRunPurpose.Fix, ReviewFindings: [finding]), CancellationToken.None);
+
+        Assert.Contains("Address the independent review findings", runner.Request!.StandardInput);
+        Assert.Contains("[high] src/Export.cs:42 - Handle empty input", runner.Request.StandardInput);
+        Assert.Equal(agentResult, result.Result);
+        Assert.Null(result.ReviewResult);
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : IClock { public DateTimeOffset UtcNow => now; }
     private sealed class NoResultReader : IAgentResultReader
     {
         public Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken) =>
             Task.FromResult<(AgentResult?, string?)>((null, "no result"));
+    }
+    private sealed class StubResultReader(AgentResult result) : IAgentResultReader
+    {
+        public Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken) =>
+            Task.FromResult<(AgentResult?, string?)>((result, null));
     }
     private sealed class NoReviewResultReader : IAgentReviewResultReader
     {

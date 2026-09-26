@@ -117,16 +117,19 @@ public sealed record ProcessResult(
 }
 
 /// <summary>Whether an <see cref="IAgentRunner"/> invocation is implementing the task (the default, and the only
-/// purpose that existed before SF-702) or performing a bounded, opt-in second-agent review pass over already
-/// committed work. <see cref="CliAgentRunner"/> uses this to choose the prompt it sends and which result file
-/// (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads back.</summary>
-public enum AgentRunPurpose { Implement, Review }
+/// purpose that existed before SF-702), performing a bounded, opt-in second-agent review pass over already
+/// committed work, or fixing structured review findings. <see cref="CliAgentRunner"/> uses this to choose the
+/// prompt it sends and which result file (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads.</summary>
+public enum AgentRunPurpose { Implement, Review, Fix }
 
 /// <param name="ResumeSessionId">The provider session id to resume (SF-701), if the selected agent matches the
 /// one <see cref="FactoryTask.ResumableSessionAgent"/> recorded and that agent's <see cref="AgentProfile.SupportsSessionResume"/>
 /// is enabled — <see langword="null"/> for a fresh session, exactly as before this task.</param>
-/// <param name="Purpose">Implement (default) or Review (SF-702) — see <see cref="AgentRunPurpose"/>.</param>
-public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null, string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement, string? TaskClass = null);
+/// <param name="Purpose">Implement (default), Review, or Fix — see <see cref="AgentRunPurpose"/>.</param>
+/// <param name="ReviewFindings">Structured findings supplied only to a Fix invocation.</param>
+public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null,
+    string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement, string? TaskClass = null,
+    IReadOnlyList<ReviewFinding>? ReviewFindings = null);
 
 /// <param name="Window">The classified reset window a detected quota signal falls into; <see cref="QuotaWindow.None"/>
 /// when <paramref name="QuotaDetected"/> is <see langword="false"/>. See <see cref="QuotaClassifier"/>.</param>
@@ -265,12 +268,14 @@ public static class StepLogPaths
 /// <c>.factory/config.json</c>'s <c>smokeTest</c> key. <see langword="null"/> (the default — absent from the
 /// file) means <c>SmokeTestStep</c> is skipped entirely; a repository must explicitly configure this to start a
 /// local server and launch a browser at all.</param>
+/// <param name="MaxReviewFixAttempts">Maximum implementation-agent fix invocations prompted by actionable
+/// review findings before the task stops for a human. Zero preserves the original immediate-human behavior.</param>
 public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<ValidationCommand> BuildCommands, IReadOnlyList<ValidationCommand> TestCommands,
     int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual", int MaxQuotaInterruptions = 20,
-    SmokeTestConfiguration? SmokeTest = null)
+    SmokeTestConfiguration? SmokeTest = null, int MaxReviewFixAttempts = 1)
 {
     public static RepositoryConfiguration Default { get; } =
-        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null);
+        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null, 1);
 }
 
 /// <summary>Opt-in configuration for SF-703's local browser smoke tests. <paramref name="InstallCommand"/>, when

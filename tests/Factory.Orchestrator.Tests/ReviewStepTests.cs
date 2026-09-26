@@ -160,6 +160,90 @@ public sealed class ReviewStepTests
         Assert.False(invocation.CountsAsImplementationAttempt);
     }
 
+    [Fact]
+    public async Task Blocked_review_triggers_one_fix_then_a_passing_re_review()
+    {
+        var store = new FakeTaskStore();
+        var context = Context(new RepositoryConfiguration("main", [], [], 2, 1, true, MaxReviewFixAttempts: 1));
+        context.ImplementingAgent = "Codex";
+        var reviewCalls = 0;
+        var finding = new ReviewFinding("high", "src/Export.cs", 12, "Handle an empty invoice list");
+        var implementer = new FakeAgent("Codex", request =>
+        {
+            Assert.Equal(AgentRunPurpose.Fix, request.Purpose);
+            Assert.Equal([finding], request.ReviewFindings);
+            return Task.FromResult(new AgentRunResult(Process(), CompletedFix(), null, false));
+        });
+        var reviewer = new FakeAgent("Claude", request =>
+        {
+            reviewCalls++;
+            var review = reviewCalls == 1
+                ? new AgentReviewResult("blocked", "Empty lists fail", [finding], true, "Fix empty lists")
+                : new AgentReviewResult("completed", "Fixed", [], false, null);
+            return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: review));
+        });
+        var step = new ReviewStep(store, new AgentSelector([implementer, reviewer], store),
+            Options.Create(new FactoryOptions { ReviewPreferredAgent = "Claude" }), NullLogger<ReviewStep>.Instance);
+
+        var result = await step.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.Equal(PipelineOutcome.Succeeded, result.Outcome);
+        Assert.Equal(2, reviewCalls);
+        Assert.Equal(["Review", "Fix", "Review"], store.AgentRuns.Select(run => run.Purpose));
+        Assert.Single(store.AgentRuns, run => run.Purpose == "Fix");
+    }
+
+    [Fact]
+    public async Task Review_findings_exhausting_fix_bound_fall_through_to_needs_human()
+    {
+        var store = new FakeTaskStore();
+        var context = Context(new RepositoryConfiguration("main", [], [], 2, 1, true, MaxReviewFixAttempts: 1));
+        context.ImplementingAgent = "Codex";
+        var finding = new ReviewFinding("high", null, null, "Totals remain incorrect");
+        var implementer = new FakeAgent("Codex", _ => Task.FromResult(new AgentRunResult(Process(), CompletedFix(), null, false)));
+        var reviewer = new FakeAgent("Claude", _ => Task.FromResult(new AgentRunResult(Process(), null, null, false,
+            ReviewResult: new AgentReviewResult("blocked", "Totals are wrong", [finding], true, "Correct the totals"))));
+        var step = new ReviewStep(store, new AgentSelector([implementer, reviewer], store),
+            Options.Create(new FactoryOptions { ReviewPreferredAgent = "Claude" }), NullLogger<ReviewStep>.Instance);
+
+        var result = await step.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.Equal(PipelineOutcome.NeedsHuman, result.Outcome);
+        Assert.Equal("Review blocked: Correct the totals", result.Reason);
+        Assert.Equal(1, store.AgentRuns.Count(run => run.Purpose == "Fix"));
+        Assert.Equal(2, store.AgentRuns.Count(run => run.Purpose == "Review"));
+    }
+
+    [Theory]
+    [InlineData("Codex", "Claude")]
+    [InlineData("Claude", "Codex")]
+    public async Task Fix_loop_uses_original_implementer_regardless_of_provider_roles(string implementerName, string reviewerName)
+    {
+        var store = new FakeTaskStore();
+        var context = Context(new RepositoryConfiguration("main", [], [], 2, 1, true, MaxReviewFixAttempts: 1));
+        context.ImplementingAgent = implementerName;
+        var reviewCalls = 0;
+        var finding = new ReviewFinding("medium", "src/Export.cs", 4, "Use invariant formatting");
+        var implementer = new FakeAgent(implementerName, _ => Task.FromResult(new AgentRunResult(Process(), CompletedFix(), null, false)));
+        var reviewer = new FakeAgent(reviewerName, _ =>
+        {
+            var review = ++reviewCalls == 1
+                ? new AgentReviewResult("blocked", "Formatting bug", [finding], false, null)
+                : new AgentReviewResult("completed", "Looks good", [], false, null);
+            return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: review));
+        });
+        var step = new ReviewStep(store, new AgentSelector([implementer, reviewer], store),
+            Options.Create(new FactoryOptions { ReviewPreferredAgent = reviewerName }), NullLogger<ReviewStep>.Instance);
+
+        var result = await step.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.Equal(PipelineOutcome.Succeeded, result.Outcome);
+        Assert.Equal(implementerName, Assert.Single(store.AgentRuns, run => run.Purpose == "Fix").Agent);
+        Assert.All(store.AgentRuns.Where(run => run.Purpose == "Review"), run => Assert.Equal(reviewerName, run.Agent));
+    }
+
+    private static AgentResult CompletedFix() => new("completed", "Fixed review findings", ["dotnet test"], true, ["src/Export.cs"], [], false, null);
+
     private static ProcessResult Process(int? exitCode = 0)
     {
         var start = DateTimeOffset.UtcNow;

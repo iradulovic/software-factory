@@ -1,6 +1,7 @@
 using Factory.Core;
 using Factory.Infrastructure;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Factory.Orchestrator.Tests;
 
@@ -14,7 +15,7 @@ public sealed class RunAgentStepTests
             null, null, null, null, AgentRoutingError: "Conflicting Codex routing labels: codex:sol and codex:luna are mutually exclusive.");
         var agent = new StubAgent();
         var store = new FakeTaskStore();
-        var step = new RunAgentStep(store, new AgentSelector([agent], store), Options.Create(new FactoryOptions()));
+        var step = new RunAgentStep(store, new AgentSelector([agent], store), Options.Create(new FactoryOptions()), NullLogger<RunAgentStep>.Instance);
 
         var result = await step.ExecuteAsync(new PipelineContext(task, Guid.NewGuid()), CancellationToken.None);
 

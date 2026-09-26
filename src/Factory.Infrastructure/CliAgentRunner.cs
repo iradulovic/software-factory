@@ -36,6 +36,15 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         must independently offer it and require confirmation after rechecking live state.
         """;
 
+    private const string FixPrompt = """
+        Address the independent review findings below for the task described in .factory/task.md. Read and obey AGENTS.md.
+        Inspect the existing implementation, make only the changes needed to resolve the findings, and run relevant build and test commands.
+        Commit every intended change on this branch before finishing. Do not create branches or worktrees, push, or create pull requests.
+        When complete, write .factory/result.json matching the contract in .factory/task.md.
+
+        Review findings:
+        """;
+
     public string Name => profile.Name;
     public string Provider => profile.EffectiveProvider;
     public string? Model => profile.Model;
@@ -47,7 +56,12 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
     public async Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
     {
         var reviewing = request.Purpose == AgentRunPurpose.Review;
-        var prompt = reviewing ? ReviewPrompt : Prompt;
+        var prompt = request.Purpose switch
+        {
+            AgentRunPurpose.Review => ReviewPrompt,
+            AgentRunPurpose.Fix => $"{FixPrompt}\n{FormatFindings(request.ReviewFindings ?? [])}",
+            _ => Prompt
+        };
         var taskClass = request.TaskClass ?? "quick";
         var selectedClass = profile.Classes?.FirstOrDefault(c => string.Equals(c.TaskClass, taskClass, StringComparison.OrdinalIgnoreCase));
         if (profile.Classes is not null && selectedClass is null)
@@ -106,4 +120,7 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         return new AgentConversationResult(process, response, quota.Detected, quota.ResetAt, quota.Window,
             quota.ResetKind, quota.Detail, model, effort);
     }
+
+    private static string FormatFindings(IReadOnlyList<ReviewFinding> findings) => string.Join('\n', findings.Select((finding, index) =>
+        $"{index + 1}. [{finding.Severity}] {finding.File ?? "(general)"}{(finding.Line is null ? "" : $":{finding.Line}")} - {finding.Description}"));
 }
