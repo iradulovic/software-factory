@@ -62,10 +62,10 @@ public sealed class AgentProfilesOptions
             SessionIdPattern: @"session id: (?<sessionId>[0-9a-fA-F-]{36})",
             Provider: "Codex",
             Classes: [
-                new("quick", "gpt-5.6-luna", "max", ["exec", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--dangerously-bypass-approvals-and-sandbox", "-"]),
-                new("deep", "gpt-5.6-sol", "medium", ["exec", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"])
+                new("quick", "gpt-6-luna", "max", ["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--dangerously-bypass-approvals-and-sandbox", "-"]),
+                new("deep", "gpt-6-sol", "medium", ["exec", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"])
             ],
-            ConversationArguments: ["exec", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--sandbox", "read-only", "-"])
+            ConversationArguments: ["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--sandbox", "read-only", "-"])
     ];
 
     public List<AgentProfile> Profiles { get; set; } = [];

@@ -57,8 +57,8 @@ Every CLI provider is configured under `Agents:Profiles`. Codex is one provider 
 
 | Coding class | Issue label | Codex model | Effort |
 | --- | --- | --- | --- |
-| quick | `coding:quick` or no class label | `gpt-5.6-luna` | `max` |
-| deep | `coding:deep` | `gpt-5.6-sol` | `medium` |
+| quick | `coding:quick` or no class label | `gpt-6-luna` | `max` |
+| deep | `coding:deep` | `gpt-6-sol` | `medium` |
 
 The issue label expresses work intent, not a provider or model. The existing `codex:luna` and `codex:sol` labels remain accepted as compatibility aliases for quick and deep. Conflicting classes stop the task before invocation. Tasks already stored with `Codex-Luna` or `Codex-Sol` preferences are migrated to provider `Codex` with the matching class; historical invocation rows retain their original agent, model, and effort. Changing a model release only requires changing that class's configuration. Model and effort are checked against the installed subscription-backed CLI with live invocations rather than inferred from API availability.
 

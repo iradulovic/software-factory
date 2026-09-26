@@ -10,8 +10,8 @@ public sealed class CliAgentRunnerTests
         new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, quotaCooldownHours);
 
     [Theory]
-    [InlineData("quick", "gpt-5.6-luna", "max")]
-    [InlineData("deep", "gpt-5.6-sol", "medium")]
+    [InlineData("quick", "gpt-6-luna", "max")]
+    [InlineData("deep", "gpt-6-sol", "medium")]
     public async Task Configured_class_selects_the_actual_cli_model_and_effort(string taskClass, string model, string effort)
     {
         var profile = AgentProfilesOptions.DefaultProfiles.Single();
