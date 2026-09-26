@@ -27,6 +27,19 @@ export const runSchema = z.object({
   status:z.string(),workerId:z.string(),durationSeconds:z.number(),currentStep:z.string().nullable(),result:z.string().nullable()
 });
 export type FactoryRun = z.infer<typeof runSchema>;
+export const runStepSchema = z.object({
+  id:z.string(),runId:z.string(),stepType:z.string(),status:z.string(),startedAt:z.string(),completedAt:z.string().nullable(),
+  durationMs:z.number().nullable(),attempt:z.number(),error:z.string().nullable(),output:z.string().nullable(),hasLog:z.boolean(),outputTruncated:z.boolean()
+});
+export type FactoryRunStep = z.infer<typeof runStepSchema>;
+export const runAgentSchema = z.object({
+  id:z.string(),runId:z.string(),agent:z.string(),purpose:z.string(),model:z.string().nullable(),reasoningEffort:z.string().nullable(),
+  selectionReason:z.string().nullable(),taskClass:z.string().nullable(),startedAt:z.string(),completedAt:z.string().nullable(),durationSeconds:z.number().nullable(),
+  exitCode:z.number().nullable(),status:z.string(),stdout:z.string().nullable(),stderr:z.string().nullable(),quotaDetected:z.boolean(),attemptNumber:z.number(),
+  needsHuman:z.boolean(),resultJson:z.unknown().nullable(),resultSummary:z.string().nullable(),testsRun:z.array(z.string()),testsPassed:z.boolean().nullable(),
+  filesChanged:z.array(z.string()),risks:z.array(z.string()),humanReason:z.string().nullable()
+});
+export const runDetailsSchema = z.object({run:runSchema,steps:z.array(runStepSchema),agentRuns:z.array(runAgentSchema)});
 export const repositorySchema = z.object({
   id:z.number(),owner:z.string(),name:z.string(),cloneUrl:z.string(),defaultBranch:z.string(),isEnabled:z.boolean(),lastSyncedAt:z.string().nullable(),
   latestSyncFailure:z.string().nullable(),latestSyncFailureAt:z.string().nullable()
