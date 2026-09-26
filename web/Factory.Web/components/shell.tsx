@@ -262,7 +262,7 @@ export function AgentStatusPill() {
                 : <button type="button" className="flex shrink-0 items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-40" disabled={a.state === "Unavailable" || agentPause.isPending} onClick={() => agentPause.mutate(a.agent)} aria-label={`Pause ${a.agent}`}><Pause className="size-3" />{pausing ? "Pausing…" : "Pause"}</button>}
             </div>
             <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs sm:grid-cols-3">
-              <div><dt className="text-muted-foreground">Active task</dt><dd className="mt-0.5 truncate">{a.activeTask ?? "Idle"}</dd></div>
+              <div><dt className="text-muted-foreground">Active task</dt><dd className="mt-0.5 truncate">{a.activeTask ?? "Idle"}</dd>{a.activeTask ? <dd className="mt-0.5 truncate text-muted-foreground">Coding class: {a.taskClass ?? "not recorded"}</dd> : null}</div>
               <div><dt className="text-muted-foreground">Runs today</dt><dd className="mt-0.5 tabular-nums">{a.runsToday}</dd></div>
               <div><dt className="text-muted-foreground">Invocations OK</dt><dd className="mt-0.5 tabular-nums">{a.successfulRuns}</dd></div>
               <div className="col-span-2 border-t border-[var(--border)] pt-2 sm:col-span-3"><dt className="text-muted-foreground">Quota</dt><dd className="mt-0.5 leading-4">{agentQuotaDescription(a)}</dd></div>

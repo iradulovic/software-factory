@@ -5,7 +5,7 @@ import { AgentUsageDetails } from "../components/agent-usage";
 import type { AgentStatus } from "../lib/api";
 
 function status(usage: AgentStatus["usage"]): AgentStatus {
-  return { agent:"Codex",state:"Verified",version:null,error:null,activeTask:null,runsToday:0,successfulRuns:1,
+  return { agent:"Codex",state:"Verified",version:null,error:null,activeTask:null,taskClass:null,runsToday:0,successfulRuns:1,
     quotaDetectedAt:null,quotaResetAt:null,quotaWindow:null,quotaResetKind:null,pauseReason:null,usage,
     usageWarningThresholdPercent:80,usageCriticalThresholdPercent:95 };
 }

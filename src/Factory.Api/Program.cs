@@ -50,6 +50,7 @@ static TaskResponse AddConfiguredAgentMetadata(TaskResponse task, IEnumerable<IA
 const string AgentStatsSql = """
     SELECT
       (SELECT t.title FROM factory.task t WHERE t.current_agent=ANY(@names) ORDER BY t.started_at DESC LIMIT 1) AS "ActiveTask",
+      (SELECT t.task_class FROM factory.task t WHERE t.current_agent=ANY(@names) ORDER BY t.started_at DESC LIMIT 1) AS "TaskClass",
       (SELECT count(*) FROM factory.agent_run WHERE agent=ANY(@names) AND started_at >= CURRENT_DATE) AS "RunsToday",
       (SELECT count(*) FROM factory.agent_run WHERE agent=ANY(@names) AND status='Succeeded') AS "SuccessfulRuns",
       (SELECT started_at FROM factory.agent_run WHERE agent=ANY(@names) AND quota_detected=true ORDER BY started_at DESC LIMIT 1) AS "QuotaDetectedAt"
@@ -942,7 +943,7 @@ static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c,
             ? (quotaStatus.ResetAt, quotaStatus.Window.ToString(), quotaStatus.ResetKind.ToString())
             : (null, null, null);
         agentStatus.Add(new AgentStatus(checker.Agent, state.ToString(), version, error,
-            stats.ActiveTask, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, quotaResetAt, quotaWindow, quotaResetKind,
+            stats.ActiveTask, stats.TaskClass, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, quotaResetAt, quotaWindow, quotaResetKind,
             pause.Paused ? pause.Reason : null, usageSnapshots.GetOrUnknown(checker.Provider, DateTimeOffset.UtcNow),
             usageOptions.WarningThresholdPercent, usageOptions.CriticalThresholdPercent));
     }
