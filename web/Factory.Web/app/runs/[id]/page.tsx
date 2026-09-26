@@ -3,16 +3,11 @@ import Link from "next/link";
 import { use } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Circle, XCircle } from "lucide-react";
-import { z } from "zod";
 import { Badge, Duration, Empty, StepLog } from "@/components/ui";
-import { getJson, runSchema } from "@/lib/api";
-
-const step=z.object({id:z.string(),runId:z.string(),stepType:z.string(),status:z.string(),startedAt:z.string(),completedAt:z.string().nullable(),durationMs:z.number().nullable(),attempt:z.number(),error:z.string().nullable(),output:z.string().nullable(),hasLog:z.boolean(),outputTruncated:z.boolean()});
-const agentRun=z.object({id:z.string(),runId:z.string(),agent:z.string(),purpose:z.string(),model:z.string().nullable(),reasoningEffort:z.string().nullable(),selectionReason:z.string().nullable(),taskClass:z.string().nullable(),startedAt:z.string(),completedAt:z.string().nullable(),durationSeconds:z.number().nullable(),exitCode:z.number().nullable(),status:z.string(),stdout:z.string().nullable(),stderr:z.string().nullable(),quotaDetected:z.boolean(),attemptNumber:z.number(),needsHuman:z.boolean(),resultJson:z.unknown().nullable(),resultSummary:z.string().nullable(),testsRun:z.array(z.string()),testsPassed:z.boolean().nullable(),filesChanged:z.array(z.string()),risks:z.array(z.string()),humanReason:z.string().nullable()});
-const details=z.object({run:runSchema,steps:z.array(step),agentRuns:z.array(agentRun)});
+import { getJson, runDetailsSchema } from "@/lib/api";
 
 export default function RunDetails({params}:{params:Promise<{id:string}>}){
-  const {id}=use(params);const {data,error,isPending}=useQuery({queryKey:["run",id],queryFn:()=>getJson(`/api/runs/${id}`,details)});
+  const {id}=use(params);const {data,error,isPending}=useQuery({queryKey:["run",id],queryFn:()=>getJson(`/api/runs/${id}`,runDetailsSchema)});
   if(error)return <Empty>Unable to load this run. It may no longer exist, or the Factory API is unavailable.</Empty>;
   if(isPending||!data)return <Empty>Loading run details…</Empty>;
   const {run}=data;
