@@ -53,6 +53,8 @@ To start a new application, `POST /api/repositories/bootstrap` creates `owner/na
 Registration is automatic rather than an edit to `GitHub:Repositories`: the sync worker reads enabled database rows on every poll. For manual verification without creating live resources in CI, call the endpoint with a disposable repository, confirm it appears enabled in `GET /api/repositories`, then confirm its labeled issue appears in `GET /api/issues` and produces a pending task after the next configured sync interval.
 
 ## Repository and agent configuration
+
+Each profile declares a non-mutating `AuthenticationArguments` probe (`codex login status`, `claude auth status`, or Pi's `pi auth check ... --no-refresh`). The factory caches the pre-flight briefly, skips unauthenticated providers with structured logs, and never handles credentials or starts a login flow itself.
 Every CLI provider is configured under `Agents:Profiles`. Codex is one provider and one operational agent. Its `Classes` map chooses invocation arguments, model ID, and reasoning effort immediately before each run:
 
 | Coding class | Issue label | Codex model | Effort |

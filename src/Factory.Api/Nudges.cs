@@ -60,7 +60,7 @@ public static class NudgePolicy
         "AutomaticMergeRejected" => ("Automatic merge failed", "The merge request needs operator attention."),
         "DispatchPaused" => ("Dispatch paused", "New tasks cannot be claimed until dispatch resumes."),
         "ReviewBacklog" => ("Review backlog limit reached", "Review or merge outstanding work to allow another task."),
-        "AllAgentsUnavailable" => ("No agent can claim work", "All configured agents are unavailable or quota blocked."),
+        "AllAgentsUnavailable" => ("No agent can claim work", "All configured agents are unavailable or quota blocked; re-authenticate any agent whose status reports an authentication failure."),
         "Worker" => ("Worker unavailable", "The orchestrator heartbeat is stale; new work may not start."),
         "RepositorySync" => ("Repository sync failed", "Fresh issue and repository state may be unavailable."),
         _ => throw new ArgumentOutOfRangeException(nameof(kind))

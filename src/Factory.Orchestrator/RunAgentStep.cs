@@ -29,12 +29,12 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
             return PipelineStepResult.NeedsHuman($"No configured agent supports coding class '{taskClass}'.");
 
         var agent = await selector.SelectAsync(preferred, cancellationToken, taskClass);
-        if (agent is null) return PipelineStepResult.WaitingForQuota($"No configured agent supporting coding class '{taskClass}' is available (paused or at quota).");
+        if (agent is null) return PipelineStepResult.WaitingForQuota($"No configured agent supporting coding class '{taskClass}' is available (paused, at quota, missing, or unauthenticated).");
         var selectionReason = preferred is null
             ? $"Selected '{agent.Name}' for coding class '{taskClass}' from configured provider order."
             : string.Equals(preferred, agent.Name, StringComparison.OrdinalIgnoreCase)
                 ? context.Task.PreferredAgentReason ?? $"Selected the task's preferred provider '{preferred}' for coding class '{taskClass}'."
-                : $"Provider fallback selected '{agent.Name}' instead of '{preferred}' for coding class '{taskClass}' because the preferred provider is paused, at quota, or does not support the class.";
+                : $"Provider fallback selected '{agent.Name}' instead of '{preferred}' for coding class '{taskClass}' because the preferred provider is paused, at quota, unavailable, unauthenticated, or does not support the class.";
 
         // Persisted from the moment the agent is actually selected — before it runs, not only once it finishes —
         // so a task currently mid-invocation is correctly attributed to the agent really running it, including

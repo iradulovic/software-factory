@@ -1,24 +1,45 @@
 {
   "status": "completed",
-  "summary": "Added an API-backed repository bootstrap flow that creates from app-base or safely seeds an empty existing repository, registers it for runtime sync, and opens one labeled derivation issue with a typed product brief.",
+  "summary": "Added cached, non-mutating CLI authentication pre-flight checks for every configured agent profile, with selector fallback/logging and dashboard re-authentication visibility. Added configuration wiring and coverage for authenticated, unauthenticated, timeout, missing-executable, caching, fallback, and registration behavior.",
   "testsRun": [
-    "dotnet build SoftwareFactory.slnx",
-    "dotnet test SoftwareFactory.slnx --no-build"
+    "dotnet build SoftwareFactory.slnx --no-restore",
+    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-build --filter \"FullyQualifiedName~InfrastructureTests\"",
+    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-build --filter \"FullyQualifiedName~AgentSelectorTests\"",
+    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-build --filter \"FullyQualifiedName~TaskExecutorTests.Waits_for_quota_when_every_configured_agent_is_exhausted\"",
+    "dotnet test tests/Factory.Api.Tests/Factory.Api.Tests.csproj --no-build --filter \"FullyQualifiedName~AgentProfileRegistrationTests\"",
+    "dotnet test SoftwareFactory.slnx",
+    "npm run lint",
+    "npm run type-check",
+    "npm test",
+    "npm run build"
   ],
-  "testsPassed": true,
+  "testsPassed": false,
   "filesChanged": [
     ".factory/result.json",
     "README.md",
+    "docs/architecture.md",
+    "src/Factory.Api/AgentStatusModels.cs",
+    "src/Factory.Api/NudgeWorker.cs",
+    "src/Factory.Api/Nudges.cs",
     "src/Factory.Api/Program.cs",
-    "src/Factory.Api/RepositoryModels.cs",
-    "src/Factory.Core/RepositoryBootstrap.cs",
-    "src/Factory.Infrastructure/RepositoryBootstrapper.cs",
+    "src/Factory.Api/appsettings.json",
+    "src/Factory.Core/Models.cs",
+    "src/Factory.Infrastructure/CliAgentAvailabilityChecker.cs",
+    "src/Factory.Infrastructure/FactoryOptions.cs",
     "src/Factory.Infrastructure/ServiceCollectionExtensions.cs",
-    "tests/Factory.Core.Tests/RepositoryBootstrapTests.cs",
-    "tests/Factory.Infrastructure.Tests/RepositoryBootstrapperTests.cs"
+    "src/Factory.Orchestrator/AgentSelector.cs",
+    "src/Factory.Orchestrator/ReviewStep.cs",
+    "src/Factory.Orchestrator/RunAgentStep.cs",
+    "src/Factory.Orchestrator/appsettings.json",
+    "tests/Factory.Api.Tests/AgentProfileRegistrationTests.cs",
+    "tests/Factory.Infrastructure.Tests/InfrastructureTests.cs",
+    "tests/Factory.Orchestrator.Tests/AgentSelectorTests.cs",
+    "tests/Factory.Orchestrator.Tests/TaskExecutorTests.cs",
+    "web/Factory.Web/components/ui.tsx"
   ],
   "risks": [
-    "The end-to-end GitHub write flow was not run against a live disposable repository; README.md documents the manual verification sequence."
+    "The complete dotnet test command still has six pre-existing Windows ProcessRunner tests that invoke the Unix-only sh executable, plus one pre-existing CRLF-sensitive RepositoryBootstrapTests raw-string assertion; all task-specific tests and the other test assemblies pass.",
+    "The factory never performs login or credential handling; availability depends on the configured CLI status command and the operator's existing local authentication session."
   ],
   "needsHuman": false,
   "humanReason": null

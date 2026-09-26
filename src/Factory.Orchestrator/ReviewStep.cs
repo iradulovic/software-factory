@@ -40,13 +40,13 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
             var agent = await selector.SelectAsync(preferredReviewAgent, cancellationToken, reviewTaskClass);
             if (agent is null)
             {
-                logger.LogInformation("Task {TaskId} skipping review: no agent available (paused or at quota).", context.Task.Id);
+                logger.LogInformation("Task {TaskId} skipping review: no agent available (paused, at quota, unavailable, or unauthenticated).", context.Task.Id);
                 return PipelineStepResult.Ok;
             }
 
             var selectionReason = string.Equals(agent.Name, preferredReviewAgent, StringComparison.OrdinalIgnoreCase)
                 ? $"Configured review provider '{configuredReviewAgent}' selected coding class '{reviewTaskClass}' independently of implementation."
-                : $"Provider fallback selected review agent '{agent.Name}' for coding class '{reviewTaskClass}' because configured review provider '{configuredReviewAgent}' is paused, at quota, or lacks the class.";
+                : $"Provider fallback selected review agent '{agent.Name}' for coding class '{reviewTaskClass}' because configured review provider '{configuredReviewAgent}' is paused, at quota, unavailable, unauthenticated, or lacks the class.";
             await tasks.SetCurrentAgentAsync(context.Task.Id, agent.Name, selectionReason, cancellationToken);
             PipelineStepResult outcome;
             try { outcome = await RunAsync(context, agent, attempt, reviewTaskClass, selectionReason, cancellationToken); }

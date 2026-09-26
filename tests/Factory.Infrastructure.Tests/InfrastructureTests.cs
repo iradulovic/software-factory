@@ -94,6 +94,62 @@ public sealed class InfrastructureTests
     }
 
     [Fact]
+    public async Task Availability_checker_reports_unauthenticated_when_authentication_check_fails()
+    {
+        var runner = new SequenceResultRunner(
+            Successful("codex 1.2.3\n"),
+            new ProcessResult("codex", ["login", "status"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                1, "", "Not logged in", false, false));
+        var checker = new CliAgentAvailabilityChecker(DefaultProfile, runner);
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.False(availability.Available);
+        Assert.Equal("codex 1.2.3", availability.Version);
+        Assert.Contains("Authentication check failed", availability.Error);
+        Assert.Contains("re-authenticate", availability.Error);
+    }
+
+    [Fact]
+    public async Task Availability_checker_reports_authentication_timeout_distinctly()
+    {
+        var runner = new SequenceResultRunner(
+            Successful("codex 1.2.3\n"),
+            new ProcessResult("codex", ["login", "status"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                null, "", "", true, false));
+        var checker = new CliAgentAvailabilityChecker(DefaultProfile, runner);
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.False(availability.Available);
+        Assert.Contains("Authentication check timed out", availability.Error);
+    }
+
+    [Fact]
+    public async Task Availability_checker_reports_missing_executable_when_authentication_command_cannot_start()
+    {
+        var runner = new MissingOnSecondRunner();
+        var checker = new CliAgentAvailabilityChecker(DefaultProfile, runner);
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.False(availability.Available);
+        Assert.Equal("Executable not found", availability.Error);
+    }
+
+    [Fact]
+    public async Task Availability_checker_caches_the_combined_result_briefly()
+    {
+        var runner = new SequenceResultRunner(Successful("codex 1.2.3\n"), Successful());
+        var checker = new CliAgentAvailabilityChecker(DefaultProfile, runner);
+
+        Assert.True((await checker.CheckAsync(CancellationToken.None)).Available);
+        Assert.True((await checker.CheckAsync(CancellationToken.None)).Available);
+
+        Assert.Equal(2, runner.CallCount);
+    }
+
+    [Fact]
     public async Task Availability_checker_reports_unavailable_when_check_times_out()
     {
         var runner = new StubResultRunner(new ProcessResult("codex", ["--version"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, "", "", true, false));
@@ -176,7 +232,10 @@ public sealed class InfrastructureTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => checker.CheckAsync(CancellationToken.None));
     }
 
-    private static readonly AgentProfile DefaultProfile = new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5);
+    private static readonly AgentProfile DefaultProfile = new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5)
+    {
+        AuthenticationArguments = ["login", "status"]
+    };
 
     private static FactoryTask NewTask(string title, int issue) => new(Guid.NewGuid(), 1, 2, issue, title, "", "GitHubIssue", 0,
         FactoryTaskStatus.Pending, null, "main", null, null, null, null, null, DateTimeOffset.UtcNow, null, null, null, null);
@@ -200,6 +259,29 @@ public sealed class InfrastructureTests
     {
         public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken) => Task.FromResult(result);
     }
+
+    private sealed class SequenceResultRunner(params ProcessResult[] results) : IProcessRunner
+    {
+        private int index;
+        public int CallCount => index;
+
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(results[Math.Min(index++, results.Length - 1)]);
+    }
+
+    private sealed class MissingOnSecondRunner : IProcessRunner
+    {
+        private int callCount;
+
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
+        {
+            if (++callCount == 2) throw new System.ComponentModel.Win32Exception("No such file or directory");
+            return Task.FromResult(Successful("codex 1.2.3\n"));
+        }
+    }
+
+    private static ProcessResult Successful(string output = "") =>
+        new("codex", [], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, output, "", false, false);
 
     private sealed class ThrowingRunner : IProcessRunner
     {

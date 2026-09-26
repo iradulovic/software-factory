@@ -46,7 +46,7 @@ public static class ServiceCollectionExtensions
         {
             services.AddSingleton<IAgentRunner>(sp => new CliAgentRunner(profile, sp.GetRequiredService<IProcessRunner>(), sp.GetRequiredService<IAgentResultReader>(),
                 sp.GetRequiredService<IAgentReviewResultReader>(), sp.GetRequiredService<IClock>()));
-            services.AddSingleton<IAgentAvailabilityChecker>(sp => new CliAgentAvailabilityChecker(profile, sp.GetRequiredService<IProcessRunner>()));
+            services.AddSingleton<IAgentAvailabilityChecker>(sp => new CliAgentAvailabilityChecker(profile, sp.GetRequiredService<IProcessRunner>(), sp.GetRequiredService<IClock>()));
         }
 
         services.AddSingleton<IRepositoryCache, RepositoryCache>();

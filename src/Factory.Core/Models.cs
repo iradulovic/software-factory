@@ -584,6 +584,9 @@ public sealed record PreviousAttemptSummary(
 /// <param name="SessionIdPattern">An optional regular expression, with a named capture group <c>sessionId</c>,
 /// matched against this invocation's stdout to extract the provider's own session/thread id. Only consulted when
 /// <see cref="SupportsSessionResume"/> is <see langword="true"/>.</param>
+/// <param name="AuthenticationArguments">The non-mutating CLI arguments that prove this profile is authenticated.
+/// The command must not start a login flow or refresh credentials. An empty list leaves the profile unavailable so
+/// a newly registered agent cannot be dispatched without an explicit authentication check.</param>
 /// <param name="Provider">The underlying subscription/CLI this profile draws from — e.g. "Codex" or "Claude"
 /// (SF-704). Defaults to <see cref="Name"/> when unset. Class-specific model settings stay within one provider
 /// profile, while quota and pause remain keyed by provider.</param>
@@ -609,6 +612,14 @@ public sealed record AgentProfile(
     bool AllowAutomaticFallback = true,
     IReadOnlyList<AgentClassProfile>? Classes = null)
 {
+    /// <summary>CLI arguments for the cheap authentication pre-flight. Kept as a property so existing positional
+    /// profile construction remains source-compatible while configuration can opt every registered profile into its
+    /// provider's documented status command.</summary>
+    public IReadOnlyList<string> AuthenticationArguments { get; init; } = Array.Empty<string>();
+
+    /// <summary>How long the last authentication/version result may be reused by dispatch and status readers.</summary>
+    public int AuthenticationCacheSeconds { get; init; } = 30;
+
     /// <summary>Configuration binding constructor. Defaults let a profile omit optional settings such as quota
     /// signatures without the binder trying to construct the positional record from a missing constructor value.</summary>
     public AgentProfile() : this(string.Empty, string.Empty, Array.Empty<string>(), "stdin", 90,
