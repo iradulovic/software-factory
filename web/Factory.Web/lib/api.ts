@@ -34,7 +34,8 @@ export const repositorySchema = z.object({
 export type Repository = z.infer<typeof repositorySchema>;
 export const repositoryDetailSchema = repositorySchema.extend({
   createdAt:z.string(),updatedAt:z.string(),issueCount:z.number(),taskCount:z.number(),
-  configuration:z.object({baseBranch:z.string(),buildCommands:z.array(z.string()),testCommands:z.array(z.string()),maxImplementationAttempts:z.number(),maxReviewAttempts:z.number(),requireHumanMerge:z.boolean(),publish:z.string()}).nullable()
+  configuration:z.object({baseBranch:z.string(),buildCommands:z.array(z.string()),testCommands:z.array(z.string()),maxImplementationAttempts:z.number(),maxReviewAttempts:z.number(),requireHumanMerge:z.boolean(),publish:z.string(),deployments:z.object({vercel:z.object({projectName:z.string()}).nullable(),supabase:z.object({projectName:z.string()}).nullable()}).nullable()}).nullable(),
+  deployments:z.array(z.object({repositoryId:z.number(),provider:z.string(),externalProjectId:z.string(),projectUrl:z.string(),linkageMetadata:z.record(z.string(),z.string()),createdAt:z.string(),updatedAt:z.string()}))
 });
 export type RepositoryDetail = z.infer<typeof repositoryDetailSchema>;
 export const issueSchema=z.object({id:z.number(),issueNumber:z.number(),title:z.string(),state:z.string(),author:z.string(),createdAt:z.string(),updatedAt:z.string(),repository:z.string(),labels:z.array(z.string()).nullable(),eligible:z.boolean(),taskCount:z.number()});

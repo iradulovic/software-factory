@@ -272,11 +272,30 @@ public static class StepLogPaths
 /// review findings before the task stops for a human. Zero preserves the original immediate-human behavior.</param>
 public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<ValidationCommand> BuildCommands, IReadOnlyList<ValidationCommand> TestCommands,
     int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual", int MaxQuotaInterruptions = 20,
-    SmokeTestConfiguration? SmokeTest = null, int MaxReviewFixAttempts = 1)
+    SmokeTestConfiguration? SmokeTest = null, int MaxReviewFixAttempts = 1, DeploymentConfiguration? Deployments = null)
 {
     public static RepositoryConfiguration Default { get; } =
-        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null, 1);
+        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null, 1, null);
 }
+
+/// <summary>Human-triggered deployment provisioning declared by a repository. Values in
+/// <see cref="VercelDeploymentConfiguration.EnvironmentVariables"/> and
+/// <see cref="SupabaseDeploymentConfiguration.DbPasswordEnvironmentVariable"/> are host environment-variable
+/// names, never secret values committed to the repository.</summary>
+public sealed record DeploymentConfiguration(VercelDeploymentConfiguration? Vercel = null, SupabaseDeploymentConfiguration? Supabase = null);
+
+public sealed record VercelDeploymentConfiguration(string ProjectName, IReadOnlyList<string> EnvironmentVariables, string Environment = "production", string? ProjectUrl = null);
+
+public sealed record SupabaseDeploymentConfiguration(string ProjectName, string? ProjectRef, string? OrganizationId, string? Region,
+    string DbPasswordEnvironmentVariable = "SUPABASE_DB_PASSWORD", string? ProjectUrl = null);
+
+public sealed record DeploymentRecord(long RepositoryId, string Provider, string ExternalProjectId, string ProjectUrl,
+    IReadOnlyDictionary<string, string> LinkageMetadata, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+
+public sealed record DeploymentProvisioningRequest(GitHubRepository Repository, string WorkingDirectory, DeploymentConfiguration Configuration);
+
+public sealed record DeploymentProvisioningResult(string Provider, string ExternalProjectId, string ProjectUrl,
+    IReadOnlyDictionary<string, string> LinkageMetadata);
 
 /// <summary>Opt-in configuration for SF-703's local browser smoke tests. <paramref name="InstallCommand"/>, when
 /// set, runs once before <paramref name="StartCommand"/> — a task's Git worktree only ever contains tracked files

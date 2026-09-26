@@ -727,7 +727,7 @@ app.MapGet("/api/repositories", Query("""
     ) failure ON TRUE
     ORDER BY r.owner,r.name
     """));
-app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, IRepositoryConfigurationReader configurationReader, CancellationToken ct) =>
+app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, IRepositoryConfigurationReader configurationReader, IDeploymentStore deploymentStore, CancellationToken ct) =>
 {
     using var activity = FactoryTelemetry.Source.StartActivity("api.get_repository");
     activity?.SetTag("factory.repository_id", id);
@@ -751,7 +751,28 @@ app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, I
     RepositoryConfiguration? configuration = null;
     if (!string.IsNullOrWhiteSpace(worktreePath) && Directory.Exists(worktreePath))
         configuration = await configurationReader.ReadAsync(worktreePath, $"origin/{(string)item.defaultBranch}", ct);
-    return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration });
+    var deployments = await deploymentStore.ListAsync(id, ct);
+    return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration, deployments });
+});
+
+app.MapPost("/api/repositories/{id:long}/deployments/provision", async (long id, ProvisionDeploymentRequest body,
+    NpgsqlDataSource db, IDeploymentProvisioner provisioner, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var repository = await c.QuerySingleOrDefaultAsync<GitHubRepository>(new CommandDefinition("""
+        SELECT id,owner,name,clone_url AS "CloneUrl",default_branch AS "DefaultBranch",is_enabled AS "IsEnabled",last_synced_at AS "LastSyncedAt"
+        FROM github.repository WHERE id=@id
+        """, new { id }, cancellationToken: ct));
+    if (repository is null) return Results.NotFound(new { error = $"No repository with id {id}." });
+    if (string.IsNullOrWhiteSpace(body.Provider)) return Results.BadRequest(new { error = "Provider is required." });
+    try
+    {
+        return Results.Ok(await provisioner.ProvisionAsync(repository, body.Provider.Trim(), ct));
+    }
+    catch (DeploymentProvisioningException exception)
+    {
+        return Results.Json(new { error = exception.Message }, statusCode: StatusCodes.Status502BadGateway);
+    }
 });
 
 // SF-711: an operator adding a repository here needs no service restart — Factory.GitHubSync.Worker already
