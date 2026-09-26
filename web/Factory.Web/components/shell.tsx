@@ -5,10 +5,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
+import { Activity, Bell, Boxes, CircleGauge, Database, ListTodo, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, githubStatusSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { AgentUsageDetails } from "@/components/agent-usage";
+import { NudgeCard, useMarkNudgeRead, useNudges } from "@/components/nudge-inbox";
 import { agentStateDescription } from "@/components/ui";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -87,6 +88,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="flex shrink-0 items-center gap-2">
             <ThemeToggle />
             <GitHubStatusIndicator />
+            <NudgePill />
             <AgentStatusPill />
           </div>
         </header>
@@ -152,6 +154,97 @@ function GitHubStatusIndicator() {
     error: isLoading ? "Checking GitHub availability" : error ? "GitHub status endpoint unavailable" : "GitHub availability is unknown"
   };
   return <GitHubStatusPill status={status} />;
+}
+
+export function NudgePill() {
+  const { data, error, isLoading } = useNudges();
+  const read = useMarkNudgeRead();
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openedFromKeyboard = useRef(false);
+  const suppressFocusOpen = useRef(false);
+  const unreadCount = data?.unreadCount ?? 0;
+  const hasUnread = unreadCount > 0;
+  const cancelClose = () => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+  const openPanel = (fromKeyboard = false) => {
+    cancelClose();
+    openedFromKeyboard.current = fromKeyboard;
+    setOpen(true);
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => {
+      closeTimer.current = null;
+      setOpen(false);
+    }, 150);
+  };
+  useEffect(() => () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+  }, []);
+  return <Popover open={open} onOpenChange={nextOpen => { cancelClose(); setOpen(nextOpen); }}>
+    <PopoverTrigger asChild>
+      <button
+        type="button"
+        className="relative flex size-8 items-center justify-center rounded-full border border-[var(--border)] bg-transparent text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+        aria-label={hasUnread ? `View nudges, ${unreadCount} unread` : "View nudges"}
+        onPointerEnter={() => openPanel()}
+        onPointerLeave={scheduleClose}
+        onFocus={event => {
+          if (suppressFocusOpen.current) {
+            suppressFocusOpen.current = false;
+          } else if (event.currentTarget.matches(":focus-visible")) {
+            openPanel(true);
+          }
+        }}
+      >
+        <Bell className={`size-4 ${hasUnread ? "text-amber-400" : ""}`} aria-hidden="true" />
+        {hasUnread ? <>
+          <span className="absolute -left-0.5 -top-0.5 flex size-2.5" aria-hidden="true">
+            <span className="nudge-attention-dot size-full rounded-full bg-amber-400 ring-2 ring-[var(--background)]" />
+          </span>
+          <span className="absolute -right-2 -top-2 min-w-4 rounded-full bg-amber-400 px-1 text-center text-[10px] font-bold leading-4 text-slate-950" aria-hidden="true">{unreadCount > 99 ? "99+" : unreadCount}</span>
+        </> : null}
+      </button>
+    </PopoverTrigger>
+    <PopoverContent
+      align="end"
+      sideOffset={8}
+      className="w-96 max-w-[calc(100vw-2rem)] overflow-hidden p-0"
+      aria-label="Nudge inbox"
+      onPointerEnter={cancelClose}
+      onPointerLeave={scheduleClose}
+      onFocusCapture={cancelClose}
+      onOpenAutoFocus={event => {
+        if (!openedFromKeyboard.current) event.preventDefault();
+      }}
+      onCloseAutoFocus={event => {
+        if (!openedFromKeyboard.current) event.preventDefault();
+        openedFromKeyboard.current = false;
+        suppressFocusOpen.current = true;
+        setTimeout(() => { suppressFocusOpen.current = false; }, 0);
+      }}
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2.5">
+        <div>
+          <p className="text-sm font-semibold">Nudges</p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">Needs-human tasks and review reminders</p>
+        </div>
+        <span className="text-xs text-muted-foreground">{unreadCount} unread</span>
+      </div>
+      <div className="max-h-[min(70vh,36rem)] space-y-2 overflow-y-auto p-3">
+        {isLoading ? <p className="text-xs text-muted-foreground">Loading nudges...</p>
+          : error ? <p className="text-xs text-muted-foreground">Nudges are temporarily unavailable.</p>
+          : data?.items.length ? data.items.slice(0, 10).map(item =>
+            <NudgeCard key={item.id} item={item} reading={read.isPending} markRead={id => read.mutate(id)} />)
+          : <p className="text-xs text-muted-foreground">No nudges right now.</p>}
+      </div>
+    </PopoverContent>
+  </Popover>;
 }
 
 export function AgentStatusPill() {

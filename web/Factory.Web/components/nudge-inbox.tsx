@@ -13,6 +13,21 @@ const nudgeSchema = z.object({
 const responseSchema = z.object({ items: z.array(nudgeSchema), unreadCount: z.number() });
 export type Nudge = z.infer<typeof nudgeSchema>;
 
+export function useNudges() {
+  return useQuery({ queryKey: ["nudges"], queryFn: () => getJson("/api/nudges", responseSchema), refetchInterval: 10_000 });
+}
+
+export function useMarkNudgeRead() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const response = await fetch(`${apiBase}/api/nudges/${id}/read`, { method: "POST" });
+      if (!response.ok) throw new Error(`Could not mark nudge read (${response.status})`);
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: ["nudges"] })
+  });
+}
+
 export function NudgeCard({ item, markRead, reading }: { item: Nudge; markRead: (id: string) => void; reading: boolean }) {
   return <article className="rounded border border-[var(--border)] p-3 text-sm">
     <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{item.title}</span>{!item.readAt && <span className="badge">Unread</span>}{item.resolvedAt && <span className="badge">Resolved</span>}</div>
@@ -25,15 +40,8 @@ export function NudgeCard({ item, markRead, reading }: { item: Nudge; markRead: 
 }
 
 export function NudgeInbox() {
-  const client = useQueryClient();
-  const { data } = useQuery({ queryKey: ["nudges"], queryFn: () => getJson("/api/nudges", responseSchema), refetchInterval: 10_000 });
-  const read = useMutation({
-    mutationFn: async (id: string) => {
-      const response = await fetch(`${apiBase}/api/nudges/${id}/read`, { method: "POST" });
-      if (!response.ok) throw new Error(`Could not mark nudge read (${response.status})`);
-    },
-    onSuccess: () => client.invalidateQueries({ queryKey: ["nudges"] })
-  });
+  const { data } = useNudges();
+  const read = useMarkNudgeRead();
   if (!data || data.items.length === 0) return null;
   return <section className="panel min-w-0 p-4 sm:p-5" aria-label="Nudge inbox">
     <div className="flex items-center justify-between"><h2 className="text-lg font-semibold">Nudges</h2><span className="badge">{data.unreadCount} unread</span></div>
