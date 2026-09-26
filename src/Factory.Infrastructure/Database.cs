@@ -993,6 +993,46 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return true;
     }
 
+    /// <summary>Queues an operator-requested merge-conflict repair for a published task. The task row, conflict
+    /// observation, existing pull request, branch, and worktree are checked in one transaction so the action can
+    /// never start a new task branch or repair a pull request that has already moved on.</summary>
+    public async Task<bool> TriggerMergeConflictRepairAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var candidate = await connection.QuerySingleOrDefaultAsync<MergeConflictRepairCandidateRow>(new CommandDefinition("""
+            SELECT t.status AS "Status",t.branch_name AS "BranchName",t.worktree_path AS "WorktreePath",
+              m.status AS "MergeStatus",p.pull_request_number AS "PullRequestNumber"
+            FROM factory.task t
+            JOIN factory.task_merge_status m ON m.task_id=t.id
+            LEFT JOIN LATERAL (
+              SELECT pull_request_number FROM factory.publication
+              WHERE task_id=t.id AND status='PullRequestCreated' AND pull_request_number IS NOT NULL
+              ORDER BY completed_at DESC LIMIT 1
+            ) p ON true
+            WHERE t.id=@taskId AND t.status='Published' AND NOT t.repair_paused
+              AND t.branch_name IS NOT NULL AND t.worktree_path IS NOT NULL
+              AND m.status='Conflict' AND p.pull_request_number IS NOT NULL
+            FOR UPDATE OF t
+            """, new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (candidate is null || await HasActiveManualMergeAsync(connection, transaction, taskId, cancellationToken)) return false;
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Published, FactoryTaskStatus.Pending);
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_feedback(id,task_id,body,created_by) VALUES(@id,@taskId,@feedback,@createdBy)",
+            new { id = Guid.NewGuid(), taskId, feedback = MergeConflictRepair.Feedback, createdBy = MergeConflictRepair.CreatedBy },
+            transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId",
+            new { taskId }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,'Published','Pending',@reason,'human')",
+            new { taskId, reason = "Merge-conflict repair requested by operator." }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
     public async Task<IReadOnlyList<long>> GetIngestedReviewCommentIdsAsync(Guid taskId, CancellationToken cancellationToken)
     {
         await using var c = Connection();
@@ -1832,6 +1872,15 @@ internal sealed class TaskRepairPauseRow
 {
     public string Status { get; init; } = "";
     public bool RepairPaused { get; init; }
+}
+
+internal sealed class MergeConflictRepairCandidateRow
+{
+    public string Status { get; init; } = "";
+    public string BranchName { get; init; } = "";
+    public string WorktreePath { get; init; } = "";
+    public string MergeStatus { get; init; } = "";
+    public int PullRequestNumber { get; init; }
 }
 
 internal sealed class ManualMergeCandidateRow

@@ -268,6 +268,21 @@ app.MapGet("/api/nudges", async (NudgeStore nudges, CancellationToken ct) =>
 });
 app.MapPost("/api/nudges/{id:guid}/read", async (Guid id, NudgeStore nudges, CancellationToken ct) =>
     await nudges.MarkReadAsync(id, ct) ? Results.NoContent() : Results.NotFound());
+app.MapPost("/api/nudges/{id:guid}/fix-conflict", async (Guid id, NudgeStore nudges, ITaskStore tasks, CancellationToken ct) =>
+{
+    var nudge = await nudges.GetAsync(id, ct);
+    if (nudge is null) return Results.NotFound();
+    if (!string.Equals(nudge.Kind, "MergeConflict", StringComparison.Ordinal) || nudge.TaskId is null || nudge.ResolvedAt is not null)
+        return Results.Conflict(new { error = "This nudge is not an active merge-conflict action." });
+    if (!await tasks.TriggerMergeConflictRepairAsync(nudge.TaskId.Value, ct))
+        return Results.Conflict(new { error = "The pull request is no longer eligible for merge-conflict repair." });
+    await nudges.MarkReadAsync(id, ct);
+    return Results.Accepted($"/api/tasks/{nudge.TaskId.Value}", new { message = "Merge-conflict repair queued." });
+});
+app.MapPost("/api/tasks/{id:guid}/fix-conflict", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
+    await tasks.TriggerMergeConflictRepairAsync(id, ct)
+        ? Results.Accepted($"/api/tasks/{id}", new { message = "Merge-conflict repair queued." })
+        : Results.Conflict(new { error = "The pull request is no longer eligible for merge-conflict repair." }));
 
 app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, IAgentUsageSnapshotStore usageSnapshots, IOptions<AgentUsageOptions> usageOptions, CancellationToken ct) =>
 {

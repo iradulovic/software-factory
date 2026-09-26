@@ -74,6 +74,12 @@ public interface ITaskStore
     /// if the task does not currently rest in one of the allowed statuses.</summary>
     Task<bool> ContinueWithFeedbackAsync(Guid taskId, string feedback, CancellationToken cancellationToken);
 
+    /// <summary>Queues an operator-requested repair for a currently published factory-owned pull request whose
+    /// latest synchronized GitHub mergeability is <c>Conflict</c>. The existing branch and worktree are preserved,
+    /// and the next run is marked for the specialized merge-conflict agent purpose. Returns <see langword="false"/>
+    /// when the pull request is no longer eligible or another operator action already owns it.</summary>
+    Task<bool> TriggerMergeConflictRepairAsync(Guid taskId, CancellationToken cancellationToken);
+
     /// <summary>Every piece of operator feedback recorded for a task, oldest first — permanent and auditable,
     /// even once a later continuation supersedes it (SF-613).</summary>
     Task<IReadOnlyList<TaskFeedback>> GetFeedbackAsync(Guid taskId, CancellationToken cancellationToken);

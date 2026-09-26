@@ -9,7 +9,7 @@ import { Activity, Bell, Boxes, CircleGauge, Database, ListTodo, MessageCircle, 
 import { agentStatusSchema, getJson, githubStatusSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { AgentUsageDetails } from "@/components/agent-usage";
-import { NudgeCard, useMarkNudgeRead, useNudges } from "@/components/nudge-inbox";
+import { NudgeCard, useFixNudgeConflict, useMarkNudgeRead, useNudges } from "@/components/nudge-inbox";
 import { agentStateDescription } from "@/components/ui";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -159,6 +159,7 @@ function GitHubStatusIndicator() {
 export function NudgePill() {
   const { data, error, isLoading } = useNudges();
   const read = useMarkNudgeRead();
+  const fix = useFixNudgeConflict();
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openedFromKeyboard = useRef(false);
@@ -240,7 +241,7 @@ export function NudgePill() {
         {isLoading ? <p className="text-xs text-muted-foreground">Loading nudges...</p>
           : error ? <p className="text-xs text-muted-foreground">Nudges are temporarily unavailable.</p>
           : data?.items.length ? data.items.slice(0, 10).map(item =>
-            <NudgeCard key={item.id} item={item} reading={read.isPending} markRead={id => read.mutate(id)} />)
+            <NudgeCard key={item.id} item={item} reading={read.isPending || fix.isPending} markRead={id => read.mutate(id)} fixConflict={id => fix.mutate(id)} />)
           : <p className="text-xs text-muted-foreground">No nudges right now.</p>}
       </div>
     </PopoverContent>

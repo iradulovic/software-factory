@@ -272,6 +272,24 @@ public sealed class CliAgentRunnerTests
         Assert.Null(result.ReviewResult);
     }
 
+    [Fact]
+    public async Task Merge_conflict_purpose_sends_reconciliation_prompt_and_reads_the_implementation_result()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agentResult = new AgentResult("completed", "Conflict resolved", ["dotnet test"], true, ["src/Export.cs"], [], false, null);
+        var agent = new CliAgentRunner(Codex(), runner, new StubResultReader(agentResult), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            Purpose: AgentRunPurpose.MergeConflict), CancellationToken.None);
+
+        Assert.Contains("merge conflict", runner.Request!.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("fetch origin", runner.Request.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("merge", runner.Request.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("preserving", runner.Request.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(agentResult, result.Result);
+        Assert.Null(result.ReviewResult);
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : IClock { public DateTimeOffset UtcNow => now; }
     private sealed class NoResultReader : IAgentResultReader
     {

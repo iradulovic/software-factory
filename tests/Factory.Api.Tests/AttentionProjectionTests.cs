@@ -52,7 +52,8 @@ public sealed class AttentionProjectionTests
     public void Confirmed_pr_signals_are_distinct(string merge, string ci, string expected)
     {
         var task = Row().WithChanges(new AttentionTaskRow { MergeStatus = merge, CiStatus = ci });
-        Assert.Contains(AttentionProjection.ForTasks([task], Now, 3), x => x.Kind == expected);
+        var item = Assert.Single(AttentionProjection.ForTasks([task], Now, 3), x => x.Kind == expected);
+        if (expected == "MergeConflict") Assert.Equal("fix-conflict", item.Action);
         if (merge != "Conflict") Assert.DoesNotContain(AttentionProjection.ForTasks([task], Now, 3), x => x.Kind == "MergeConflict");
         if (ci == "Pending") Assert.DoesNotContain(AttentionProjection.ForTasks([task], Now, 3), x => x.Kind == "CiFailure");
     }

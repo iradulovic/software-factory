@@ -77,8 +77,10 @@ public sealed class TaskExecutor(
             logger.LogInformation("Task {TaskId} is ready for publish in run {RunId}", task.Id, runId);
             await notifier.NotifyReadyForPublishAsync(context, cancellationToken);
 
-            if (context.Configuration?.Publish == "auto-draft")
-                await tasks.RequestPublicationAsync(task.Id, runId, "auto-draft", cancellationToken);
+            if (context.Configuration?.Publish == "auto-draft" || context.AgentPurpose == AgentRunPurpose.MergeConflict)
+                await tasks.RequestPublicationAsync(task.Id, runId,
+                    context.AgentPurpose == AgentRunPurpose.MergeConflict ? MergeConflictRepair.CreatedBy : "auto-draft",
+                    cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

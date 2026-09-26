@@ -90,7 +90,7 @@ public static class AttentionProjection
                 var ciFresh = row.CiAt is not null && now - row.CiAt <= TimeSpan.FromMinutes(15);
                 var mergeFresh = row.MergeAt is not null && now - row.MergeAt <= TimeSpan.FromMinutes(15);
                 if (row.MergeStatus == "Conflict" && mergeFresh)
-                    Add("MergeConflict", "Critical", "GitHub confirmed a merge conflict.", row.StatusAt, row.MergeAt);
+                    Add("MergeConflict", "Critical", "GitHub confirmed a merge conflict.", row.StatusAt, row.MergeAt, "fix-conflict");
                 else if (!mergeFresh)
                     Add("MergeabilityUnavailable", "Warning", "PR mergeability has not been checked recently.", row.MergeAt, row.MergeAt);
                 if (row.CiStatus == "Unavailable" || !ciFresh)

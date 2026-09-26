@@ -93,6 +93,13 @@ internal sealed class FakeTaskStore : ITaskStore
         if (NextContinueWithFeedbackAllowed) FeedbackRecorded.Add(feedback);
         return Task.FromResult(NextContinueWithFeedbackAllowed);
     }
+    public bool NextMergeConflictRepairAllowed { get; set; } = true;
+    public List<Guid> MergeConflictRepairsTriggered { get; } = [];
+    public Task<bool> TriggerMergeConflictRepairAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        if (NextMergeConflictRepairAllowed) MergeConflictRepairsTriggered.Add(taskId);
+        return Task.FromResult(NextMergeConflictRepairAllowed);
+    }
     public IReadOnlyList<TaskFeedback> Feedback { get; set; } = [];
     public Task<IReadOnlyList<TaskFeedback>> GetFeedbackAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(Feedback);
     public Task<bool> CancelPendingForIssueAsync(long issueId, string reason, CancellationToken cancellationToken) => Task.FromResult(false);
