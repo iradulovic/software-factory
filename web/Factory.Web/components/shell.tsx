@@ -1,12 +1,12 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { z } from "zod";
-import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageCircle, MessageSquareText, Moon, Newspaper, Sun } from "lucide-react";
-import { agentStatusSchema, getJson, githubStatusSchema, workerSchema, type Worker } from "@/lib/api";
+import { Activity, Boxes, CircleGauge, Database, ListTodo, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
+import { agentStatusSchema, getJson, githubStatusSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { agentStateDescription } from "@/components/ui";
 import { Button } from "@/components/ui/button";
@@ -118,7 +118,34 @@ function ThemeToggle() {
   );
 }
 
-const agentDotTones: Record<string, string> = { Verified: "bg-emerald-500", Busy: "bg-sky-500", Unavailable: "bg-red-500" };
+const agentDotTones: Record<string, string> = { Verified: "bg-emerald-500", Busy: "bg-sky-500", Unavailable: "bg-red-500", Paused: "bg-amber-500", QuotaBlocked: "bg-amber-500" };
+
+function formatAgentDate(value: string | null) {
+  if (!value) return "unknown";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function agentQuotaDescription(agent: AgentStatus) {
+  if (agent.state === "QuotaBlocked") {
+    const resetKind = agent.quotaResetKind ? ` (${agent.quotaResetKind.toLowerCase()})` : "";
+    const window = agent.quotaWindow ? `, ${agent.quotaWindow}` : "";
+    return `Quota blocked${window}; resets ${formatAgentDate(agent.quotaResetAt)}${resetKind}`;
+  }
+  return agent.quotaDetectedAt ? `Last quota hit ${formatAgentDate(agent.quotaDetectedAt)}` : "Quota clear";
+}
+
+export function agentStatusTitle(agent: AgentStatus) {
+  return [
+    `${agent.agent}: ${agentStateDescription(agent.state)}`,
+    agent.pauseReason ? `Pause reason: ${agent.pauseReason}` : null,
+    agent.error ? `Error: ${agent.error}` : null,
+    `Active task: ${agent.activeTask ?? "Idle"}`,
+    `Runs today: ${agent.runsToday}`,
+    `Invocations OK: ${agent.successfulRuns}`,
+    agentQuotaDescription(agent)
+  ].filter(Boolean).join(" · ");
+}
 
 function GitHubStatusIndicator() {
   const { data, error, isLoading } = useQuery({
@@ -136,13 +163,34 @@ function GitHubStatusIndicator() {
   return <GitHubStatusPill status={status} />;
 }
 
-function AgentStatusPill() {
+export function AgentStatusPill() {
+  const client = useQueryClient();
   const { data } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)) });
+  const refresh = () => Promise.all([
+    client.invalidateQueries({ queryKey: ["agents-status"] }),
+    client.invalidateQueries({ queryKey: ["dashboard"] })
+  ]);
+  const agentPause = useMutation({
+    mutationFn: (agent: string) => postPause(`/api/agents/${agent}/pause`),
+    onSuccess: refresh
+  });
+  const agentResume = useMutation({
+    mutationFn: (agent: string) => postPause(`/api/agents/${agent}/resume`),
+    onSuccess: refresh
+  });
   if (!data?.length) return <div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-muted-foreground">No agents configured</div>;
-  return <div className="flex items-center gap-3 rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-muted-foreground">
-    {data.map(a => <span className="flex items-center gap-1.5" key={a.agent} title={`${a.agent}: ${agentStateDescription(a.state)}${a.error ? ` — ${a.error}` : ""}`}>
-      <span className={`size-1.5 rounded-full ${agentDotTones[a.state] ?? "bg-amber-500"}`} />{a.agent}
-    </span>)}
+  return <div className="flex items-center gap-1 rounded-full border border-[var(--border)] px-2 py-1 text-xs text-muted-foreground">
+    {data.map(a => {
+      const paused = a.state === "Paused";
+      const title = agentStatusTitle(a);
+      return <span className="flex items-center gap-1 rounded-full px-1" key={a.agent} title={title} aria-label={title}>
+        <span className={`size-1.5 shrink-0 rounded-full ${agentDotTones[a.state] ?? "bg-amber-500"}`} aria-hidden="true" />
+        <span className="max-w-24 truncate">{a.agent}</span>
+        {paused
+          ? <button type="button" className="grid size-5 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40" disabled={agentResume.isPending} onClick={() => agentResume.mutate(a.agent)} aria-label={`Resume ${a.agent}`} title={`Resume ${a.agent}`}><Play className="size-3" /></button>
+          : <button type="button" className="grid size-5 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40" disabled={a.state === "Unavailable" || agentPause.isPending} onClick={() => agentPause.mutate(a.agent)} aria-label={`Pause ${a.agent}`} title={`Pause ${a.agent}`}><Pause className="size-3" /></button>}
+      </span>;
+    })}
   </div>;
 }
 
