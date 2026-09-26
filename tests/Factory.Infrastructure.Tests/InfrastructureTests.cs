@@ -150,6 +150,43 @@ public sealed class InfrastructureTests
     }
 
     [Fact]
+    public async Task Availability_checker_runs_the_configured_auth_command_with_the_bounded_timeout()
+    {
+        var runner = new SequenceResultRunner(Successful("codex 1.2.3\n"), Successful("logged in\n"));
+        var profile = DefaultProfile with { AvailabilityTimeoutSeconds = 7 };
+        var checker = new CliAgentAvailabilityChecker(profile, runner);
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.True(availability.Available);
+        Assert.Collection(runner.Requests,
+            request =>
+            {
+                Assert.Equal(["--version"], request.Arguments);
+                Assert.Equal(TimeSpan.FromSeconds(7), request.Timeout);
+            },
+            request =>
+            {
+                Assert.Equal(["login", "status"], request.Arguments);
+                Assert.Equal(TimeSpan.FromSeconds(7), request.Timeout);
+            });
+    }
+
+    [Fact]
+    public async Task Availability_checker_treats_a_null_authentication_command_as_unconfigured()
+    {
+        var runner = new SequenceResultRunner(Successful("codex 1.2.3\n"));
+        var profile = DefaultProfile with { AuthenticationArguments = null! };
+        var checker = new CliAgentAvailabilityChecker(profile, runner);
+
+        var availability = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.False(availability.Available);
+        Assert.Equal("Authentication check is not configured", availability.Error);
+        Assert.Equal(1, runner.CallCount);
+    }
+
+    [Fact]
     public async Task Availability_checker_reports_unavailable_when_check_times_out()
     {
         var runner = new StubResultRunner(new ProcessResult("codex", ["--version"], ".", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, "", "", true, false));
@@ -264,9 +301,13 @@ public sealed class InfrastructureTests
     {
         private int index;
         public int CallCount => index;
+        public List<ProcessRequest> Requests { get; } = [];
 
-        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken) =>
-            Task.FromResult(results[Math.Min(index++, results.Length - 1)]);
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            return Task.FromResult(results[Math.Min(index++, results.Length - 1)]);
+        }
     }
 
     private sealed class MissingOnSecondRunner : IProcessRunner

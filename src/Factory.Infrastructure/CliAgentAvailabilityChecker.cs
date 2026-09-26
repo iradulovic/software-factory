@@ -68,7 +68,7 @@ public sealed class CliAgentAvailabilityChecker(AgentProfile profile, IProcessRu
         if (version.Cancelled) return new AgentAvailability(Agent, false, null, "Availability check cancelled");
         if (!version.Succeeded) return new AgentAvailability(Agent, false, null, $"Exit code {version.ExitCode}");
 
-        if (profile.AuthenticationArguments.Count == 0)
+        if (profile.AuthenticationArguments is not { Count: > 0 })
             return new AgentAvailability(Agent, false, version.StandardOutput.Trim(), "Authentication check is not configured");
 
         ProcessResult authentication;

@@ -1,17 +1,18 @@
 {
   "status": "completed",
-  "summary": "Added cached, non-mutating authentication preflight checks for every configured CLI agent, with selector fallback, structured failure logging, dashboard visibility, and coverage for auth failure modes. The implementation is committed on this branch; focused validation passes, while the full .NET suite retains unrelated Windows-only baseline failures.",
+  "summary": "Implemented cached, non-mutating CLI authentication preflight for every configured coding-agent profile, with selector fallback, structured logging, dashboard status, operator nudges, and coverage for the required failure modes.",
   "testsRun": [
-    "dotnet restore SoftwareFactory.slnx",
-    "dotnet build SoftwareFactory.slnx",
-    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-restore --filter FullyQualifiedName~InfrastructureTests",
-    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-restore --filter FullyQualifiedName~AgentSelectorTests|FullyQualifiedName~TaskExecutorTests.Waits_for_quota_when_every_configured_agent_is_exhausted",
-    "dotnet test tests/Factory.Api.Tests/Factory.Api.Tests.csproj --no-restore --filter FullyQualifiedName~AgentProfileRegistrationTests|FullyQualifiedName~AgentOperationalStateResolverTests",
-    "dotnet test SoftwareFactory.slnx --no-restore",
-    "npm run lint",
+    "dotnet build SoftwareFactory.slnx --no-restore",
+    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-build --filter FullyQualifiedName~InfrastructureTests (19 passed)",
+    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-build (110 passed)",
+    "dotnet test tests/Factory.Api.Tests/Factory.Api.Tests.csproj --no-build (82 passed)",
+    "dotnet test tests/Factory.IntegrationTests/Factory.IntegrationTests.csproj --no-build (59 passed)",
+    "dotnet test tests/Factory.Core.Tests/Factory.Core.Tests.csproj --no-build --filter FullyQualifiedName!~RepositoryBootstrapTests (222 passed)",
+    "dotnet test SoftwareFactory.slnx --no-build (unfiltered; seven unrelated baseline failures)",
+    "npx eslint components/ui.tsx",
     "npm run type-check",
     "npm test",
-    "npm run build (network-enabled retry)"
+    "npm run build"
   ],
   "testsPassed": false,
   "filesChanged": [
@@ -38,8 +39,8 @@
     "web/Factory.Web/components/ui.tsx"
   ],
   "risks": [
-    "The full dotnet test command has seven unrelated baseline failures in this Windows worktree: one CRLF-sensitive RepositoryBootstrapTests assertion and six ProcessRunnerTests that invoke the Unix-only sh executable; all task-specific tests pass.",
-    "Authentication probes depend on each configured CLI's existing local session and never perform login or credential refresh; the frontend production build requires network access for the repository's existing Google Font import."
+    "The unfiltered dotnet test command still has seven pre-existing Windows-worktree failures: six ProcessRunnerTests invoke the POSIX-only sh executable, and RepositoryBootstrapTests expects CRLF while the renderer emits LF. All task-focused suites and the other assemblies pass.",
+    "The repository-wide npm run lint scan was stopped after it hung in the shared workspace; targeted eslint for the changed frontend file passed. Authentication checks use configured provider status commands and never start login or refresh credentials."
   ],
   "needsHuman": false,
   "humanReason": null
