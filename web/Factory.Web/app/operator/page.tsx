@@ -84,9 +84,12 @@ export default function OperatorPage() {
   }
 
   function onSubmit(event: FormEvent) { event.preventDefault(); void send(draft); }
+  function clearConversation() { setHistory([]); setError(null); }
 
   return <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col gap-4 p-4 sm:p-6">
-    <header><p className="eyebrow">Operator</p><h1 className="mt-1 text-2xl font-semibold">Ask the factory</h1>
+    <header><div className="flex items-start justify-between gap-4"><div><p className="eyebrow">Operator</p><h1 className="mt-1 text-2xl font-semibold">Ask the factory</h1></div>
+      {history.length > 0 && <button type="button" disabled={busy} onClick={clearConversation} className="rounded border border-[var(--border)] px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-50">Clear</button>}
+    </div>
       <p className="mt-2 text-sm text-muted-foreground">Answers come from recorded factory state. Explanations and suggested actions are shown separately. No coding agent is required.</p></header>
     <div className="flex flex-wrap gap-2">{examples.map(example => <button type="button" key={example} disabled={busy} onClick={() => void send(example)} className="rounded border border-[var(--border)] px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-50">{example}</button>)}</div>
     <div className="panel min-h-0 flex-1 space-y-4 overflow-y-auto p-4" aria-live="polite">
