@@ -9,7 +9,6 @@ import { agentStatusSchema, getJson, globalPauseScope, pauseStateSchema, postPau
 import { RelativeTime } from "@/components/ui";
 import { CurrentWork } from "@/components/current-work";
 import { AttentionQueue } from "@/components/attention-queue";
-import { NudgeInbox } from "@/components/nudge-inbox";
 
 const dashboardSchema = z.object({
   metrics: z.object({ activeTasks:z.number(),pendingTasks:z.number(),completedToday:z.number(),needsOperator:z.number(),reviewBacklog:z.number(),successRate:z.number() }),
@@ -72,7 +71,6 @@ export default function Overview() {
         : <div className="flex items-center gap-2"><input aria-label="Pause reason" onChange={e=>setReason(e.target.value)} placeholder="Reason (optional)" value={reason}/><button className="tone-amber flex items-center gap-2 rounded border px-3 py-2 text-xs disabled:opacity-40" disabled={globalPause.isPending} onClick={()=>globalPause.mutate()}><Pause className="size-3.5"/>Pause dispatch</button></div>}
     </section>
     <AttentionQueue active={data?.metrics.activeTasks??0} paused={globalPaused} agentsBlocked={!!data?.agentStatus.length&&data.agentStatus.every(a=>["QuotaBlocked","Unavailable","Unknown","Paused"].includes(a.state))} reviewBacklog={data?.reviewBacklog.count??0}/>
-    <NudgeInbox />
     <section className="panel p-4" aria-label="Recent outcomes"><div className="flex items-center justify-between"><h2 className="text-sm font-semibold">Recent outcomes</h2><Link href="/runs" className="text-xs text-emerald-400 hover:underline">All runs →</Link></div><div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{data?.activity.slice(0,4).map((a,i)=><div className="rounded border border-[var(--border)] p-3 text-xs" key={`${a.occurredAt}-${i}`}><p className="truncate font-medium">{a.title}</p><p className="mt-1 text-muted-foreground">{a.type} · {a.status}</p></div>)}{data?.activity.length===0&&<p className="text-xs text-muted-foreground">No recent execution events.</p>}</div></section>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{cards.map(([label,key,Icon])=><div className="panel p-4" key={key}><div className="flex items-center justify-between"><span className="eyebrow">{label}</span><Icon className="size-4 text-muted-foreground/60" /></div><p className="mt-3 text-3xl font-semibold tabular-nums">{data ? `${data.metrics[key]}`:"—"}</p></div>)}</div>
     <div className="grid gap-5 xl:grid-cols-2">
