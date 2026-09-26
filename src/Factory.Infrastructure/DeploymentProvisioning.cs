@@ -31,9 +31,9 @@ public sealed class VercelDeploymentProvider(IProcessRunner processes, IEnvironm
 
         var metadata = new Dictionary<string, string> { ["projectName"] = config.ProjectName, ["environment"] = config.Environment, ["gitRepository"] = $"{request.Repository.Owner}/{request.Repository.Name}" };
         if (!string.IsNullOrWhiteSpace(orgId)) metadata["organizationId"] = orgId;
-        var projectUrl = config.ProjectUrl ?? (!string.IsNullOrWhiteSpace(orgId)
-            ? $"https://vercel.com/{orgId}/{config.ProjectName}"
-            : $"https://vercel.com/~/project/{config.ProjectName}");
+        // project.json exposes an organization ID rather than the dashboard's URL slug. The stable generated
+        // deployment hostname is therefore a safer default; repositories with a custom domain can override it.
+        var projectUrl = config.ProjectUrl ?? $"https://{config.ProjectName}.vercel.app";
         return new(Provider, projectId, projectUrl, metadata);
     }
 

@@ -25,6 +25,7 @@ public sealed class DeploymentProviderTests
 
         Assert.Equal("Vercel", result.Provider);
         Assert.Equal("prj_123", result.ExternalProjectId);
+        Assert.Equal("https://acme-store.vercel.app", result.ProjectUrl);
         Assert.Equal("team_456", result.LinkageMetadata["organizationId"]);
         Assert.Collection(runner.Requests,
             request => AssertRequest(request, "vercel", ["link", "--yes", "--project", "acme-store"]),
@@ -80,6 +81,21 @@ public sealed class DeploymentProviderTests
             request => AssertRequest(request, "supabase", ["db", "push", "--linked", "--yes"]));
     }
 
+    [Fact]
+    public async Task Supabase_failure_does_not_expose_the_database_password()
+    {
+        const string secret = "database-secret";
+        var provider = new SupabaseDeploymentProvider(new FailingRunner(secret),
+            new DictionaryEnvironment(new Dictionary<string, string> { ["SUPABASE_DB_PASSWORD"] = secret }));
+        var configuration = new DeploymentConfiguration(null, new SupabaseDeploymentConfiguration("acme-store", "existing-ref", null, null));
+
+        var error = await Assert.ThrowsAsync<DeploymentProvisioningException>(() =>
+            provider.ProvisionAsync(new(Repository, "/repo", configuration), CancellationToken.None));
+
+        Assert.DoesNotContain(secret, error.Message, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED]", error.Message, StringComparison.Ordinal);
+    }
+
     private static void AssertRequest(ProcessRequest request, string fileName, IReadOnlyList<string> arguments)
     {
         Assert.Equal(fileName, request.FileName);
@@ -102,6 +118,16 @@ public sealed class DeploymentProviderTests
             var output = request.Arguments.Take(2).SequenceEqual(new[] { "projects", "create" }) ? createOutput : "";
             var now = DateTimeOffset.UtcNow;
             return Task.FromResult(new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, now, now, 0, output, "", false, false));
+        }
+    }
+
+    private sealed class FailingRunner(string secret) : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
+        {
+            var now = DateTimeOffset.UtcNow;
+            return Task.FromResult(new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory,
+                now, now, 1, "", $"Provider rejected {secret}.", false, false));
         }
     }
 }

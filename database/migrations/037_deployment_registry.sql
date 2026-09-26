@@ -9,5 +9,3 @@ CREATE TABLE factory.deployment (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(repository_id,provider)
 );
-
-CREATE INDEX ix_factory_deployment_repository ON factory.deployment(repository_id,provider);
