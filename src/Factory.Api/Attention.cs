@@ -24,6 +24,8 @@ public sealed class AttentionTaskRow
     public DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset? StatusAt { get; init; }
     public string? FailureReason { get; init; }
+    public string? PendingHumanRequest { get; init; }
+    public string? LastHumanAnswer { get; init; }
     public bool RepairPaused { get; init; }
     public bool RequireHumanMerge { get; init; }
     public int ImplementationAttempts { get; init; }
@@ -77,7 +79,9 @@ public static class AttentionProjection
             var automaticMergeRejected = row.Status == "NeedsHuman" &&
                 row.FailureReason?.StartsWith("Automatic merge", StringComparison.OrdinalIgnoreCase) == true;
             if (row.Status == "NeedsHuman" && !automaticMergeRejected)
-                Add("NeedsHuman", "Critical", row.FailureReason ?? "Task needs an operator decision.", row.StatusAt, row.StatusAt);
+                Add("NeedsHuman", "Critical", row.PendingHumanRequest ??
+                    (row.LastHumanAnswer is null ? row.FailureReason ?? "Task needs an operator decision." :
+                        $"{row.FailureReason ?? "Task needs an operator decision."} Previous answer: {row.LastHumanAnswer}"), row.StatusAt, row.StatusAt);
             if (row.RepairPaused && row.Status is not ("Completed" or "Cancelled" or "Rejected"))
                 Add("RepairsStopped", "Critical", "Automatic repair attempts are stopped.", row.StatusAt, row.StatusAt, "resume-repairs");
             if (row.ImplementationAttempts >= 2 && row.Status is ("Pending" or "Claimed" or "Preparing" or "Implementing" or "Validating" or "Reviewing" or "WaitingForQuota"))
@@ -134,7 +138,12 @@ public static class AttentionQuery
     public const string Tasks = """
         SELECT t.id,t.title,t.status,gr.owner || '/' || gr.name AS "Repository",t.created_at AS "CreatedAt",
           (SELECT max(e.occurred_at) FROM factory.task_event e WHERE e.task_id=t.id AND e.to_status=t.status) AS "StatusAt",
-          t.failure_reason AS "FailureReason",t.repair_paused AS "RepairPaused",t.require_human_merge AS "RequireHumanMerge",
+          t.failure_reason AS "FailureReason",
+          (SELECT upper(left(hr.kind,1)) || substring(hr.kind from 2) || ': ' || hr.prompt
+           FROM factory.agent_human_request hr WHERE hr.task_id=t.id AND hr.resolution IS NULL LIMIT 1) AS "PendingHumanRequest",
+          (SELECT hr.answer FROM factory.agent_human_request hr WHERE hr.task_id=t.id AND hr.resolution IS NOT NULL
+           ORDER BY hr.resolved_at DESC LIMIT 1) AS "LastHumanAnswer",
+          t.repair_paused AS "RepairPaused",t.require_human_merge AS "RequireHumanMerge",
           (SELECT count(*)::int FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.counts_as_implementation_attempt
             AND ar.started_at > COALESCE((SELECT max(created_at) FROM factory.task_feedback WHERE task_id=t.id),'-infinity'::timestamptz)) AS "ImplementationAttempts",
           (SELECT min(ar.started_at) FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.counts_as_implementation_attempt) AS "FirstAttemptAt",

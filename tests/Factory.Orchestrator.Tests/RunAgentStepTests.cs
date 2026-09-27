@@ -15,7 +15,7 @@ public sealed class RunAgentStepTests
             null, null, null, null, AgentRoutingError: "Conflicting Codex routing labels: codex:sol and codex:luna are mutually exclusive.");
         var agent = new StubAgent();
         var store = new FakeTaskStore();
-        var step = new RunAgentStep(store, new AgentSelector([agent], store), Options.Create(new FactoryOptions()), NullLogger<RunAgentStep>.Instance);
+        var step = new RunAgentStep(store, new AgentSelector([agent], store), Options.Create(new FactoryOptions()), new StubInspector(), NullLogger<RunAgentStep>.Instance);
 
         var result = await step.ExecuteAsync(new PipelineContext(task, Guid.NewGuid()), CancellationToken.None);
 
@@ -35,5 +35,11 @@ public sealed class RunAgentStepTests
             Invocations++;
             throw new InvalidOperationException("A conflicting route must not invoke a model.");
         }
+    }
+
+    private sealed class StubInspector : IWorktreeInspector
+    {
+        public Task<bool> HasChangesAsync(string path, string baseRef, CancellationToken ct) => Task.FromResult(false);
+        public Task<ChangeSummary> SummarizeAsync(string path, string baseRef, CancellationToken ct) => throw new NotSupportedException();
     }
 }

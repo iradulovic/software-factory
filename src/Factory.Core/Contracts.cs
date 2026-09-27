@@ -73,6 +73,15 @@ public interface ITaskStore
     /// than either staying permanently exhausted or granting unlimited retries. Returns <see langword="false"/>
     /// if the task does not currently rest in one of the allowed statuses.</summary>
     Task<bool> ContinueWithFeedbackAsync(Guid taskId, string feedback, CancellationToken cancellationToken);
+    Task PauseForAgentHumanRequestAsync(Guid taskId, Guid runId, Guid agentRunId, AgentHumanRequest request,
+        string reason, string? branchName, string? headCommit, CancellationToken cancellationToken);
+    Task<IReadOnlyList<PersistedAgentHumanRequest>> GetAgentHumanRequestsAsync(Guid taskId, CancellationToken cancellationToken);
+    Task<bool> ResolveAgentHumanRequestAsync(Guid taskId, Guid requestId, string resolution, string answer,
+        string? branchName, string? headCommit, CancellationToken cancellationToken);
+    Task<bool> ClassifyLegacyVerificationAsync(Guid taskId, string checks, string branchName, string headCommit,
+        CancellationToken cancellationToken);
+    Task<PersistedAgentHumanRequest?> GetPostImplementationRequestAsync(Guid taskId, CancellationToken cancellationToken);
+    Task AdvancePostImplementationHeadAsync(Guid taskId, string headCommit, CancellationToken cancellationToken);
 
     /// <summary>Queues an operator-requested repair for a currently published factory-owned pull request whose
     /// latest synchronized GitHub mergeability is <c>Conflict</c>. The existing branch and worktree are preserved,

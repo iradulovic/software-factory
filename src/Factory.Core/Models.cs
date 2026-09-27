@@ -78,7 +78,8 @@ public sealed record FactoryTask(
     string? ResumableSessionAgent = null,
     string? PreferredAgentReason = null,
     string? AgentRoutingError = null,
-    string? TaskClass = null);
+    string? TaskClass = null,
+    Guid? PostImplementationRequestId = null);
 
 /// <param name="LastSyncedAt">The point in time through which this repository's issues are known to be fully
 /// synchronized, used as the incremental sync checkpoint; <see langword="null"/> before the first sync.</param>
@@ -205,7 +206,17 @@ public sealed record DispatchPauseState(string Scope, bool Paused, string? Reaso
 }
 
 public sealed record AgentResult(string Status, string Summary, IReadOnlyList<string> TestsRun, bool TestsPassed,
-    IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason);
+    IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason,
+    AgentHumanRequest? HumanRequest = null);
+
+public sealed record AgentHumanRequest(string Kind, string Prompt, IReadOnlyList<string>? Choices,
+    IReadOnlyList<string>? Checks, string? Context);
+
+public sealed record PersistedAgentHumanRequest(Guid Id, Guid TaskId, Guid AgentRunId, string Kind, string Prompt,
+    IReadOnlyList<string> Choices, IReadOnlyList<string> Checks, string? Context, string? BranchName,
+    string? HeadCommit, DateTimeOffset CreatedAt, string? Resolution, string? Answer, DateTimeOffset? ResolvedAt,
+    AgentResult? AgentResult = null, string? AgentName = null, string? AgentPurpose = null,
+    string? ProviderSessionId = null, string? ContinuationHeadCommit = null);
 
 /// <summary>The single source of truth for <c>.factory/result.json</c>'s accepted <see cref="AgentResult.Status"/>
 /// values (SF-605): both <c>AgentResultReader</c>'s validation and the completion contract generated into

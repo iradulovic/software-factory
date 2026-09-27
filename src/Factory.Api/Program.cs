@@ -31,7 +31,7 @@ const string TaskListSql = $"""
       CASE WHEN t.current_agent IS NULL THEN (SELECT ar.model FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1) END AS "agentModel",
       CASE WHEN t.current_agent IS NULL THEN (SELECT ar.reasoning_effort FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1) END AS "agentReasoningEffort",
       COALESCE(t.current_agent_reason,(SELECT ar.selection_reason FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1),t.preferred_agent_reason) AS "agentSelectionReason",
-      t.agent_routing_error AS "agentRoutingError", t.task_class AS "taskClass"
+      t.agent_routing_error AS "agentRoutingError", t.task_class AS "taskClass", t.base_branch AS "baseBranch"
     FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id LEFT JOIN github.issue i ON i.id=t.github_issue_id
     """;
 
@@ -366,7 +366,7 @@ app.MapGet("/api/tasks", async (string? status, string? repository, string? agen
     return Results.Ok(new { items, total, page = normalizedPage, pageSize = query.Size });
 });
 
-app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskStore tasks, IEnumerable<IAgentRunner> agents, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
+app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskStore tasks, IWorktreeInspector inspector, IEnumerable<IAgentRunner> agents, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
 {
     using var activity = FactoryTelemetry.Source.StartActivity("api.get_task");
     activity?.SetTag("factory.task_id", id);
@@ -424,9 +424,16 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
         attemptRow.ciRepairs, attemptRow.maxImplementation, attemptRow.maxQuotaInterruptions,
         maxCiRepairs = githubOptions.Value.MaxCiRepairAttempts, attemptRow.latestRetryReason };
     var reviewFindings = await tasks.GetReviewFindingsAsync(id, ct);
+    var humanRequests = await tasks.GetAgentHumanRequestsAsync(id, ct);
+    ChangeSummary? verificationWorkspace = null;
+    if (taskRow.Status == "NeedsHuman" && !string.IsNullOrWhiteSpace(taskRow.WorktreePath) && Directory.Exists(taskRow.WorktreePath))
+    {
+        try { verificationWorkspace = await inspector.SummarizeAsync(taskRow.WorktreePath, $"origin/{taskRow.BaseBranch}", ct); }
+        catch (InvalidOperationException) { /* An unavailable worktree is shown as absent; pass remains disabled. */ }
+    }
     var dependencyDtos = dependencies.Select(d => new { d.TaskId, d.DependsOnTaskId, d.DependsOnTitle, DependsOnStatus = d.DependsOnStatus.ToString(), d.Source });
     return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos, feedback, ciStatus, mergeStatus, mergeRequests, taskEvents,
-        validatedHeadCommit = attemptRow.validatedHeadCommit, attempts, reviewFindings });
+        validatedHeadCommit = attemptRow.validatedHeadCommit, attempts, reviewFindings, humanRequests, verificationWorkspace });
 });
 
 app.MapPost("/api/tasks/{id:guid}/stop-repairs", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
@@ -492,6 +499,63 @@ app.MapPost("/api/tasks/{id:guid}/continue", async (Guid id, ContinueRequest bod
     return await tasks.ContinueWithFeedbackAsync(id, body.Feedback, ct)
         ? Results.Accepted($"/api/tasks/{id}")
         : Results.Conflict(new { error = "Task cannot be continued from its current state." });
+});
+
+app.MapPost("/api/tasks/{id:guid}/human-request", async (Guid id, ResolveAgentRequest body,
+    ITaskStore tasks, NpgsqlDataSource db, IWorktreeInspector inspector, CancellationToken ct) =>
+{
+    if (!Guid.TryParse(body.RequestId, out var requestId) || string.IsNullOrWhiteSpace(body.Answer) ||
+        body.Resolution is not ("answer" or "passed" or "failed"))
+        return Results.BadRequest(new { error = "A request, resolution, and answer are required." });
+    if (body.Resolution == "passed")
+    {
+        await using var c = await db.OpenConnectionAsync(ct);
+        var task = await c.QuerySingleOrDefaultAsync<VerificationWorkspaceRow>(new CommandDefinition("""
+            SELECT branch_name AS "BranchName",worktree_path AS "WorktreePath",base_branch AS "BaseBranch"
+            FROM factory.task WHERE id=@id
+            """, new { id }, cancellationToken: ct));
+        if (task?.WorktreePath is null || task.BranchName != body.BranchName || !Directory.Exists(task.WorktreePath))
+            return Results.Conflict(new { error = "The verified workspace is unavailable or its branch changed. Continue with feedback." });
+        try
+        {
+            var summary = await inspector.SummarizeAsync(task.WorktreePath, $"origin/{task.BaseBranch}", ct);
+            if (!summary.IsClean || summary.CurrentBranch != body.BranchName || summary.HeadCommit != body.HeadCommit)
+                return Results.Conflict(new { error = "The verified branch is dirty or its commit changed. Continue with feedback." });
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.Conflict(new { error = "The verified workspace could not be inspected. Continue with feedback." });
+        }
+    }
+    return await tasks.ResolveAgentHumanRequestAsync(id, requestId, body.Resolution, body.Answer,
+        body.BranchName, body.HeadCommit, ct)
+        ? Results.Accepted($"/api/tasks/{id}") : Results.Conflict(new { error = "This request is no longer pending or does not match the verified commit." });
+});
+
+app.MapPost("/api/tasks/{id:guid}/legacy-verification", async (Guid id, LegacyVerificationRequest body,
+    ITaskStore tasks, NpgsqlDataSource db, IWorktreeInspector inspector, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(body.Checks) || string.IsNullOrWhiteSpace(body.BranchName) || string.IsNullOrWhiteSpace(body.HeadCommit))
+        return Results.BadRequest(new { error = "Checks, branch, and full commit are required." });
+    await using var c = await db.OpenConnectionAsync(ct);
+    var task = await c.QuerySingleOrDefaultAsync<VerificationWorkspaceRow>(new CommandDefinition("""
+        SELECT branch_name AS "BranchName",worktree_path AS "WorktreePath",base_branch AS "BaseBranch"
+        FROM factory.task WHERE id=@id
+        """, new { id }, cancellationToken: ct));
+    if (task?.WorktreePath is null || task.BranchName != body.BranchName || !Directory.Exists(task.WorktreePath))
+        return Results.Conflict(new { error = "The branch or worktree is unavailable. Continue with feedback." });
+    try
+    {
+        var summary = await inspector.SummarizeAsync(task.WorktreePath, $"origin/{task.BaseBranch}", ct);
+        if (!summary.IsClean || summary.CurrentBranch != body.BranchName || summary.HeadCommit != body.HeadCommit)
+            return Results.Conflict(new { error = "The branch is dirty or the commit changed. Continue with feedback." });
+    }
+    catch (InvalidOperationException)
+    {
+        return Results.Conflict(new { error = "The workspace could not be inspected. Continue with feedback." });
+    }
+    return await tasks.ClassifyLegacyVerificationAsync(id, body.Checks, body.BranchName, body.HeadCommit, ct)
+        ? Results.Accepted($"/api/tasks/{id}") : Results.Conflict(new { error = "The latest agent result is not eligible for legacy verification." });
 });
 
 app.MapPost("/api/tasks/{id:guid}/review-time", async (Guid id, ReviewTimeRequest body, ITaskStore tasks, CancellationToken ct) =>
