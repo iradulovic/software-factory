@@ -290,6 +290,23 @@ public sealed class CliAgentRunnerTests
         Assert.Null(result.ReviewResult);
     }
 
+    [Fact]
+    public async Task Base_branch_conflict_purpose_resolves_the_existing_merge_without_starting_another()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agentResult = new AgentResult("completed", "Resolved and committed", [], true, ["src/Export.cs"], [], false, null);
+        var agent = new CliAgentRunner(Codex(), runner, new StubResultReader(agentResult), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            Purpose: AgentRunPurpose.BaseBranchConflict), CancellationToken.None);
+
+        Assert.Contains("in-progress base-branch merge", runner.Request!.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Do not fetch", runner.Request.StandardInput);
+        Assert.Contains("commit to finish the existing merge", runner.Request.StandardInput);
+        Assert.Equal(agentResult, result.Result);
+        Assert.Null(result.ReviewResult);
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : IClock { public DateTimeOffset UtcNow => now; }
     private sealed class NoResultReader : IAgentResultReader
     {

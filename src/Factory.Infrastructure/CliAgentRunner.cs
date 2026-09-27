@@ -56,6 +56,16 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         branch before finishing. When complete, write .factory/result.json matching the contract in .factory/task.md.
         """;
 
+    private const string BaseBranchConflictPrompt = """
+        Resolve the in-progress base-branch merge for the task described in .factory/task.md. Read and obey AGENTS.md.
+        The orchestrator has already fetched the task's base branch and started `git merge`; the worktree is in the
+        middle of that merge, with conflicts in the index. Do not fetch, start another merge, abort the merge, switch
+        branches, create a worktree, push, or create a pull request. Inspect the conflicted files and preserve both
+        the task branch's intent and the fetched base branch's intent. Resolve every conflict, stage the resolved files,
+        and commit to finish the existing merge. This is one bounded resolution attempt. When complete, write
+        .factory/result.json matching the contract in .factory/task.md.
+        """;
+
     public string Name => profile.Name;
     public string Provider => profile.EffectiveProvider;
     public string? Model => profile.Model;
@@ -72,6 +82,7 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
             AgentRunPurpose.Review => ReviewPrompt,
             AgentRunPurpose.Fix => $"{FixPrompt}\n{FormatFindings(request.ReviewFindings ?? [])}",
             AgentRunPurpose.MergeConflict => MergeConflictPrompt,
+            AgentRunPurpose.BaseBranchConflict => BaseBranchConflictPrompt,
             _ => Prompt
         };
         var taskClass = request.TaskClass ?? "quick";

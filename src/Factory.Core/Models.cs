@@ -128,14 +128,14 @@ public sealed record ProcessResult(
 /// <summary>Whether an <see cref="IAgentRunner"/> invocation is implementing the task (the default, and the only
 /// purpose that existed before SF-702), performing a bounded, opt-in second-agent review pass over already
 /// committed work, fixing structured review findings, or repairing a merge conflict on an existing pull-request
-/// branch. <see cref="CliAgentRunner"/> uses this to choose the prompt it sends and which result file
-/// (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads.</summary>
-public enum AgentRunPurpose { Implement, Review, Fix, MergeConflict }
+/// branch or while syncing a task branch with its current base. <see cref="CliAgentRunner"/> uses this to choose
+/// the prompt it sends and which result file (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads.</summary>
+public enum AgentRunPurpose { Implement, Review, Fix, MergeConflict, BaseBranchConflict }
 
 /// <param name="ResumeSessionId">The provider session id to resume (SF-701), if the selected agent matches the
 /// one <see cref="FactoryTask.ResumableSessionAgent"/> recorded and that agent's <see cref="AgentProfile.SupportsSessionResume"/>
 /// is enabled — <see langword="null"/> for a fresh session, exactly as before this task.</param>
-/// <param name="Purpose">Implement (default), Review, Fix, or MergeConflict — see <see cref="AgentRunPurpose"/>.</param>
+/// <param name="Purpose">Implement (default), Review, Fix, MergeConflict, or BaseBranchConflict — see <see cref="AgentRunPurpose"/>.</param>
 /// <param name="ReviewFindings">Structured findings supplied only to a Fix invocation.</param>
 public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null,
     string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement, string? TaskClass = null,

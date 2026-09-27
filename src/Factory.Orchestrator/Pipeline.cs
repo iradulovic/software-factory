@@ -43,6 +43,10 @@ public sealed class PipelineContext(FactoryTask task, Guid runId)
     public int ReviewFixAttempts { get; set; }
     public ChangeSummary? ChangeSummary { get; set; }
 
+    /// <summary>Whether the pre-publication base-sync step advanced this task branch. If so, every publication
+    /// validation must run again against the merged HEAD and a failure is surfaced for human review.</summary>
+    public bool BaseBranchSynchronized { get; set; }
+
     /// <summary>Whether this task opted into a second-agent review pass (SF-702), decided once by
     /// <see cref="PreparePublicationStep"/> and consumed by the executor to decide whether to run
     /// <see cref="ReviewStep"/> at all.</summary>

@@ -18,6 +18,7 @@ public sealed class TaskExecutor(
     CollectDiffStep collectDiff,
     ValidateStep validate,
     SmokeTestStep smokeTest,
+    SyncBaseBranchStep syncBaseBranch,
     PreparePublicationStep preparePublication,
     ReviewStep review,
     TaskGitHubNotifier notifier,
@@ -48,6 +49,14 @@ public sealed class TaskExecutor(
             if (!await RunStepAsync(validate, context, cancellationToken)) return;
             // SF-703: skipped entirely unless this repository opted in (RepositoryConfiguration.SmokeTest set).
             if (!await RunStepAsync(smokeTest, context, cancellationToken)) return;
+            if (!await RunStepAsync(syncBaseBranch, context, cancellationToken)) return;
+            if (context.BaseBranchSynchronized)
+            {
+                // The first validation preceded the merge. A changed branch must independently pass every
+                // publication check, and a failure here needs a human decision instead of an implementation retry.
+                if (!await RunStepAsync(validate, context, cancellationToken, baseSyncValidation: true)) return;
+                if (!await RunStepAsync(smokeTest, context, cancellationToken, baseSyncValidation: true)) return;
+            }
             if (!await RunStepAsync(preparePublication, context, cancellationToken)) return;
 
             // SF-702: an optional, opt-in second-agent review pass — only entered when PreparePublicationStep
@@ -104,13 +113,16 @@ public sealed class TaskExecutor(
 
     /// <summary>Runs one step and, on any non-success outcome, applies the matching state transition and closes the run.</summary>
     /// <returns><see langword="true"/> if the pipeline should continue to the next step.</returns>
-    private async Task<bool> RunStepAsync(IPipelineStep step, PipelineContext context, CancellationToken cancellationToken)
+    private async Task<bool> RunStepAsync(IPipelineStep step, PipelineContext context, CancellationToken cancellationToken,
+        bool baseSyncValidation = false)
     {
         using var activity = FactoryTelemetry.Source.StartActivity(step.GetType().Name);
         activity?.SetTag("factory.task_id", context.Task.Id);
         activity?.SetTag("factory.run_id", context.RunId);
 
         var result = await step.ExecuteAsync(context, cancellationToken);
+        if (baseSyncValidation && result.Outcome == PipelineOutcome.Failed)
+            result = PipelineStepResult.NeedsHuman($"Base branch synchronization completed, but validation failed: {result.Reason}");
         switch (result.Outcome)
         {
             case PipelineOutcome.Succeeded:
