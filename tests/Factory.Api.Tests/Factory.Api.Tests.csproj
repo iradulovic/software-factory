@@ -9,4 +9,5 @@
     <ProjectReference Include="..\..\src\Factory.Api\Factory.Api.csproj" />
   </ItemGroup>
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup><None Include="AskRoutingEvaluation.v1.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
 </Project>
