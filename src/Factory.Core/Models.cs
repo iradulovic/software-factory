@@ -356,6 +356,7 @@ public sealed record PublicationRequest(Guid Id, Guid TaskId, string BranchName,
 public sealed record PushResult(bool Succeeded, string? Error);
 public sealed record PullRequestResult(bool Succeeded, int? Number, string? Url, string? Error);
 public sealed record GitHubWriteResult(bool Succeeded, string? Error);
+public sealed record ReleaseIssueWriteResult(bool Succeeded, int? IssueNumber, string? Url, string? Error);
 public sealed record PullRequestState(bool Merged, bool Closed);
 
 /// <summary>GitHub's merge calculation for the exact PR head and base observed in one read.</summary>

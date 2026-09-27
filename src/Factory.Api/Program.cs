@@ -67,9 +67,11 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.Al
 builder.Services.AddSingleton(sp => new NpgsqlDataSourceBuilder(sp.GetRequiredService<IOptions<FactoryOptions>>().Value.ConnectionString).Build());
 builder.Services.AddSingleton<NudgeStore>();
 builder.Services.AddScoped<IOperatorStateResponder, OperatorChat>();
-builder.Services.AddSingleton<IAssistantConversation, AssistantConversation>();
+builder.Services.AddSingleton<AssistantConversation>();
+builder.Services.AddSingleton<IAssistantConversation>(sp => sp.GetRequiredService<AssistantConversation>());
 builder.Services.AddScoped<OperatorPageContextResolver>();
 builder.Services.AddScoped<OperatorAskRouter>();
+builder.Services.AddScoped<ReleasePlanService>();
 builder.Services.AddHttpClient();
 builder.Services.Configure<AgentUsageOptions>(builder.Configuration.GetSection("AgentUsage"));
 builder.Services.AddSingleton<IAgentUsageSnapshotStore, AgentUsageSnapshotStore>();
@@ -647,6 +649,45 @@ app.MapPost("/api/tasks/{id:guid}/publish", async (Guid id, ITaskStore tasks, Np
     return publicationId is null
         ? Results.Conflict(new { error = "A publication attempt is already in progress for this task." })
         : Results.Accepted($"/api/tasks/{id}");
+});
+
+// Release proposals are durable records. Their GitHub issue edits and factory:ready labels remain pending until
+// an operator approves the exact plan and calls its apply action.
+app.MapGet("/api/releases", async (ReleasePlanService releases, CancellationToken ct) =>
+    Results.Ok(await releases.ListAsync(ct)));
+app.MapPost("/api/releases/draft", async (ReleasePlanDraftRequest request, ReleasePlanService releases, CancellationToken ct) =>
+{
+    try { return Results.Ok(await releases.DraftAsync(request, ct)); }
+    catch (ReleasePlanRequestException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (ReleasePlanNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (ReleasePlanConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
+    catch (AssistantCapacityException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status429TooManyRequests); }
+    catch (AssistantUnavailableException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+    catch (ReleasePlanActionException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway); }
+});
+app.MapGet("/api/releases/{id:guid}", async (Guid id, ReleasePlanService releases, CancellationToken ct) =>
+{
+    var plan = await releases.GetAsync(id, ct);
+    return plan is null ? Results.NotFound(new { error = $"Release plan {id} was not found." }) : Results.Ok(plan);
+});
+app.MapPost("/api/releases/{id:guid}/approve", async (Guid id, ReleasePlanService releases, CancellationToken ct) =>
+{
+    try { return Results.Ok(await releases.ApproveAsync(id, ct)); }
+    catch (ReleasePlanNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (ReleasePlanConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+app.MapPost("/api/releases/{id:guid}/execute", async (Guid id, ReleasePlanService releases, CancellationToken ct) =>
+{
+    try { return Results.Ok(await releases.ExecuteAsync(id, ct)); }
+    catch (ReleasePlanNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (ReleasePlanConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
+    catch (ReleasePlanActionException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway); }
+});
+app.MapPost("/api/releases/{id:guid}/promote", async (Guid id, ReleasePlanService releases, CancellationToken ct) =>
+{
+    try { return Results.Ok(await releases.PromoteAsync(id, ct)); }
+    catch (ReleasePlanNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (ReleasePlanConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
 app.MapGet("/api/issues", async (string? repository, string? state, bool? eligible, NpgsqlDataSource db, CancellationToken ct) =>
