@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { Activity, Bell, Boxes, CircleGauge, Database, ListTodo, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
+import { Activity, Bell, Boxes, CircleGauge, Database, ListTodo, LoaderCircle, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, globalPauseScope, githubStatusSchema, pauseStateSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { AgentUsageDetails } from "@/components/agent-usage";
@@ -13,6 +13,7 @@ import { NudgeCard, useFixNudgeConflict, useMarkNudgeRead, useNudges } from "@/c
 import { agentStateDescription } from "@/components/ui";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Sidebar,
   SidebarContent,
@@ -77,20 +78,23 @@ export function Shell({ children, defaultSidebarOpen }: { children: React.ReactN
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="min-h-0 min-w-0 w-0 max-w-full overflow-hidden">
-        <header className="flex h-16 min-w-0 shrink-0 items-center justify-between gap-3 border-b border-[var(--border)] bg-[color:var(--background)/.85] px-5 backdrop-blur">
-          <div className="flex min-w-0 items-center gap-3">
-            <SidebarTrigger />
+        <header className="flex h-16 min-w-0 shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] bg-[color:var(--background)/.85] px-3 backdrop-blur md:gap-3 md:px-5">
+          <div className="flex min-w-0 items-center gap-2 md:gap-3">
+            <SidebarTrigger className="shrink-0" />
             <div className="min-w-0">
               <p className="text-xs uppercase tracking-[.16em] text-muted-foreground">Operations</p>
-              <p className="truncate text-sm font-medium">Development orchestration</p>
+              <p className="hidden truncate text-sm font-medium sm:block">Development orchestration</p>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <DispatchPausePill />
+          <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
+            <div role="group" aria-label="Dispatch and nudge controls" className="flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-muted/20 p-1">
+              <DispatchPausePill />
+              <NudgePill />
+            </div>
             <ThemeToggle />
-            <GitHubStatusIndicator />
-            <NudgePill />
-            <AgentStatusPill />
+            <div role="group" aria-label="Service health">
+              <ServiceHealthPopover />
+            </div>
           </div>
         </header>
         <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">{children}</div>
@@ -141,22 +145,6 @@ function agentQuotaDescription(agent: AgentStatus) {
   return agent.quotaDetectedAt ? `Last quota hit ${formatAgentDate(agent.quotaDetectedAt)}` : "Quota clear";
 }
 
-function GitHubStatusIndicator() {
-  const { data, error, isLoading } = useQuery({
-    queryKey: ["github-status"],
-    queryFn: () => getJson("/api/github/status", githubStatusSchema),
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
-    staleTime: 30_000,
-    retry: 1
-  });
-  const status = data ?? {
-    state: "Unknown",
-    error: isLoading ? "Checking GitHub availability" : error ? "GitHub status endpoint unavailable" : "GitHub availability is unknown"
-  };
-  return <GitHubStatusPill status={status} />;
-}
-
 export function DispatchPausePill() {
   const client = useQueryClient();
   const { data, error, isLoading } = useQuery({
@@ -177,20 +165,34 @@ export function DispatchPausePill() {
     ])
   });
   const status = error ? "Unavailable" : isLoading ? "Checking…" : globalPaused ? "Paused" : "Running";
-  return <div className={`flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${globalPaused ? "tone-amber" : ""}`} title={mutation.error instanceof Error ? mutation.error.message : `Dispatch ${status.toLowerCase()}`}>
-    <span className={`size-1.5 shrink-0 rounded-full ${error ? "bg-red-500" : globalPaused ? "bg-amber-500" : "bg-emerald-500"}`} aria-hidden="true" />
-    <span>{status}</span>
-    <button
-      type="button"
-      className="ml-0.5 rounded p-0.5 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-      aria-label={action}
-      disabled={!ready || mutation.isPending}
-      onClick={() => mutation.mutate()}
-    >
-      {globalPaused ? <Play className="size-3" aria-hidden="true" /> : <Pause className="size-3" aria-hidden="true" />}
-    </button>
+  const cueTone = error ? "bg-red-500" : globalPaused ? "bg-amber-500" : "bg-emerald-500";
+  const buttonTone = error ? "text-red-500" : globalPaused ? "text-amber-500 hover:text-amber-400" : "text-emerald-500 hover:text-emerald-400";
+  const accessibleAction = `${action}. Dispatch is ${status.toLowerCase()}.`;
+  return <TooltipProvider delayDuration={250}>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className={`relative size-8 rounded-md ${buttonTone}`}
+          aria-label={accessibleAction}
+          aria-pressed={globalPaused}
+          disabled={!ready || mutation.isPending}
+          onClick={() => mutation.mutate()}
+        >
+          {mutation.isPending ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : globalPaused ? <Play className="size-4" aria-hidden="true" /> : <Pause className="size-4" aria-hidden="true" />}
+          <span className={`absolute right-1 top-1 size-1.5 rounded-full ring-2 ring-[var(--background)] ${cueTone}`} aria-hidden="true" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-64">
+        <p className="font-medium">{mutation.isPending ? `${globalPaused ? "Resuming" : "Pausing"} new dispatch…` : action}</p>
+        <p className="mt-0.5 text-[11px] opacity-80">Controls whether new factory tasks are dispatched.</p>
+        {mutation.error instanceof Error ? <p className="mt-1 text-[11px]">{mutation.error.message}</p> : null}
+      </TooltipContent>
+    </Tooltip>
     {mutation.error instanceof Error ? <span className="sr-only" role="status">{mutation.error.message}</span> : null}
-  </div>;
+  </TooltipProvider>;
 }
 
 export function NudgePill() {
@@ -201,6 +203,7 @@ export function NudgePill() {
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openedFromKeyboard = useRef(false);
   const suppressFocusOpen = useRef(false);
+  const openedByHover = useRef(false);
   const unreadCount = data?.unreadCount ?? 0;
   const hasUnread = unreadCount > 0;
   const cancelClose = () => {
@@ -224,14 +227,15 @@ export function NudgePill() {
   useEffect(() => () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
   }, []);
-  return <Popover open={open} onOpenChange={nextOpen => { cancelClose(); setOpen(nextOpen); }}>
+  return <Popover open={open} onOpenChange={nextOpen => { cancelClose(); if (!nextOpen) openedByHover.current = false; setOpen(nextOpen); }}>
     <PopoverTrigger asChild>
       <button
         type="button"
-        className="relative flex size-8 items-center justify-center rounded-full border border-[var(--border)] bg-transparent text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+        className="relative flex size-8 items-center justify-center rounded-md bg-transparent text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
         aria-label={hasUnread ? `View nudges, ${unreadCount} unread` : "View nudges"}
-        onPointerEnter={() => openPanel()}
-        onPointerLeave={scheduleClose}
+        onPointerEnter={event => { if (event.pointerType === "mouse") { openedByHover.current = true; openPanel(); } }}
+        onPointerLeave={event => { if (event.pointerType === "mouse") { openedByHover.current = false; scheduleClose(); } }}
+        onClick={event => { if (openedByHover.current && open) event.preventDefault(); }}
         onFocus={event => {
           if (suppressFocusOpen.current) {
             suppressFocusOpen.current = false;
@@ -254,8 +258,8 @@ export function NudgePill() {
       sideOffset={8}
       className="w-96 max-w-[calc(100vw-2rem)] overflow-hidden p-0"
       aria-label="Nudge inbox"
-      onPointerEnter={cancelClose}
-      onPointerLeave={scheduleClose}
+      onPointerEnter={event => { if (event.pointerType === "mouse") cancelClose(); }}
+      onPointerLeave={event => { if (event.pointerType === "mouse") scheduleClose(); }}
       onFocusCapture={cancelClose}
       onOpenAutoFocus={event => {
         if (!openedFromKeyboard.current) event.preventDefault();
@@ -285,13 +289,26 @@ export function NudgePill() {
   </Popover>;
 }
 
-export function AgentStatusPill() {
+function ServiceHealthPopover() {
   const client = useQueryClient();
-  const { data } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)), refetchInterval: 60_000 });
+  const { data: agents, error: agentsError, isLoading: agentsLoading } = useQuery({ queryKey: ["agents-status"], queryFn: () => getJson("/api/agents/status", z.array(agentStatusSchema)), refetchInterval: 60_000 });
+  const { data: githubData, error: githubError, isLoading: githubLoading } = useQuery({
+    queryKey: ["github-status"],
+    queryFn: () => getJson("/api/github/status", githubStatusSchema),
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    staleTime: 30_000,
+    retry: 1
+  });
+  const githubStatus = githubData ?? {
+    state: "Unknown",
+    error: githubLoading ? "Checking GitHub availability" : githubError ? "GitHub status endpoint unavailable" : "GitHub availability is unknown"
+  };
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openedFromKeyboard = useRef(false);
   const suppressFocusOpen = useRef(false);
+  const openedByHover = useRef(false);
   const refresh = () => Promise.all([
     client.invalidateQueries({ queryKey: ["agents-status"] }),
     client.invalidateQueries({ queryKey: ["dashboard"] })
@@ -325,15 +342,23 @@ export function AgentStatusPill() {
   useEffect(() => () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
   }, []);
-  if (!data?.length) return <div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-xs text-muted-foreground">No agents configured</div>;
-  return <Popover open={open} onOpenChange={nextOpen => { cancelClose(); setOpen(nextOpen); }}>
+  const agentSummary = agents?.length
+    ? agents.map(agent => `${agent.agent} ${agent.state}`).join(", ")
+    : agentsLoading ? "checking coding agents" : agentsError ? "coding agent status unavailable" : "no agents configured";
+  const hasUnavailableService = githubStatus.state === "Unavailable" || agents?.some(agent => agent.state === "Unavailable");
+  const hasUnknownService = githubStatus.state !== "Available" || agentsLoading || !!agentsError || Boolean(agents?.some(agent => !["Verified", "Busy"].includes(agent.state)));
+  const healthTone = hasUnavailableService ? "bg-red-500" : hasUnknownService ? "bg-amber-500" : "bg-emerald-500";
+  return <Popover open={open} onOpenChange={nextOpen => { cancelClose(); if (!nextOpen) openedByHover.current = false; setOpen(nextOpen); }}>
     <PopoverTrigger asChild>
-      <button
+      <Button
         type="button"
-        className="flex items-center gap-1 rounded-full border border-[var(--border)] bg-transparent px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-        aria-label={`View status for ${data.length} configured agent${data.length === 1 ? "" : "s"}`}
-        onPointerEnter={() => openPanel()}
-        onPointerLeave={scheduleClose}
+        variant="outline"
+        size="sm"
+        className="relative size-8 rounded-md p-0 text-muted-foreground sm:h-8 sm:w-auto sm:gap-2 sm:px-2.5"
+        aria-label={`View service health. GitHub ${githubStatus.state}; ${agentSummary}.`}
+        onPointerEnter={event => { if (event.pointerType === "mouse") { openedByHover.current = true; openPanel(); } }}
+        onPointerLeave={event => { if (event.pointerType === "mouse") { openedByHover.current = false; scheduleClose(); } }}
+        onClick={event => { if (openedByHover.current && open) event.preventDefault(); }}
         onFocus={event => {
           if (suppressFocusOpen.current) {
             suppressFocusOpen.current = false;
@@ -342,19 +367,18 @@ export function AgentStatusPill() {
           }
         }}
       >
-        {data.map(a => <span className="flex items-center gap-1 rounded-full px-1" key={a.agent}>
-          <span className={`size-1.5 shrink-0 rounded-full ${agentDotTones[a.state] ?? "bg-amber-500"}`} aria-hidden="true" />
-          <span className="max-w-24 truncate">{a.agent}</span>
-        </span>)}
-      </button>
+        <Activity className="size-4" aria-hidden="true" />
+        <span className="hidden sm:inline">Health</span>
+        <span className={`absolute right-1 top-1 size-1.5 rounded-full ring-2 ring-[var(--background)] ${healthTone}`} aria-hidden="true" />
+      </Button>
     </PopoverTrigger>
     <PopoverContent
       align="end"
       sideOffset={8}
-      className="w-80 max-w-[calc(100vw-2rem)] overflow-hidden p-0"
-      aria-label="Agent status"
-      onPointerEnter={cancelClose}
-      onPointerLeave={scheduleClose}
+      className="w-[min(58rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-hidden p-0"
+      aria-label="GitHub and coding agent health"
+      onPointerEnter={event => { if (event.pointerType === "mouse") cancelClose(); }}
+      onPointerLeave={event => { if (event.pointerType === "mouse") scheduleClose(); }}
       onFocusCapture={cancelClose}
       onOpenAutoFocus={event => {
         if (!openedFromKeyboard.current) event.preventDefault();
@@ -367,18 +391,37 @@ export function AgentStatusPill() {
       }}
     >
       <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2.5">
-        <div>
-          <p className="text-sm font-semibold">Agent status</p>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">Configured agents and invocation controls</p>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">Service health</p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">GitHub availability and configured coding agents</p>
         </div>
-        <span className="text-xs text-muted-foreground">{data.length} configured</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{agentsLoading ? "Checking agents" : agentsError ? "Status unavailable" : `${agents?.length ?? 0} agents`}</span>
       </div>
-      <div className="max-h-[min(70vh,32rem)] overflow-y-auto">
-        {data.map(a => {
+      <div className="grid max-h-[min(75vh,42rem)] min-w-0 grid-cols-1 divide-y divide-[var(--border)] overflow-y-auto sm:grid-cols-[minmax(12rem,.7fr)_minmax(0,2fr)] sm:divide-x sm:divide-y-0">
+        <section className="min-w-0 p-3" aria-label="GitHub health">
+          <div className="flex flex-wrap items-center gap-2">
+            <GitHubStatusPill status={githubStatus} />
+            <span className={`badge ${githubStatus.state === "Available" ? "green" : githubStatus.state === "Unavailable" ? "red" : "amber"}`}>{githubStatus.state}</span>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">{githubStatus.error ?? `GitHub is ${githubStatus.state.toLowerCase()}.`}</p>
+          {githubLoading ? <p className="mt-2 text-[11px] text-muted-foreground">Checking connection...</p> : null}
+        </section>
+        <section className="min-w-0 p-3" aria-label="Coding agent health">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold">Coding agents</h3>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">Status, usage, and invocation controls</p>
+            </div>
+            <span className="shrink-0 text-xs text-muted-foreground">{agentsLoading ? "Checking..." : agentsError ? "Unavailable" : `${agents?.length ?? 0} configured`}</span>
+          </div>
+          {agentsLoading ? <p className="text-xs text-muted-foreground">Checking coding agents...</p> : null}
+          {agentsError ? <p className="text-xs text-[var(--badge-red-fg)]">Agent status is temporarily unavailable.</p> : null}
+          {!agentsLoading && !agentsError && !agents?.length ? <p className="text-xs text-muted-foreground">No coding agents configured.</p> : null}
+          {agents?.length ? <div className="grid min-w-0 grid-cols-1 gap-2 lg:grid-cols-2">{agents.map(a => {
           const paused = a.state === "Paused";
           const pausing = agentPause.isPending && agentPause.variables === a.agent;
           const resuming = agentResume.isPending && agentResume.variables === a.agent;
-          return <article className="space-y-3 border-b border-[var(--border)] p-3 last:border-b-0" key={a.agent}>
+          return <article className="min-w-0 space-y-2 rounded-md border border-[var(--border)] p-3" key={a.agent}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
@@ -402,7 +445,8 @@ export function AgentStatusPill() {
             {a.pauseReason ? <p className="text-[11px] leading-4 text-[var(--badge-amber-fg)]"><span className="font-medium">Pause reason:</span> {a.pauseReason}</p> : null}
             {a.error ? <p className="text-[11px] leading-4 text-[var(--badge-red-fg)]"><span className="font-medium">Error:</span> {a.error}</p> : null}
           </article>;
-        })}
+        })}</div> : null}
+        </section>
       </div>
     </PopoverContent>
   </Popover>;

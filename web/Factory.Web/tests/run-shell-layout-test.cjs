@@ -22,6 +22,16 @@ assert.match(overview, /return <div className="min-w-0 space-y-5">/, "dashboard 
 assert.doesNotMatch(overview, /Agent status|<th>Active task<\/th>/, "overview must not render the agent status table");
 assert.match(shell, /<DispatchPausePill \/>/, "global dispatch control must be available from the navbar");
 assert.match(shell, /postPause\(globalPaused \? "\/api\/control\/resume" : "\/api\/control\/pause"\)/, "global control must use the pause/resume API");
+assert.match(shell, /Controls whether new factory tasks are dispatched\./, "dispatch tooltip must explain that it controls new dispatch");
+assert.match(shell, /aria-pressed=\{globalPaused\}/, "dispatch state must be exposed accessibly");
+assert.match(shell, /role="group" aria-label="Dispatch and nudge controls"/, "dispatch and nudges must be visually grouped in the header");
+assert.match(shell, /function ServiceHealthPopover\(\)/, "GitHub and coding agent health must share one popover");
+assert.match(shell, /aria-label="GitHub and coding agent health"/, "the combined service health popover must be named accessibly");
+assert.match(shell, /sm:grid-cols-\[minmax\(12rem,\.7fr\)_minmax\(0,2fr\)\]/, "service health must use a responsive side-by-side layout when space allows");
+assert.match(shell, /lg:grid-cols-2/, "configured agents must use a horizontal layout on wide screens");
+assert.match(shell, /View service health\. GitHub/, "the health trigger must announce GitHub and agent status");
+assert.match(shell, /pointerType === "mouse"/, "hover dismissal must not interfere with touch interaction");
+assert.match(shell, /openedByHover\.current && open/, "clicking a hover-opened popover trigger must keep its controls available");
 assert.doesNotMatch(overview, /Pause reason|Reason \(optional\)|Pause dispatch/, "overview must not capture or render a global pause reason/control");
 assert.match(shell, /postPause\(`\/api\/agents\/\$\{agent\}\/(pause|resume)`\)/, "navbar controls must use the agent pause/resume API");
 assert.match(shell, /disabled=\{a\.state === "Unavailable" \|\| agentPause\.isPending\}/, "unavailable agents must not expose an active pause control");
