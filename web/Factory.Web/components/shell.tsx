@@ -10,10 +10,11 @@ import { agentStatusSchema, getJson, globalPauseScope, githubStatusSchema, pause
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { AssistantDrawer } from "@/components/assistant-drawer";
 import { AgentUsageDetails } from "@/components/agent-usage";
+import { buildServiceHealthIndicators, ServiceHealthIndicators } from "@/components/service-health-indicators";
 import { NudgeCard, useFixNudgeConflict, useMarkNudgeRead, useNudges } from "@/components/nudge-inbox";
 import { agentStateDescription } from "@/components/ui";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Sidebar,
@@ -335,8 +336,7 @@ function ServiceHealthPopover() {
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openedFromKeyboard = useRef(false);
-  const suppressFocusOpen = useRef(false);
-  const openedByHover = useRef(false);
+  const lastTrigger = useRef<HTMLButtonElement | null>(null);
   const refresh = () => Promise.all([
     client.invalidateQueries({ queryKey: ["agents-status"] }),
     client.invalidateQueries({ queryKey: ["dashboard"] })
@@ -355,9 +355,10 @@ function ServiceHealthPopover() {
       closeTimer.current = null;
     }
   };
-  const openPanel = (fromKeyboard = false) => {
+  const openPanel = (fromKeyboard: boolean, trigger: HTMLButtonElement) => {
     cancelClose();
     openedFromKeyboard.current = fromKeyboard;
+    lastTrigger.current = trigger;
     setOpen(true);
   };
   const scheduleClose = () => {
@@ -370,37 +371,29 @@ function ServiceHealthPopover() {
   useEffect(() => () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
   }, []);
-  const agentSummary = agents?.length
-    ? agents.map(agent => `${agent.agent} ${agent.state}`).join(", ")
-    : agentsLoading ? "checking coding agents" : agentsError ? "coding agent status unavailable" : "no agents configured";
-  const hasUnavailableService = githubStatus.state === "Unavailable" || agents?.some(agent => agent.state === "Unavailable");
-  const hasUnknownService = githubStatus.state !== "Available" || agentsLoading || !!agentsError || Boolean(agents?.some(agent => !["Verified", "Busy"].includes(agent.state)));
-  const healthTone = hasUnavailableService ? "bg-[var(--badge-red-fg)]" : hasUnknownService ? "bg-[var(--badge-amber-fg)]" : "bg-[var(--badge-green-fg)]";
-  return <Popover open={open} onOpenChange={nextOpen => { cancelClose(); if (!nextOpen) openedByHover.current = false; setOpen(nextOpen); }}>
-    <PopoverTrigger asChild>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="relative size-8 rounded-md p-0 text-muted-foreground sm:h-8 sm:w-auto sm:gap-2 sm:px-2.5"
-        aria-label={`View service health. GitHub ${githubStatus.state}; ${agentSummary}.`}
-        onPointerEnter={event => { if (event.pointerType === "mouse") { openedByHover.current = true; openPanel(); } }}
-        onPointerLeave={event => { if (event.pointerType === "mouse") { openedByHover.current = false; scheduleClose(); } }}
-        onClick={event => { if (openedByHover.current && open) event.preventDefault(); }}
-        onFocus={event => {
-          if (suppressFocusOpen.current) {
-            suppressFocusOpen.current = false;
-          } else if (event.currentTarget.matches(":focus-visible")) {
-            openPanel(true);
-          }
-        }}
+  const healthIndicators = buildServiceHealthIndicators({
+    github: githubData,
+    githubLoading,
+    githubUnavailable: !!githubError,
+    agents,
+    agentsLoading,
+    agentsUnavailable: !!agentsError
+  });
+  return <Popover open={open} onOpenChange={nextOpen => { cancelClose(); setOpen(nextOpen); }}>
+    <PopoverAnchor asChild>
+      <div
+        role="group"
+        aria-label="Service health indicators"
+        className="flex min-w-0 items-center"
+        onPointerEnter={event => { if (event.pointerType === "mouse") cancelClose(); }}
+        onPointerLeave={event => { if (event.pointerType === "mouse") scheduleClose(); }}
+        onFocusCapture={cancelClose}
       >
-        <Activity className="size-4" aria-hidden="true" />
-        <span className="hidden sm:inline">Health</span>
-        <span className={`absolute right-1 top-1 size-1.5 rounded-full ring-2 ring-[var(--background)] ${healthTone}`} aria-hidden="true" />
-      </Button>
-    </PopoverTrigger>
+        <ServiceHealthIndicators indicators={healthIndicators} popoverOpen={open} onActivate={openPanel} />
+      </div>
+    </PopoverAnchor>
     <PopoverContent
+      id="service-health-popover"
       align="end"
       sideOffset={8}
       className="w-[min(58rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-hidden p-0"
@@ -412,10 +405,9 @@ function ServiceHealthPopover() {
         if (!openedFromKeyboard.current) event.preventDefault();
       }}
       onCloseAutoFocus={event => {
-        if (!openedFromKeyboard.current) event.preventDefault();
+        event.preventDefault();
+        if (openedFromKeyboard.current) lastTrigger.current?.focus();
         openedFromKeyboard.current = false;
-        suppressFocusOpen.current = true;
-        setTimeout(() => { suppressFocusOpen.current = false; }, 0);
       }}
     >
       <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2.5">
