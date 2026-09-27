@@ -124,6 +124,22 @@ export const digestRunSchema = z.object({
 export type DigestRun = z.infer<typeof digestRunSchema>;
 export const digestResponseSchema = z.object({ latest: digestRunSchema.nullable(), history: z.array(digestRunSchema) });
 
+export const releasePlanEvidenceSchema = z.object({ kind: z.string(), reference: z.string(), status: z.string(), detail: z.string(), href: z.string().nullable(), observedAt: z.string() });
+export const releasePlanDecisionSchema = z.object({ id: z.number(), kind: z.string(), actor: z.string(), details: z.string(), occurredAt: z.string() });
+export const releasePlanItemSchema = z.object({
+  id: z.string(), position: z.number(), source: z.string(), title: z.string(), description: z.string(),
+  acceptanceCriteria: z.array(z.string()), dependsOnItemIds: z.array(z.string()), status: z.string(),
+  actionApplied: z.boolean(), actionError: z.string().nullable(), repositoryId: z.number(), repository: z.string(),
+  issueNumber: z.number().nullable(), issueUrl: z.string().nullable(), taskId: z.string().nullable(), taskStatus: z.string().nullable(),
+  runId: z.string().nullable(), pullRequestNumber: z.number().nullable(), pullRequestUrl: z.string().nullable(), ciStatus: z.string().nullable()
+});
+export const releasePlanSchema = z.object({
+  id: z.string(), title: z.string(), request: z.string(), summary: z.string(), status: z.string(), createdAt: z.string(),
+  approvedAt: z.string().nullable(), promotedAt: z.string().nullable(), completedItems: z.number(), totalItems: z.number(),
+  items: z.array(releasePlanItemSchema), evidence: z.array(releasePlanEvidenceSchema), decisions: z.array(releasePlanDecisionSchema)
+});
+export type ReleasePlan = z.infer<typeof releasePlanSchema>;
+
 export const databaseColumnSchema = z.object({ name: z.string(), type: z.string() });
 export const databaseTableSchema = z.object({ schema: z.string(), table: z.string(), columns: z.array(databaseColumnSchema) });
 export type DatabaseTable = z.infer<typeof databaseTableSchema>;

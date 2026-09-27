@@ -89,6 +89,41 @@ public sealed class AssistantConversation : IAssistantConversation, IDisposable
         }
     }
 
+    /// <summary>Uses the assistant's same bounded, quota-isolated conversation lane to produce a structured release
+    /// proposal. The caller validates the response and persists it as a proposal; this method has no write tools.</summary>
+    public async Task<string> GenerateStructuredResponseAsync(string prompt, CancellationToken ct)
+    {
+        if (!await capacity.WaitAsync(0, ct))
+            throw new AssistantCapacityException("The assistant is already answering another conversation. Try again shortly.");
+        try
+        {
+            if (!TryUseBudget(clock.UtcNow))
+                throw new AssistantCapacityException("The assistant's separate hourly conversation budget is exhausted. Try again after the rolling hour resets.");
+            var workingDirectory = string.IsNullOrWhiteSpace(options.WorkingDirectory)
+                ? Directory.GetCurrentDirectory() : Path.GetFullPath(options.WorkingDirectory);
+            AgentConversationResult result;
+            try
+            {
+                result = await agent.ConverseAsync(new AgentConversationRequest(
+                    [new AgentConversationTurn("user", prompt)], workingDirectory,
+                    options.TaskClass, TimeSpan.FromSeconds(Math.Max(1, options.TimeoutSeconds))), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new AssistantUnavailableException($"The {agent.Name} assistant CLI could not be started: {ex.Message}");
+            }
+            if (!result.Process.Succeeded || string.IsNullOrWhiteSpace(result.Response))
+                throw new AssistantUnavailableException(result.QuotaDetected
+                    ? "The conversational quota lane reached the provider limit."
+                    : result.Process.TimedOut ? "The assistant CLI timed out." : "The assistant CLI did not return a response.");
+            return result.Response;
+        }
+        finally
+        {
+            capacity.Release();
+        }
+    }
+
     private bool TryUseBudget(DateTimeOffset now)
     {
         lock (budgetLock)

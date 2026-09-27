@@ -47,6 +47,21 @@ public sealed class PostgreSqlContractTests
         Assert.Contains("linkage_metadata JSONB", sql);
     }
 
+    [Fact]
+    public void Release_plan_migration_persists_proposals_decisions_dependencies_and_reconciliation_evidence()
+    {
+        var sql = File.ReadAllText(Path.Combine(Root(), "database", "migrations", "038_release_plans.sql"));
+
+        Assert.Contains("CREATE TABLE factory.release_plan", sql);
+        Assert.Contains("CREATE TABLE factory.release_plan_item", sql);
+        Assert.Contains("acceptance_criteria jsonb", sql);
+        Assert.Contains("CREATE TABLE factory.release_plan_item_dependency", sql);
+        Assert.Contains("CREATE TABLE factory.release_plan_decision", sql);
+        Assert.Contains("CREATE TABLE factory.release_plan_evidence", sql);
+        Assert.Contains("UNIQUE(item_id, kind, reference)", sql);
+        Assert.Contains("CHECK (status IN ('Proposed','Approved','Active','Promoted'))", sql);
+    }
+
     private static string ReadMigration() => File.ReadAllText(Path.Combine(Root(), "database", "migrations", "001_initial.sql"));
     private static string Root()
     {

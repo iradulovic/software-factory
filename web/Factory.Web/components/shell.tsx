@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/sidebar";
 
 const navigation = [
-  ["Overview", "/", CircleGauge], ["Ask", "/operator", MessageCircle], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo],
+  ["Overview", "/", CircleGauge], ["Ask", "/operator", MessageCircle], ["Releases", "/releases", Boxes], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo],
   ["Runs", "/runs", Activity], ["Repositories", "/repositories", Boxes], ["Digest", "/digest", Newspaper],
   ["Database", "/database", Database]
 ] as const;
