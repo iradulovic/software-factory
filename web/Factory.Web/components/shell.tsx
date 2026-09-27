@@ -334,9 +334,13 @@ function ServiceHealthPopover() {
     error: githubLoading ? "Checking GitHub availability" : githubError ? "GitHub status endpoint unavailable" : "GitHub availability is unknown"
   };
   const [open, setOpen] = useState(false);
+  const [openedByHover, setOpenedByHover] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openedFromKeyboard = useRef(false);
+  const pointerInside = useRef(false);
+  const panelHasFocus = useRef(false);
   const lastTrigger = useRef<HTMLButtonElement | null>(null);
+  const panel = useRef<HTMLDivElement | null>(null);
   const refresh = () => Promise.all([
     client.invalidateQueries({ queryKey: ["agents-status"] }),
     client.invalidateQueries({ queryKey: ["dashboard"] })
@@ -358,15 +362,41 @@ function ServiceHealthPopover() {
   const openPanel = (fromKeyboard: boolean, trigger: HTMLButtonElement) => {
     cancelClose();
     openedFromKeyboard.current = fromKeyboard;
+    if (fromKeyboard) setOpenedByHover(false);
     lastTrigger.current = trigger;
+    setOpen(true);
+    if (fromKeyboard && open) {
+      panel.current?.querySelector<HTMLElement>('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')?.focus();
+    }
+  };
+  const openFromHover = (trigger: HTMLButtonElement) => {
+    pointerInside.current = true;
+    setOpenedByHover(true);
+    openedFromKeyboard.current = false;
+    lastTrigger.current = trigger;
+    cancelClose();
     setOpen(true);
   };
   const scheduleClose = () => {
     cancelClose();
     closeTimer.current = setTimeout(() => {
       closeTimer.current = null;
+      if (pointerInside.current || panelHasFocus.current) return;
+      setOpenedByHover(false);
       setOpen(false);
-    }, 150);
+    }, 200);
+  };
+  const triggerPointerLeave = () => {
+    pointerInside.current = false;
+    scheduleClose();
+  };
+  const panelPointerEnter = () => {
+    pointerInside.current = true;
+    cancelClose();
+  };
+  const panelPointerLeave = () => {
+    pointerInside.current = false;
+    scheduleClose();
   };
   useEffect(() => () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
@@ -379,28 +409,52 @@ function ServiceHealthPopover() {
     agentsLoading,
     agentsUnavailable: !!agentsError
   });
-  return <Popover open={open} onOpenChange={nextOpen => { cancelClose(); setOpen(nextOpen); }}>
+  return <Popover open={open} onOpenChange={nextOpen => {
+    cancelClose();
+    setOpen(nextOpen);
+    if (!nextOpen) {
+      setOpenedByHover(false);
+      pointerInside.current = false;
+      panelHasFocus.current = false;
+    }
+  }}>
     <PopoverAnchor asChild>
       <div
-        role="group"
-        aria-label="Service health indicators"
         className="flex min-w-0 items-center"
-        onPointerEnter={event => { if (event.pointerType === "mouse") cancelClose(); }}
-        onPointerLeave={event => { if (event.pointerType === "mouse") scheduleClose(); }}
         onFocusCapture={cancelClose}
       >
-        <ServiceHealthIndicators indicators={healthIndicators} popoverOpen={open} onActivate={openPanel} />
+        <ServiceHealthIndicators
+          indicators={healthIndicators}
+          popoverOpen={open}
+          openedByHover={openedByHover}
+          onActivate={openPanel}
+          onPointerEnter={openFromHover}
+          onPointerLeave={triggerPointerLeave}
+        />
       </div>
     </PopoverAnchor>
     <PopoverContent
+      ref={panel}
       id="service-health-popover"
       align="end"
       sideOffset={8}
       className="w-[min(58rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-hidden p-0"
       aria-label="GitHub and coding agent health"
-      onPointerEnter={event => { if (event.pointerType === "mouse") cancelClose(); }}
-      onPointerLeave={event => { if (event.pointerType === "mouse") scheduleClose(); }}
-      onFocusCapture={cancelClose}
+      onPointerEnter={event => { if (event.pointerType === "mouse") panelPointerEnter(); }}
+      onPointerLeave={event => { if (event.pointerType === "mouse") panelPointerLeave(); }}
+      onFocusCapture={() => {
+        panelHasFocus.current = true;
+        cancelClose();
+      }}
+      onBlurCapture={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          panelHasFocus.current = false;
+          if (!pointerInside.current) scheduleClose();
+        }
+      }}
+      onKeyDown={event => {
+        if (event.key === "Escape" || event.key === "Tab") openedFromKeyboard.current = true;
+      }}
       onOpenAutoFocus={event => {
         if (!openedFromKeyboard.current) event.preventDefault();
       }}
@@ -408,6 +462,7 @@ function ServiceHealthPopover() {
         event.preventDefault();
         if (openedFromKeyboard.current) lastTrigger.current?.focus();
         openedFromKeyboard.current = false;
+        panelHasFocus.current = false;
       }}
     >
       <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2.5">
