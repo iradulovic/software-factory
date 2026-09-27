@@ -13,6 +13,7 @@ public sealed class RepositoryConfigurationReaderTests
         Assert.Equal(RepositoryConfiguration.Default.TestCommands, configuration.TestCommands);
         Assert.Equal(3, configuration.MaxImplementationAttempts);
         Assert.Equal(RepositoryConfiguration.Default.MaxReviewAttempts, configuration.MaxReviewAttempts);
+        Assert.Equal(RepositoryConfiguration.Default.MaxReviewFixAttempts, configuration.MaxReviewFixAttempts);
         Assert.Equal("main", configuration.BaseBranch);
         Assert.True(configuration.RequireHumanMerge);
         Assert.Equal("manual", configuration.Publish);
@@ -24,7 +25,30 @@ public sealed class RepositoryConfigurationReaderTests
         var configuration = RepositoryConfigurationReader.Parse("{}", "origin/main");
 
         Assert.Null(configuration.SmokeTest);
+        Assert.Null(configuration.Deployments);
     }
+
+    [Fact]
+    public void Deployment_targets_are_parsed_without_secret_values()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("""
+            {"deployments":{"vercel":{"projectName":"acme-web","environmentVariables":["DATABASE_URL"]},
+              "supabase":{"projectName":"acme-db","projectRef":"abc123","dbPasswordEnvironmentVariable":"ACME_DB_PASSWORD"}}}
+            """, "origin/main");
+
+        Assert.Equal("acme-web", configuration.Deployments!.Vercel!.ProjectName);
+        Assert.Equal(["DATABASE_URL"], configuration.Deployments.Vercel.EnvironmentVariables);
+        Assert.Equal("production", configuration.Deployments.Vercel.Environment);
+        Assert.Equal("abc123", configuration.Deployments.Supabase!.ProjectRef);
+        Assert.Equal("ACME_DB_PASSWORD", configuration.Deployments.Supabase.DbPasswordEnvironmentVariable);
+    }
+
+    [Theory]
+    [InlineData("""{"deployments":{"vercel":{"projectName":"","environmentVariables":[]}}}""")]
+    [InlineData("""{"deployments":{"vercel":{"projectName":"web","environmentVariables":[""]}}}""")]
+    [InlineData("""{"deployments":{"supabase":{"projectName":"db"}}}""")]
+    public void Invalid_deployment_configuration_fails_clearly(string json) =>
+        Assert.Contains(".factory/config.json", Assert.Throws<InvalidOperationException>(() => RepositoryConfigurationReader.Parse(json, "origin/main")).Message);
 
     [Fact]
     public void Smoke_test_is_parsed_with_its_own_defaults_when_only_the_required_fields_are_set()
@@ -65,16 +89,6 @@ public sealed class RepositoryConfigurationReaderTests
         Assert.Equal(15, configuration.SmokeTest.CheckTimeoutSeconds);
     }
 
-    [Fact]
-    public void Serialize_same_batch_tracker_tasks_is_opt_in_and_read_when_set()
-    {
-        var defaulted = RepositoryConfigurationReader.Parse("{}", "origin/main");
-        var configured = RepositoryConfigurationReader.Parse("""{"serializeSameBatchTrackerTasks":true}""", "origin/main");
-
-        Assert.False(defaulted.SerializeSameBatchTrackerTasks);
-        Assert.True(configured.SerializeSameBatchTrackerTasks);
-    }
-
     [Theory]
     [InlineData("""{"smokeTest":{"healthCheckUrl":"http://localhost:3000"}}""")]
     [InlineData("""{"smokeTest":{"startCommand":"npm run start"}}""")]
@@ -102,9 +116,20 @@ public sealed class RepositoryConfigurationReaderTests
         Assert.Equal(RepositoryConfiguration.Default.MaxQuotaInterruptions, defaulted.MaxQuotaInterruptions);
     }
 
+    [Fact]
+    public void Max_review_fix_attempts_is_read_and_defaulted()
+    {
+        var configured = RepositoryConfigurationReader.Parse("""{"maxReviewFixAttempts":3}""", "origin/main");
+        var defaulted = RepositoryConfigurationReader.Parse("{}", "origin/main");
+
+        Assert.Equal(3, configured.MaxReviewFixAttempts);
+        Assert.Equal(RepositoryConfiguration.Default.MaxReviewFixAttempts, defaulted.MaxReviewFixAttempts);
+    }
+
     [Theory]
     [InlineData("""{"maxImplementationAttempts":0}""")]
     [InlineData("""{"maxQuotaInterruptions":0}""")]
+    [InlineData("""{"maxReviewFixAttempts":-1}""")]
     [InlineData("""{"testCommands":["dotnet test",""]}""")]
     [InlineData("""{"testCommands":[[]]}""")]
     [InlineData("""{"testCommands":[[""]]}""")]

@@ -72,18 +72,6 @@ internal sealed class TaskRow
     private static DateTimeOffset? Offset(DateTime? value) => value is null ? null : Offset(value.Value);
 }
 
-internal sealed class TrackerFileTaskRow
-{
-    public Guid TaskId { get; init; }
-    public string TrackerItemId { get; init; } = "";
-    public string Status { get; init; } = "";
-    public string? FailureReason { get; init; }
-    public string? WritebackSection { get; init; }
-
-    public TrackerFileTask ToModel() => new(TaskId, TrackerItemId, Enum.Parse<FactoryTaskStatus>(Status), FailureReason,
-        WritebackSection is null ? null : Enum.Parse<TrackerSection>(WritebackSection));
-}
-
 internal sealed class WorktreeCleanupCandidateRow
 {
     public Guid TaskId { get; init; }
@@ -1005,6 +993,46 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return true;
     }
 
+    /// <summary>Queues an operator-requested merge-conflict repair for a published task. The task row, conflict
+    /// observation, existing pull request, branch, and worktree are checked in one transaction so the action can
+    /// never start a new task branch or repair a pull request that has already moved on.</summary>
+    public async Task<bool> TriggerMergeConflictRepairAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var candidate = await connection.QuerySingleOrDefaultAsync<MergeConflictRepairCandidateRow>(new CommandDefinition("""
+            SELECT t.status AS "Status",t.branch_name AS "BranchName",t.worktree_path AS "WorktreePath",
+              m.status AS "MergeStatus",p.pull_request_number AS "PullRequestNumber"
+            FROM factory.task t
+            JOIN factory.task_merge_status m ON m.task_id=t.id
+            LEFT JOIN LATERAL (
+              SELECT pull_request_number FROM factory.publication
+              WHERE task_id=t.id AND status='PullRequestCreated' AND pull_request_number IS NOT NULL
+              ORDER BY completed_at DESC LIMIT 1
+            ) p ON true
+            WHERE t.id=@taskId AND t.status='Published' AND NOT t.repair_paused
+              AND t.branch_name IS NOT NULL AND t.worktree_path IS NOT NULL
+              AND m.status='Conflict' AND p.pull_request_number IS NOT NULL
+            FOR UPDATE OF t
+            """, new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (candidate is null || await HasActiveManualMergeAsync(connection, transaction, taskId, cancellationToken)) return false;
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Published, FactoryTaskStatus.Pending);
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_feedback(id,task_id,body,created_by) VALUES(@id,@taskId,@feedback,@createdBy)",
+            new { id = Guid.NewGuid(), taskId, feedback = MergeConflictRepair.Feedback, createdBy = MergeConflictRepair.CreatedBy },
+            transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId",
+            new { taskId }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,'Published','Pending',@reason,'human')",
+            new { taskId, reason = "Merge-conflict repair requested by operator." }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
     public async Task<IReadOnlyList<long>> GetIngestedReviewCommentIdsAsync(Guid taskId, CancellationToken cancellationToken)
     {
         await using var c = Connection();
@@ -1307,12 +1335,6 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         return await InsertDependencyEdgeAsync(c, taskId, dependsOnTaskId, source: null, cancellationToken);
     }
 
-    public async Task<AddDependencyOutcome> AddTrackerBatchDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
-    {
-        await using var c = Connection();
-        return await InsertDependencyEdgeAsync(c, taskId, dependsOnTaskId, "tracker-batch", cancellationToken);
-    }
-
     /// <summary>Shared by the manual SF-611 dashboard path (<see cref="AddDependencyAsync"/>, <paramref name="source"/>
     /// <see langword="null"/>) and SF-710's issue-body reconciliation (<paramref name="source"/> <c>"issue"</c>).</summary>
     private static async Task<AddDependencyOutcome> InsertDependencyEdgeAsync(NpgsqlConnection c, Guid taskId, Guid dependsOnTaskId, string? source, CancellationToken cancellationToken)
@@ -1357,14 +1379,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
     public Task<IssueDependencyReconciliation> ReconcileIssueDependenciesAsync(Guid taskId, IReadOnlyList<Guid> parsedDependsOnTaskIds, CancellationToken cancellationToken) =>
         ReconcileSourcedDependenciesAsync(taskId, "issue", parsedDependsOnTaskIds, cancellationToken);
 
-    public Task<IssueDependencyReconciliation> ReconcileTrackerDependenciesAsync(Guid taskId, IReadOnlyList<Guid> parsedDependsOnTaskIds, CancellationToken cancellationToken) =>
-        ReconcileSourcedDependenciesAsync(taskId, "tracker", parsedDependsOnTaskIds, cancellationToken);
-
-    /// <summary>Shared by <see cref="ReconcileIssueDependenciesAsync"/> (SF-710) and <see cref="ReconcileTrackerDependenciesAsync"/>
-    /// (SF-707): diffs <paramref name="parsedDependsOnTaskIds"/> against <paramref name="taskId"/>'s existing
-    /// edges tagged with this exact <paramref name="source"/>, adding what is missing and removing what is no
-    /// longer present — an edge tagged with any other source (a manual one, or the other automatic source) is
-    /// never read or touched by either call.</summary>
+    /// <summary>Diffs the issue-derived dependency set against <paramref name="taskId"/>'s existing edges tagged
+    /// with <paramref name="source"/>, adding what is missing and removing what is no longer present. Edges tagged
+    /// with another source are never read or touched.</summary>
     private async Task<IssueDependencyReconciliation> ReconcileSourcedDependenciesAsync(Guid taskId, string source, IReadOnlyList<Guid> parsedDependsOnTaskIds, CancellationToken cancellationToken)
     {
         await using var c = Connection();
@@ -1387,46 +1404,6 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
             else if (outcome == AddDependencyOutcome.WouldCreateCycle) skippedCycles.Add(dependsOnTaskId);
         }
         return new IssueDependencyReconciliation(added, toRemove, skippedCycles);
-    }
-
-    public async Task<bool> CreateForTrackerItemIfEligibleAsync(long repositoryId, string baseBranch, string trackerItemId, string title, string description, CancellationToken cancellationToken)
-    {
-        const string sql = """
-            INSERT INTO factory.task(id,repository_id,tracker_item_id,title,description,task_type,status,base_branch,tracker_writeback_section)
-            VALUES(@id,@repositoryId,@trackerItemId,@title,@description,'TrackerFile','Pending',@baseBranch,@section)
-            ON CONFLICT DO NOTHING;
-            """;
-        await using var connection = Connection();
-        return await connection.ExecuteAsync(new CommandDefinition(sql,
-            new { id = Guid.NewGuid(), repositoryId, trackerItemId, title, description, baseBranch, section = TrackerSection.NextUp.ToString() },
-            cancellationToken: cancellationToken)) == 1;
-    }
-
-    public async Task<Guid?> FindTaskIdForTrackerItemAsync(long repositoryId, string trackerItemId, CancellationToken cancellationToken)
-    {
-        await using var c = Connection();
-        return await c.ExecuteScalarAsync<Guid?>(new CommandDefinition(
-            "SELECT id FROM factory.task WHERE repository_id=@repositoryId AND tracker_item_id=@trackerItemId",
-            new { repositoryId, trackerItemId }, cancellationToken: cancellationToken));
-    }
-
-    public async Task<IReadOnlyList<TrackerFileTask>> GetTrackerFileTasksAsync(long repositoryId, CancellationToken cancellationToken)
-    {
-        const string sql = """
-            SELECT id AS "TaskId", tracker_item_id AS "TrackerItemId", status AS "Status",
-              failure_reason AS "FailureReason", tracker_writeback_section AS "WritebackSection"
-            FROM factory.task WHERE repository_id=@repositoryId AND task_type='TrackerFile'
-            """;
-        await using var c = Connection();
-        var rows = await c.QueryAsync<TrackerFileTaskRow>(new CommandDefinition(sql, new { repositoryId }, cancellationToken: cancellationToken));
-        return rows.Select(r => r.ToModel()).ToList();
-    }
-
-    public async Task SetTrackerWritebackSectionAsync(Guid taskId, TrackerSection section, CancellationToken cancellationToken)
-    {
-        await using var c = Connection();
-        await c.ExecuteAsync(new CommandDefinition("UPDATE factory.task SET tracker_writeback_section=@section WHERE id=@taskId",
-            new { taskId, section = section.ToString() }, cancellationToken: cancellationToken));
     }
 
     public async Task RemoveDependencyAsync(Guid taskId, Guid dependsOnTaskId, CancellationToken cancellationToken)
@@ -1642,7 +1619,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         foreach (var pause in pauses.Where(p => p.Paused))
         {
             var title = pause.Scope == DispatchPauseScope.Global ? "Factory dispatch paused" : $"Agent {pause.Scope} paused";
-            var detail = pause.Reason is { Length: > 0 } ? $"Paused by {pause.PausedBy}: {pause.Reason}" : $"Paused by {pause.PausedBy}";
+            var detail = pause.Scope == DispatchPauseScope.Global
+                ? $"Paused by {pause.PausedBy}"
+                : pause.Reason is { Length: > 0 } ? $"Paused by {pause.PausedBy}: {pause.Reason}" : $"Paused by {pause.PausedBy}";
             alerts.Add(new DigestAlertCandidate("Pause", $"pause:{pause.Scope}", title, detail, null, null, pause.PausedAt ?? clock.UtcNow));
         }
 
@@ -1895,6 +1874,15 @@ internal sealed class TaskRepairPauseRow
 {
     public string Status { get; init; } = "";
     public bool RepairPaused { get; init; }
+}
+
+internal sealed class MergeConflictRepairCandidateRow
+{
+    public string Status { get; init; } = "";
+    public string BranchName { get; init; } = "";
+    public string WorktreePath { get; init; } = "";
+    public string MergeStatus { get; init; } = "";
+    public int PullRequestNumber { get; init; }
 }
 
 internal sealed class ManualMergeCandidateRow

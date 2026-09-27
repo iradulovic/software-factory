@@ -8,7 +8,7 @@ The system coordinates GitHub issues, PostgreSQL state, Git worktrees, Codex, Cl
 
 Read `BOOTSTRAP_SPEC.md` before making architectural changes.
 
-For feature work, read `TASKS.md`. When the user has not selected a task, claim the first item under **Next up** and follow the tracker workflow through completion or blocking.
+For feature work, use GitHub issues labeled `factory:ready`; they are the sole task-ingestion source. PostgreSQL is the durable source of factory task state.
 
 ---
 

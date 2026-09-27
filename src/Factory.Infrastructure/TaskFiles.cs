@@ -39,10 +39,11 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
             string.IsNullOrWhiteSpace(file?.Publish) ? defaults.Publish : file.Publish.Trim(),
             file?.MaxQuotaInterruptions ?? defaults.MaxQuotaInterruptions,
             ParseSmokeTest(file?.SmokeTest, source),
-            file?.SerializeSameBatchTrackerTasks ?? defaults.SerializeSameBatchTrackerTasks);
+            file?.MaxReviewFixAttempts ?? defaults.MaxReviewFixAttempts,
+            ParseDeployments(file?.Deployments, source));
 
-        if (configuration.MaxImplementationAttempts < 1 || configuration.MaxReviewAttempts < 0)
-            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxImplementationAttempts must be at least 1 and maxReviewAttempts must not be negative.");
+        if (configuration.MaxImplementationAttempts < 1 || configuration.MaxReviewAttempts < 0 || configuration.MaxReviewFixAttempts < 0)
+            throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxImplementationAttempts must be at least 1 and maxReviewAttempts and maxReviewFixAttempts must not be negative.");
         if (configuration.MaxQuotaInterruptions < 1)
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: maxQuotaInterruptions must be at least 1.");
         if (configuration.BuildCommands.Any(c => string.IsNullOrWhiteSpace(c.Executable)) || configuration.TestCommands.Any(c => string.IsNullOrWhiteSpace(c.Executable)))
@@ -50,6 +51,30 @@ public sealed class RepositoryConfigurationReader(IProcessRunner runner) : IRepo
         if (configuration.Publish is not ("manual" or "auto-draft"))
             throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: publish must be 'manual' or 'auto-draft'.");
         return configuration;
+    }
+
+    private static DeploymentConfiguration? ParseDeployments(DeploymentConfigurationFile? file, string source)
+    {
+        if (file is null) return null;
+        VercelDeploymentConfiguration? vercel = null;
+        SupabaseDeploymentConfiguration? supabase = null;
+        if (file.Vercel is not null)
+        {
+            if (string.IsNullOrWhiteSpace(file.Vercel.ProjectName) || file.Vercel.EnvironmentVariables?.Any(string.IsNullOrWhiteSpace) == true)
+                throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: deployments.vercel requires a projectName and non-empty environment-variable names.");
+            vercel = new(file.Vercel.ProjectName.Trim(), file.Vercel.EnvironmentVariables ?? [],
+                string.IsNullOrWhiteSpace(file.Vercel.Environment) ? "production" : file.Vercel.Environment.Trim(), file.Vercel.ProjectUrl?.Trim());
+        }
+        if (file.Supabase is not null)
+        {
+            if (string.IsNullOrWhiteSpace(file.Supabase.ProjectName) || string.IsNullOrWhiteSpace(file.Supabase.DbPasswordEnvironmentVariable))
+                throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: deployments.supabase requires a projectName and dbPasswordEnvironmentVariable.");
+            if (string.IsNullOrWhiteSpace(file.Supabase.ProjectRef) && string.IsNullOrWhiteSpace(file.Supabase.OrganizationId))
+                throw new InvalidOperationException($"Invalid {ConfigurationPath} in {source}: deployments.supabase requires projectRef for an existing project or organizationId to create one.");
+            supabase = new(file.Supabase.ProjectName.Trim(), file.Supabase.ProjectRef?.Trim(), file.Supabase.OrganizationId?.Trim(),
+                file.Supabase.Region?.Trim(), file.Supabase.DbPasswordEnvironmentVariable.Trim(), file.Supabase.ProjectUrl?.Trim());
+        }
+        return new DeploymentConfiguration(vercel, supabase);
     }
 
     /// <summary>SF-703's opt-in <c>smokeTest</c> key — absent entirely means no smoke test (the common case,
@@ -79,11 +104,36 @@ internal sealed class RepositoryConfigurationFile
     public IReadOnlyList<ValidationCommand>? TestCommands { get; init; }
     public int? MaxImplementationAttempts { get; init; }
     public int? MaxReviewAttempts { get; init; }
+    public int? MaxReviewFixAttempts { get; init; }
     public bool? RequireHumanMerge { get; init; }
     public string? Publish { get; init; }
     public int? MaxQuotaInterruptions { get; init; }
     public SmokeTestConfigurationFile? SmokeTest { get; init; }
-    public bool? SerializeSameBatchTrackerTasks { get; init; }
+    public DeploymentConfigurationFile? Deployments { get; init; }
+}
+
+internal sealed class DeploymentConfigurationFile
+{
+    public VercelDeploymentConfigurationFile? Vercel { get; init; }
+    public SupabaseDeploymentConfigurationFile? Supabase { get; init; }
+}
+
+internal sealed class VercelDeploymentConfigurationFile
+{
+    public string? ProjectName { get; init; }
+    public IReadOnlyList<string>? EnvironmentVariables { get; init; }
+    public string? Environment { get; init; }
+    public string? ProjectUrl { get; init; }
+}
+
+internal sealed class SupabaseDeploymentConfigurationFile
+{
+    public string? ProjectName { get; init; }
+    public string? ProjectRef { get; init; }
+    public string? OrganizationId { get; init; }
+    public string? Region { get; init; }
+    public string DbPasswordEnvironmentVariable { get; init; } = "SUPABASE_DB_PASSWORD";
+    public string? ProjectUrl { get; init; }
 }
 
 internal sealed class SmokeTestConfigurationFile

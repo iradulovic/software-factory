@@ -2,7 +2,7 @@
 
 A local, observable development orchestrator that turns labeled GitHub issues into isolated Codex worktree runs, independently validates the result, and displays task/run state in an operational dashboard.
 
-Planned work and completed features are tracked in [`TASKS.md`](TASKS.md). Future coding runs use its ordered **Next up** queue when no task is selected explicitly.
+Work enters the factory only through GitHub issues labeled `factory:ready`; PostgreSQL stores the resulting factory task state. [`TASKS.md`](TASKS.md) is an archived historical record and is no longer ingested or updated.
 
 ## What works
 
@@ -59,8 +59,8 @@ Every CLI provider is configured under `Agents:Profiles`. Codex is one provider 
 
 | Coding class | Issue label | Codex model | Effort |
 | --- | --- | --- | --- |
-| quick | `coding:quick` or no class label | `gpt-5.6-luna` | `max` |
-| deep | `coding:deep` | `gpt-5.6-sol` | `medium` |
+| quick | `coding:quick` or no class label | `gpt-6-luna` | `max` |
+| deep | `coding:deep` | `gpt-6-sol` | `medium` |
 
 The issue label expresses work intent, not a provider or model. The existing `codex:luna` and `codex:sol` labels remain accepted as compatibility aliases for quick and deep. Conflicting classes stop the task before invocation. Tasks already stored with `Codex-Luna` or `Codex-Sol` preferences are migrated to provider `Codex` with the matching class; historical invocation rows retain their original agent, model, and effort. Changing a model release only requires changing that class's configuration. Model and effort are checked against the installed subscription-backed CLI with live invocations rather than inferred from API availability.
 
@@ -76,7 +76,7 @@ A task's shown agent reflects the provider actually invoking it, then its last i
 
 Pi's quota response has not yet been observed in the factory's service environment. Its profile intentionally has no guessed quota signatures or reset pattern, so configure those only after capturing representative Pi output; until then, a quota error follows the normal failed-invocation path instead of being mislabeled as a quota event.
 
-The Overview page's "Dispatch running"/"Dispatch paused" panel, and a Pause/Resume control on each agent row in the agent status table, let the operator reserve capacity for interactive use. A global pause (`POST /api/control/pause`, optionally with a `reason`) stops the orchestrator from claiming any new task — a task already claimed and executing always finishes — while a per-agent pause (`POST /api/agents/{agent}/pause`) excludes just that agent from selection, exactly like being at quota, so `AgentSelector` falls back to another configured agent instead. Neither ever touches publication: pushing and opening a pull request for already-validated work consumes no agent's subscription, so `PublicationWorker` runs regardless of pause state, and the Overview panel says so explicitly. Pause state is durable (`factory.dispatch_pause`, survives a restart) and never bypasses quota: resuming a paused agent only makes a `WaitingForQuota` task eligible again if that agent is also not currently at quota. Pause is a distinct action from cancellation — pausing never stops or cancels work already in progress, only new dispatch.
+The navbar's global dispatch control, and a Pause/Resume control on each agent row in the agent status table, let the operator reserve capacity for interactive use. A global pause (`POST /api/control/pause`, with no reason body) stops the orchestrator from claiming any new task — a task already claimed and executing always finishes — while a per-agent pause (`POST /api/agents/{agent}/pause`) excludes just that agent from selection, exactly like being at quota, so `AgentSelector` falls back to another configured agent instead. Neither ever touches publication: pushing and opening a pull request for already-validated work consumes no agent's subscription, so `PublicationWorker` runs regardless of pause state, and the dispatch control explains that explicitly. Pause state is durable (`factory.dispatch_pause`, survives a restart) and never bypasses quota: resuming a paused agent only makes a `WaitingForQuota` task eligible again if that agent is also not currently at quota. Pause is a distinct action from cancellation — pausing never stops or cancels work already in progress, only new dispatch.
 
 Each task has an explicit `priority` (integer, default 0, higher runs first) and can declare zero or more prerequisite tasks it depends on (`factory.task_dependency`), editable from the Task Details "Priority & dependencies" panel or `POST /api/tasks/{id}/priority` / `POST /api/tasks/{id}/dependencies` / `DELETE /api/tasks/{id}/dependencies/{dependsOnId}`. `ClaimNextAsync` orders eligible work `priority DESC, created_at` and additionally never claims a `Pending` task while any of its prerequisites has not reached `Completed` — the same status GitHub sync only sets once it observes the prerequisite's pull request actually merged, so "task B cannot run from a base missing task A" is enforced through that existing, reliable merge signal rather than new git-ancestry verification. Adding a dependency that would create a cycle, or that names a nonexistent task, or a self-dependency, is rejected explicitly (`AddDependencyOutcome`) rather than silently accepted. If a prerequisite ever ends at `Rejected`, `Cancelled`, or `Failed` instead of merging, its dependent is moved from `Pending` to `NeedsHuman` (with the specific blocking prerequisite and status recorded) rather than staying queued forever or being silently released to run without it — the same "needs operator" surfacing the Overview panel already uses. Dependencies may freely cross repositories; the factory still runs one coding execution at a time regardless.
 
@@ -100,8 +100,7 @@ Target repositories can optionally contain `.factory/config.json`. It is read fr
   "maxReviewAttempts": 1,
   "requireHumanMerge": true,
   "publish": "manual",
-  "maxQuotaInterruptions": 20,
-  "serializeSameBatchTrackerTasks": false
+  "maxQuotaInterruptions": 20
 }
 ```
 
@@ -153,6 +152,30 @@ A repository can optionally opt into local browser smoke tests (SF-703) with a `
 `startCommand` starts the application (same array/string/`{"shell":...}` forms as `buildCommands`/`testCommands`); `healthCheckUrl` is polled every second until it responds successfully or `startupTimeoutSeconds` elapses; each of `checkPaths` (default `["/"]`, resolved against `healthCheckUrl`'s origin) is then visited once in a headless Chromium browser via [Playwright](https://playwright.dev/dotnet/), capped at `checkTimeoutSeconds`. A screenshot is always saved next to the step's log (pass or fail), so a failure has concrete evidence, not just an error message. The application is always stopped afterward, success or failure — its process is killed the same way a build/test command's timeout kills one. Requires Chromium to already be installed locally (`playwright install chromium`, run once per machine); if it is not, every check fails with a clear message rather than the step silently doing nothing. This never deploys or reaches a public URL — everything runs against `localhost`.
 
 `installCommand` (optional, absent by default) runs once, before `startCommand`. A task's Git worktree only ever contains tracked files, so a `startCommand` that depends on gitignored, installable dependencies (e.g. a Node app's `node_modules`) never finds them in a freshly created worktree without this — the fix for a real per-task run's `startCommand` structurally failing every time (SF-712). It fails the step (same repairable failure as a failed check) if it exits non-zero, and its own output is logged next to `startCommand`'s.
+
+Deployment targets are provisioned explicitly from Repository Details (`POST /api/repositories/{id}/deployments/provision`), never from the task pipeline. A repository declares target metadata and the *names* of host environment variables in `.factory/config.json`; secret values remain in the API host environment and are sent to provider CLIs through stdin or the child-process environment, never written to the deployment registry or logs:
+
+```json
+{
+  "deployments": {
+    "vercel": {
+      "projectName": "acme-web",
+      "environmentVariables": ["DATABASE_URL", "API_KEY"],
+      "environment": "production"
+    },
+    "supabase": {
+      "projectName": "acme-db",
+      "organizationId": "org-id",
+      "region": "eu-central-1",
+      "dbPasswordEnvironmentVariable": "ACME_DB_PASSWORD"
+    }
+  }
+}
+```
+
+For an existing Supabase project, set `projectRef` instead of `organizationId`; provisioning links it and runs `supabase db push`. Vercel provisioning runs `vercel link`, adds the configured environment variables, and runs `vercel git connect`, so future default-branch merges deploy through Vercel's own Git integration. Successful links are upserted into `factory.deployment` with provider, external project ID, project URL, and non-secret linkage metadata.
+
+Railway was evaluated against its current CLI documentation but is not included in this change. Its CLI now supports project creation/linking, GitHub-backed services (`railway add --repo` and `railway service source connect`), and variables. Unlike the repository-level Vercel link, those operations require explicit project/environment/service lifecycle choices and may create staged configuration changes, so Railway provisioning should be a focused follow-up rather than silently choosing that policy here. See the official [Railway CLI command list](https://docs.railway.com/cli), [`railway add` reference](https://docs.railway.com/cli/add), and [`railway service` reference](https://docs.railway.com/cli/service).
 
 A quota-interrupted invocation never got a real chance to implement anything, so it does not count toward `maxImplementationAttempts`, and the "previous attempt" context above always reflects the last invocation that actually tried, never a quota blip. Excluding quota interruptions from that budget is bounded separately by `maxQuotaInterruptions`: once a task has accumulated that many quota-interrupted invocations without a successful attempt, it moves to `NeedsHuman` instead of waiting again, so a persistently blocked provider cannot make a task wait forever.
 
@@ -256,18 +279,6 @@ Within the configured polling interval, Sync imports the issue and creates a tas
 
 Sync is incremental: each repository records the point in time through which it is fully synchronized, and the next cycle asks `gh` only for issues updated at or after that checkpoint (fully paginated, never capped at a single page), so a repository with thousands of issues eventually converges without re-fetching its whole history every cycle. The checkpoint only advances once a cycle finishes fetching everything it found, using the time the cycle started rather than when it finished (backdated by a small fixed safety margin to absorb GitHub's search-indexing lag), so an issue that changes mid-cycle, or just before it, is safely picked up again next time rather than skipped. Every comment is fetched per issue rather than trusting `gh issue list`'s own capped nested field, and `closed_at` is persisted alongside `state`. A closed issue or one that loses its `factory:ready` label converges automatically: its still-`Pending` task (never one already in flight) is cancelled with an explicit reason recorded on the task; a reopened, still-eligible issue is picked up again like any other eligible issue on its next sync. `gh` CLI failures, including rate limiting, are persisted per repository as operational state and surfaced on the Repositories page.
 
-## 5b. Use a repository's own TASKS.md instead of, or alongside, GitHub issues
-
-A greenfield repository with a hand-written `TASKS.md` tracker (this repository's own `TASKS.md` is the running example) needs no GitHub issue at all: place the tracker file at the repository root, following this exact convention —
-
-- `## In progress` / `## Next up` / `## Completed` / `## Blocked` section headings (a `### Priority N` sub-heading inside `## Next up` is fine; it does not change which section an item belongs to).
-- Each item as `- [ ] **SF-123 — Title**` (open) or `- [x] **SF-123 — Title**` (done).
-- An optional nested `- Dependencies: SF-1, SF-2.` line — the only machine-readable dependency form; a `Depends on SF-1` clause folded into an item's own prose is deliberately not parsed.
-
-Every unchecked item under `## Next up` becomes a `Pending` factory task on the next sync cycle, without requiring a `factory:ready`-labeled issue first; a task it produces carries its own `tracker_item_id` (never a `github_issue_id`), so a repository that uses both sources at once runs them side by side without double-claiming the same work. As a task's status moves it into a different section — claimed work into `## In progress`, a merged pull request into `## Completed` (with a short trailing note pointing back at the task for full evidence), a failure or a needs-human outcome into `## Blocked` (with the task's own failure reason as the unblock condition) — `Factory.GitHubSync` writes that back into `TASKS.md` on the base branch directly, the same way it already writes a GitHub issue's own labels and comments. That write is always a plain (never forced) push: if the base branch moved since the file was last read — a human's own edit, most commonly — the push is simply rejected and retried fresh on the next sync cycle, so a human editing the tracker file is never overwritten or raced.
-
-Several items queued in the same batch with no `Dependencies:` line between them are independently claimable by default, so they can start implementing in parallel against the same stale base branch and collide with each other on publication. Declaring an explicit `Dependencies:` chain between them is the direct fix. A repository that queues tasks in batches and would rather not hand-author that chain every time can instead opt into `.factory/config.json`'s `"serializeSameBatchTrackerTasks": true` (default `false`): every task `Factory.GitHubSync` creates from the same `TASKS.md` sync pass is then automatically chained to the one it created immediately before it, in file order — tagged its own dependency `source` (`tracker-batch`) so it never interferes with a hand-authored `Dependencies:` line's own reconciliation.
-
 ## 6. Back up and restore local state
 
 GitHub is not a backup of this factory's state: a task's database row, its dependency graph, and any work an agent committed to a branch that was never pushed — or never even committed — exist only in this machine's PostgreSQL volume and `factory-data/` tree (SF-616). `./scripts/backup.ps1` snapshots both together, consistently, into one timestamped directory:
@@ -321,7 +332,9 @@ With no `Telemetry__OtlpEndpoint` configured, nothing is exported and startup is
 
 The Overview nudge inbox checks actionable attention changes every 10 seconds and keeps unread, resolved, and delivery state in PostgreSQL. It works locally without any destination. Setting `Digest:WebhookUrl` also enables nudge delivery to that webhook; each nudge contains a fixed description and dashboard link, without task output, logs, issue text, or secrets. Delivery uses a stable `Idempotency-Key` header, retries failures after one minute, and limits successful sends to five per minute. Receivers should honor that key to prevent a duplicate if the API stops after an HTTP success but before recording it.
 
-The **Ask** page (`/operator`) answers common operational questions from persisted task, run, CI, worker, and attention records. Its observed facts link to source records; explanations and suggestions are labeled separately. This first version is deterministic and makes zero model calls, so it remains usable when coding agents are unavailable and does not consume subscription capacity. For controls, include a full task ID or ask to pause/resume dispatch. The page proposes an exact action, rechecks current state before confirmation, and submits through the existing API endpoint. The API performs its own eligibility check; task transitions and repair controls appear in Task Details audit history, merge requests retain their own history, and pause/resume requests are recorded in `factory.dispatch_pause_event` and shown on the Ask page. Dispatch confirmations send an expected-state header so an intervening pause/resume returns a conflict.
+The **Ask** page (`/operator`) runs its deterministic matcher first for common operational questions from persisted task, run, CI, worker, and attention records. Those matches behave as before and make no agent call. Unmatched input falls through to the configured `Assistant:PreferredAgent` CLI in a read-only conversational mode; the browser sends the recent transcript so follow-up questions retain context. Conversational output is text-only and can never execute an action. Exact supported controls still route through the deterministic responder, which proposes the action, rechecks current state before confirmation, and submits through the existing API endpoint.
+
+Interactive use has a separate, intentionally smaller in-memory quota lane (`Assistant:MaxRequestsPerHour`, default 12 rolling-hour requests, and `Assistant:MaxConcurrentConversations`, default 1). A conversational quota response is returned only to that conversation and is never persisted to the provider quota state used by implementation/review dispatch. This prevents chat failures from silently blocking queued coding tasks, while acknowledging that both lanes still draw on the same underlying CLI subscription. The separate lane resets when the API restarts; it is a local capacity guard, not durable billing state. The API performs its own eligibility check for confirmed actions; task transitions and repair controls appear in Task Details audit history, merge requests retain their own history, and pause/resume requests are recorded in `factory.dispatch_pause_event` and shown on the Ask page. Dispatch confirmations send an expected-state header so an intervening pause/resume returns a conflict.
 
 - Both Codex and Claude Code CLIs were proven end-to-end (Sync -> claim -> worktree -> agent -> validate -> publish) on the desktop for SF-608; a live automatic merge (Sync -> claim -> worktree -> agent -> validate -> publish -> CI green -> auto-merge, no operator action) was proven for SF-709.
 - The repository cache is a bare repository that tracks `origin` explicitly (`+refs/heads/*:refs/remotes/origin/*`). Caches created by earlier versions with `git clone --bare` are healed automatically on the next task.

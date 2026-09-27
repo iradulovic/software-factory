@@ -1,5 +1,6 @@
 using Factory.Core;
 using Factory.Infrastructure;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Factory.Orchestrator;
@@ -7,7 +8,7 @@ namespace Factory.Orchestrator;
 /// <summary>Selects which configured agent runs this attempt, invokes it, records the invocation, and interprets
 /// its result contract. Agent selection (see <see cref="AgentSelector"/>) is the only agent-specific branching
 /// here: everything else is written against the agent-agnostic <see cref="AgentRunResult"/> contract.</summary>
-public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOptions<FactoryOptions> options) : IPipelineStep
+public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOptions<FactoryOptions> options, ILogger<RunAgentStep> logger) : IPipelineStep
 {
     public async Task<PipelineStepResult> ExecuteAsync(PipelineContext context, CancellationToken cancellationToken)
     {
@@ -54,22 +55,28 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
     private async Task<PipelineStepResult> RunAsync(PipelineContext context, IAgentRunner agent, string selectionReason, CancellationToken cancellationToken)
     {
         var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", context.AttemptNumber, cancellationToken);
+        var agentRunId = Guid.NewGuid();
+        logger.LogInformation("Task {TaskId} run {RunId} step {StepId} agent run {AgentRunId} starting {Purpose} attempt {Attempt}",
+            context.Task.Id, context.RunId, stepId, agentRunId, context.AgentPurpose, context.AttemptNumber);
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
         // A previously recorded session is only ever offered back to the *same* agent that produced it (SF-701) —
         // a fallback to a different agent (quota, pause) always gets a fresh invocation, exactly as before this
         // task, since a different provider's CLI cannot use another provider's private session id.
         var resumeSessionId = context.Task.ResumableSessionAgent == agent.Name ? context.Task.ResumableSessionId : null;
         var taskClass = context.Task.TaskClass ?? "quick";
-        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath, resumeSessionId, TaskClass: taskClass), cancellationToken);
+        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber,
+            logPath, resumeSessionId, context.AgentPurpose, TaskClass: taskClass), cancellationToken);
+        context.ImplementingAgent = agent.Name;
+        context.ImplementationSessionId = result.ProviderSessionId;
         // A quota-interrupted invocation never got a real chance to implement anything, so it is excluded from
         // the implementation-attempt budget (CountAgentRunsAsync) even though it stays recorded here in full.
-        await tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), context.Task.Id, context.RunId, stepId, agent.Name, result.Process.StartedAt,
+        await tasks.SaveAgentRunAsync(new AgentRunRecord(agentRunId, context.Task.Id, context.RunId, stepId, agent.Name, result.Process.StartedAt,
             result.Process.CompletedAt, result.Process.Duration.TotalSeconds, result.Process.ExitCode,
             result.Process.Succeeded ? "Succeeded" : "Failed", result.Process.StandardOutput, result.Process.StandardError,
             result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result,
             CountsAsImplementationAttempt: !result.QuotaDetected, ProviderSessionId: result.ProviderSessionId,
             Model: result.Model ?? agent.Model, ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort,
-            SelectionReason: selectionReason, TaskClass: taskClass), cancellationToken);
+            SelectionReason: selectionReason, Purpose: context.AgentPurpose.ToString(), TaskClass: taskClass), cancellationToken);
 
         // Quota status is persisted independently of this task's run: every invocation updates it, whether or not
         // quota was detected, so a status that cleared is reflected immediately for AgentSelector rather than only

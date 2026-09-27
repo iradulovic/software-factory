@@ -29,6 +29,33 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         An empty "findings" array is a valid, useful result meaning nothing worth flagging was found.
         """;
 
+    private const string ConversationPreamble = """
+        You are the Software Factory operator assistant. Respond conversationally in plain text.
+        This is a read-only conversation: do not modify files, run mutating commands, or execute any factory,
+        GitHub, deployment, or repository action. You may explain or suggest an existing action, but the factory UI
+        must independently offer it and require confirmation after rechecking live state.
+        """;
+
+    private const string FixPrompt = """
+        Address the independent review findings below for the task described in .factory/task.md. Read and obey AGENTS.md.
+        Inspect the existing implementation, make only the changes needed to resolve the findings, and run relevant build and test commands.
+        Commit every intended change on this branch before finishing. Do not create branches or worktrees, push, or create pull requests.
+        When complete, write .factory/result.json matching the contract in .factory/task.md.
+
+        Review findings:
+        """;
+
+    private const string MergeConflictPrompt = """
+        Fix the merge conflict for the task described in .factory/task.md. Read and obey AGENTS.md.
+        You are working in the original task's existing factory branch, which already has a pull request under review.
+        This action explicitly requires reconciling that branch with the latest base branch: fetch origin, then merge
+        the task's base branch from .factory/task.md (origin/main for this task) into the current branch. Resolve every
+        conflict while preserving both the task branch's intent and the base branch's intent. This is the requested
+        merge into the task branch; do not merge the pull request, create a branch or worktree, push, or create a pull request.
+        Run the relevant build and test commands after resolving the conflict. Commit every intended change on this same
+        branch before finishing. When complete, write .factory/result.json matching the contract in .factory/task.md.
+        """;
+
     public string Name => profile.Name;
     public string Provider => profile.EffectiveProvider;
     public string? Model => profile.Model;
@@ -40,7 +67,13 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
     public async Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken)
     {
         var reviewing = request.Purpose == AgentRunPurpose.Review;
-        var prompt = reviewing ? ReviewPrompt : Prompt;
+        var prompt = request.Purpose switch
+        {
+            AgentRunPurpose.Review => ReviewPrompt,
+            AgentRunPurpose.Fix => $"{FixPrompt}\n{FormatFindings(request.ReviewFindings ?? [])}",
+            AgentRunPurpose.MergeConflict => MergeConflictPrompt,
+            _ => Prompt
+        };
         var taskClass = request.TaskClass ?? "quick";
         var selectedClass = profile.Classes?.FirstOrDefault(c => string.Equals(c.TaskClass, taskClass, StringComparison.OrdinalIgnoreCase));
         if (profile.Classes is not null && selectedClass is null)
@@ -76,4 +109,30 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         var (result, error) = await resultReader.ReadAsync(request.WorkingDirectory, cancellationToken);
         return new AgentRunResult(process, result, error, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail, sessionId, Model: model, ReasoningEffort: effort);
     }
+
+    public async Task<AgentConversationResult> ConverseAsync(AgentConversationRequest request, CancellationToken cancellationToken)
+    {
+        if (profile.ConversationArguments is null)
+            throw new NotSupportedException($"Agent {profile.Name} has no read-only conversation arguments configured.");
+
+        var selectedClass = profile.Classes?.FirstOrDefault(c => string.Equals(c.TaskClass,
+            request.TaskClass ?? "quick", StringComparison.OrdinalIgnoreCase));
+        var model = selectedClass?.Model ?? profile.Model;
+        var effort = selectedClass?.ReasoningEffort ?? profile.ReasoningEffort;
+        var prompt = ConversationPreamble + "\n\nConversation:\n" + string.Join("\n\n", request.Turns.Select(turn =>
+            $"{(string.Equals(turn.Role, "assistant", StringComparison.OrdinalIgnoreCase) ? "Assistant" : "Operator")}: {turn.Content}")) + "\n\nAssistant:";
+        var delivery = profile.ConversationPromptDelivery ?? profile.PromptDelivery;
+        var timeout = request.Timeout ?? TimeSpan.FromMinutes(Math.Max(1, profile.ConversationTimeoutMinutes));
+        var invocation = delivery == "argument"
+            ? new ProcessRequest(profile.Executable, [.. profile.ConversationArguments, prompt], request.WorkingDirectory, Timeout: timeout)
+            : new ProcessRequest(profile.Executable, profile.ConversationArguments, request.WorkingDirectory, Timeout: timeout, StandardInput: prompt);
+        var process = await processRunner.RunAsync(invocation, cancellationToken);
+        var quota = QuotaClassifier.Classify(profile, process, clock.UtcNow);
+        var response = process.StandardOutput.Trim();
+        return new AgentConversationResult(process, response, quota.Detected, quota.ResetAt, quota.Window,
+            quota.ResetKind, quota.Detail, model, effort);
+    }
+
+    private static string FormatFindings(IReadOnlyList<ReviewFinding> findings) => string.Join('\n', findings.Select((finding, index) =>
+        $"{index + 1}. [{finding.Severity}] {finding.File ?? "(general)"}{(finding.Line is null ? "" : $":{finding.Line}")} - {finding.Description}"));
 }

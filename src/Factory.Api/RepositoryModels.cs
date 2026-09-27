@@ -14,4 +14,6 @@ public sealed record BootstrapRepositoryRequest(
 
 public sealed record SetRepositoryEnabledRequest(bool IsEnabled);
 
+public sealed record ProvisionDeploymentRequest(string Provider);
+
 public sealed record SetIssueReadyRequest(bool IsReady);

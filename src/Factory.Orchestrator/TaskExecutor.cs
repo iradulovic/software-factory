@@ -57,6 +57,16 @@ public sealed class TaskExecutor(
             {
                 await TransitionAsync(context, FactoryTaskStatus.Reviewing, null, cancellationToken);
                 if (!await RunStepAsync(review, context, cancellationToken)) return;
+                // A review fix changes the commit that was validated before review. Re-run every deterministic
+                // publication prerequisite against the final, re-reviewed commit so the persisted validated HEAD
+                // and change summary cannot point at the pre-fix implementation.
+                if (context.ReviewFixAttempts > 0)
+                {
+                    if (!await RunStepAsync(collectDiff, context, cancellationToken)) return;
+                    if (!await RunStepAsync(validate, context, cancellationToken)) return;
+                    if (!await RunStepAsync(smokeTest, context, cancellationToken)) return;
+                    if (!await RunStepAsync(preparePublication, context, cancellationToken)) return;
+                }
             }
 
             // ReadyForPublish is a resting state: a validated implementation waits here for a human (or, for an
@@ -67,8 +77,10 @@ public sealed class TaskExecutor(
             logger.LogInformation("Task {TaskId} is ready for publish in run {RunId}", task.Id, runId);
             await notifier.NotifyReadyForPublishAsync(context, cancellationToken);
 
-            if (context.Configuration?.Publish == "auto-draft")
-                await tasks.RequestPublicationAsync(task.Id, runId, "auto-draft", cancellationToken);
+            if (context.Configuration?.Publish == "auto-draft" || context.AgentPurpose == AgentRunPurpose.MergeConflict)
+                await tasks.RequestPublicationAsync(task.Id, runId,
+                    context.AgentPurpose == AgentRunPurpose.MergeConflict ? MergeConflictRepair.CreatedBy : "auto-draft",
+                    cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -43,7 +43,7 @@ export function StepLog({ id, running, hasLog }: { id: string; running: boolean;
   if (!hasLog) return null;
   return (
     <div className="mt-2">
-      {running && <div className="mb-2"><p className="eyebrow">Live tail</p><pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-[11px] text-emerald-300">{error ? "Live tail unavailable" : (data || "Waiting for output…")}</pre></div>}
+      {running && <div className="mb-2"><p className="eyebrow">Live tail</p><pre className="console mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded p-3 text-[11px]">{error ? "Live tail unavailable" : (data || "Waiting for output…")}</pre></div>}
       <a className="text-xs text-emerald-400 hover:underline" href={`${apiBase}/api/steps/${id}/log`} target="_blank" rel="noreferrer">View full log</a>
     </div>
   );

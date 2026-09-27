@@ -50,6 +50,37 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     [Fact]
+    public async Task Merge_conflict_repair_requeues_a_published_task_on_its_existing_workspace_and_is_idempotent()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var ct = CancellationToken.None;
+            var branch = $"factory/merge-conflict-{Guid.NewGuid():N}";
+            var worktree = Path.Combine(Path.GetTempPath(), "factory-merge-conflict", Guid.NewGuid().ToString("N"));
+            await fixture.Connection.ExecuteAsync("""
+                UPDATE factory.task SET status='Published',branch_name=@branch,worktree_path=@worktree WHERE id=@TaskId;
+                INSERT INTO factory.publication(id,task_id,status,requested_by,pull_request_number,pull_request_url,completed_at)
+                VALUES(@publicationId,@TaskId,'PullRequestCreated','operator',23,'https://example.invalid/pull/23',now());
+                """, new { fixture.TaskId, branch, worktree, publicationId = Guid.NewGuid() });
+            await fixture.Tasks.SetMergeStatusAsync(fixture.TaskId,
+                new PullRequestMergeResult(true, true, "head1", "base1", "CONFLICTING", "DIRTY", null), ct);
+
+            Assert.True(await fixture.Tasks.TriggerMergeConflictRepairAsync(fixture.TaskId, ct));
+            Assert.Equal("Pending", await fixture.Connection.ExecuteScalarAsync<string>(
+                "SELECT status FROM factory.task WHERE id=@TaskId", new { fixture.TaskId }));
+            var workspace = await fixture.Connection.QuerySingleAsync<(string Branch, string Worktree)>(
+                "SELECT branch_name AS \"Branch\",worktree_path AS \"Worktree\" FROM factory.task WHERE id=@TaskId", new { fixture.TaskId });
+            Assert.Equal((branch, worktree), workspace);
+            var feedback = Assert.Single(await fixture.Tasks.GetFeedbackAsync(fixture.TaskId, ct));
+            Assert.Equal(MergeConflictRepair.CreatedBy, feedback.CreatedBy);
+            Assert.Equal(MergeConflictRepair.Feedback, feedback.Body);
+            Assert.False(await fixture.Tasks.TriggerMergeConflictRepairAsync(fixture.TaskId, ct));
+        }
+    }
+
+    [Fact]
     public async Task Paused_published_task_cannot_start_a_CI_repair()
     {
         var fixture = await LeaseFixture.CreateAsync();
@@ -910,74 +941,6 @@ public sealed class PostgresStoreIntegrationTests
                 DELETE FROM github.issue WHERE id=@issueId;
                 """, new { issueId });
             await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
-        }
-    }
-
-    [Fact]
-    public async Task Tracker_item_produces_one_task_ever_and_its_dependency_and_writeback_state_are_reconciled()
-    {
-        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING");
-        if (string.IsNullOrWhiteSpace(connectionString)) return;
-
-        var settings = Options.Create(new FactoryOptions { ConnectionString = connectionString });
-        await new DatabaseMigrator(settings).MigrateAsync(CancellationToken.None);
-        var github = new PostgresGitHubStore(settings);
-        var tasks = new PostgresTaskStore(settings, new TestClock());
-        var suffix = Guid.NewGuid().ToString("N");
-        var repository = new GitHubRepository(0, "factory-tests", suffix, $"https://example.invalid/{suffix}.git", "main", true);
-        await github.UpsertRepositoryAsync(repository, CancellationToken.None);
-
-        await using var connection = new NpgsqlConnection(connectionString);
-        var repositoryId = await connection.ExecuteScalarAsync<long>("SELECT id FROM github.repository WHERE owner='factory-tests' AND name=@suffix", new { suffix });
-        try
-        {
-            // SF-707: a tracker item produces a task exactly once, and never again even after that task reaches a
-            // terminal status — unlike CreateForIssueIfEligibleAsync's partial-by-status uniqueness.
-            Assert.True(await tasks.CreateForTrackerItemIfEligibleAsync(repositoryId, "main", "SF-900", "First item", "Description one", CancellationToken.None));
-            Assert.False(await tasks.CreateForTrackerItemIfEligibleAsync(repositoryId, "main", "SF-900", "First item", "Description one", CancellationToken.None));
-            var firstTaskId = await tasks.FindTaskIdForTrackerItemAsync(repositoryId, "SF-900", CancellationToken.None);
-            Assert.NotNull(firstTaskId);
-            await connection.ExecuteAsync("UPDATE factory.task SET status='Completed' WHERE id=@id", new { id = firstTaskId });
-            Assert.False(await tasks.CreateForTrackerItemIfEligibleAsync(repositoryId, "main", "SF-900", "First item", "Description one", CancellationToken.None));
-
-            Assert.True(await tasks.CreateForTrackerItemIfEligibleAsync(repositoryId, "main", "SF-901", "Second item", "Depends on SF-900", CancellationToken.None));
-            var secondTaskId = await tasks.FindTaskIdForTrackerItemAsync(repositoryId, "SF-901", CancellationToken.None);
-            Assert.NotNull(secondTaskId);
-
-            // Dependency reconciliation is tagged 'tracker' and independent of a manual/issue-sourced edge.
-            var reconciled = await tasks.ReconcileTrackerDependenciesAsync(secondTaskId!.Value, [firstTaskId!.Value], CancellationToken.None);
-            Assert.Contains(firstTaskId.Value, reconciled.Added);
-            var dependencies = await tasks.GetDependenciesAsync(secondTaskId.Value, CancellationToken.None);
-            Assert.Equal("tracker", Assert.Single(dependencies).Source);
-
-            // Removing it from the parsed set (e.g. the Dependencies: line was edited) removes exactly that edge.
-            var removed = await tasks.ReconcileTrackerDependenciesAsync(secondTaskId.Value, [], CancellationToken.None);
-            Assert.Contains(firstTaskId.Value, removed.Removed);
-            Assert.Empty(await tasks.GetDependenciesAsync(secondTaskId.Value, CancellationToken.None));
-
-            // SF-618: a same-batch chain edge is tagged 'tracker-batch' and survives a 'tracker' reconciliation
-            // pass untouched, since that pass only ever reads/removes its own source's edges.
-            Assert.Equal(AddDependencyOutcome.Added, await tasks.AddTrackerBatchDependencyAsync(secondTaskId.Value, firstTaskId.Value, CancellationToken.None));
-            Assert.Equal("tracker-batch", Assert.Single(await tasks.GetDependenciesAsync(secondTaskId.Value, CancellationToken.None)).Source);
-            await tasks.ReconcileTrackerDependenciesAsync(secondTaskId.Value, [], CancellationToken.None);
-            Assert.Equal("tracker-batch", Assert.Single(await tasks.GetDependenciesAsync(secondTaskId.Value, CancellationToken.None)).Source);
-
-            // Write-back state: newly created tasks start baselined at NextUp (no file write needed yet); moving
-            // a task's status forward is reflected only once SetTrackerWritebackSectionAsync is actually called.
-            var trackerTasks = await tasks.GetTrackerFileTasksAsync(repositoryId, CancellationToken.None);
-            Assert.Contains(trackerTasks, t => t.TrackerItemId == "SF-901" && t.WritebackSection == TrackerSection.NextUp);
-
-            await tasks.SetTrackerWritebackSectionAsync(secondTaskId.Value, TrackerSection.InProgress, CancellationToken.None);
-            var updated = await tasks.GetTrackerFileTasksAsync(repositoryId, CancellationToken.None);
-            Assert.Contains(updated, t => t.TrackerItemId == "SF-901" && t.WritebackSection == TrackerSection.InProgress);
-        }
-        finally
-        {
-            await connection.ExecuteAsync("""
-                DELETE FROM factory.task_dependency WHERE task_id IN (SELECT id FROM factory.task WHERE repository_id=@repositoryId);
-                DELETE FROM factory.task WHERE repository_id=@repositoryId;
-                DELETE FROM github.repository WHERE id=@repositoryId;
-                """, new { repositoryId });
         }
     }
 

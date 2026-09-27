@@ -133,6 +133,13 @@ public sealed class NudgeStore(NpgsqlDataSource db)
         return rows.ToList();
     }
 
+    public async Task<NudgeRow?> GetAsync(Guid id, CancellationToken ct)
+    {
+        await using var c = await db.OpenConnectionAsync(ct);
+        return await c.QuerySingleOrDefaultAsync<NudgeRow>(new CommandDefinition(
+            $"SELECT {Columns} FROM factory.nudge WHERE id=@id", new { id }, cancellationToken: ct));
+    }
+
     public async Task<int> GetUnreadCountAsync(CancellationToken ct)
     {
         await using var c = await db.OpenConnectionAsync(ct);

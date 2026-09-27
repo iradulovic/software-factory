@@ -10,8 +10,8 @@ public sealed class CliAgentRunnerTests
         new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, quotaCooldownHours);
 
     [Theory]
-    [InlineData("quick", "gpt-5.6-luna", "max")]
-    [InlineData("deep", "gpt-5.6-sol", "medium")]
+    [InlineData("quick", "gpt-6-luna", "max")]
+    [InlineData("deep", "gpt-6-sol", "medium")]
     public async Task Configured_class_selects_the_actual_cli_model_and_effort(string taskClass, string model, string effort)
     {
         var profile = AgentProfilesOptions.DefaultProfiles.Single();
@@ -232,11 +232,74 @@ public sealed class CliAgentRunnerTests
         Assert.Null(result.ReviewResult);
     }
 
+    [Fact]
+    public async Task Conversation_uses_configured_read_only_arguments_and_returns_cli_output()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "A conversational answer\n", "", false, false));
+        var profile = Codex() with
+        {
+            ConversationArguments = ["exec", "--sandbox", "read-only", "-"],
+            ConversationTimeoutMinutes = 3
+        };
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.ConverseAsync(new AgentConversationRequest(
+            [new("user", "First question"), new("assistant", "First answer"), new("user", "Follow up")], "."), CancellationToken.None);
+
+        Assert.Equal(["exec", "--sandbox", "read-only", "-"], runner.Request!.Arguments);
+        Assert.Contains("Operator: First question", runner.Request.StandardInput);
+        Assert.Contains("Assistant: First answer", runner.Request.StandardInput);
+        Assert.Contains("Operator: Follow up", runner.Request.StandardInput);
+        Assert.Contains("do not modify files", runner.Request.StandardInput);
+        Assert.Equal(TimeSpan.FromMinutes(3), runner.Request.Timeout);
+        Assert.Equal("A conversational answer", result.Response);
+    }
+
+    [Fact]
+    public async Task Fix_purpose_includes_structured_review_findings_and_reads_the_implementation_result()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agentResult = new AgentResult("completed", "Fixed", [], true, ["src/Export.cs"], [], false, null);
+        var agent = new CliAgentRunner(Codex(), runner, new StubResultReader(agentResult), new NoReviewResultReader(), new FixedClock(Now));
+        var finding = new ReviewFinding("high", "src/Export.cs", 42, "Handle empty input");
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            Purpose: AgentRunPurpose.Fix, ReviewFindings: [finding]), CancellationToken.None);
+
+        Assert.Contains("Address the independent review findings", runner.Request!.StandardInput);
+        Assert.Contains("[high] src/Export.cs:42 - Handle empty input", runner.Request.StandardInput);
+        Assert.Equal(agentResult, result.Result);
+        Assert.Null(result.ReviewResult);
+    }
+
+    [Fact]
+    public async Task Merge_conflict_purpose_sends_reconciliation_prompt_and_reads_the_implementation_result()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agentResult = new AgentResult("completed", "Conflict resolved", ["dotnet test"], true, ["src/Export.cs"], [], false, null);
+        var agent = new CliAgentRunner(Codex(), runner, new StubResultReader(agentResult), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            Purpose: AgentRunPurpose.MergeConflict), CancellationToken.None);
+
+        Assert.Contains("merge conflict", runner.Request!.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("fetch origin", runner.Request.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("merge", runner.Request.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("preserving", runner.Request.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(agentResult, result.Result);
+        Assert.Null(result.ReviewResult);
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : IClock { public DateTimeOffset UtcNow => now; }
     private sealed class NoResultReader : IAgentResultReader
     {
         public Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken) =>
             Task.FromResult<(AgentResult?, string?)>((null, "no result"));
+    }
+    private sealed class StubResultReader(AgentResult result) : IAgentResultReader
+    {
+        public Task<(AgentResult? Result, string? Error)> ReadAsync(string worktreePath, CancellationToken cancellationToken) =>
+            Task.FromResult<(AgentResult?, string?)>((result, null));
     }
     private sealed class NoReviewResultReader : IAgentReviewResultReader
     {

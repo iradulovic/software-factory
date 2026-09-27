@@ -37,6 +37,10 @@ public sealed class PipelineContext(FactoryTask task, Guid runId)
     public WorktreeLocation? Worktree { get; set; }
     public RepositoryConfiguration? Configuration { get; set; }
     public AgentResult? AgentResult { get; set; }
+    public AgentRunPurpose AgentPurpose { get; set; } = AgentRunPurpose.Implement;
+    public string? ImplementingAgent { get; set; }
+    public string? ImplementationSessionId { get; set; }
+    public int ReviewFixAttempts { get; set; }
     public ChangeSummary? ChangeSummary { get; set; }
 
     /// <summary>Whether this task opted into a second-agent review pass (SF-702), decided once by

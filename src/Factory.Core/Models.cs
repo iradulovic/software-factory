@@ -19,10 +19,8 @@ public enum AddDependencyOutcome { Added, AlreadyExists, WouldCreateCycle, TaskN
 /// before <paramref name="TaskId"/> becomes claimable — <see cref="DependsOnTitle"/>/<see cref="DependsOnStatus"/>
 /// are read alongside the edge so the operator can see what is blocking a task without a second lookup.
 /// <paramref name="Source"/> is <c>"issue"</c> when SF-710 parsed this edge from the dependent task's GitHub issue
-/// body, <c>"tracker"</c> when SF-707 parsed it from a TASKS.md item's own <c>Dependencies:</c> line,
-/// <c>"tracker-batch"</c> when SF-618's <c>serializeSameBatchTrackerTasks</c> option chained it to the previous
-/// task created in the same tracker-file sync pass, or <see langword="null"/> when an operator added it manually
-/// through the dashboard (SF-611).</summary>
+/// body, or <see langword="null"/> when an operator added it manually through the dashboard (SF-611).
+/// Historical rows may retain other source values from retired ingestion paths.</summary>
 public sealed record TaskDependency(Guid TaskId, Guid DependsOnTaskId, string DependsOnTitle, FactoryTaskStatus DependsOnStatus, string? Source = null);
 
 /// <summary>The result of reconciling a task's <c>source='issue'</c> dependency edges (SF-710) against the current
@@ -36,51 +34,19 @@ public sealed record IssueDependencyReconciliation(IReadOnlyList<Guid> Added, IR
 /// SF-611's existing cross-repository dependency support.</summary>
 public sealed record IssueDependencyRef(string? Owner, string? Name, int IssueNumber);
 
-/// <summary>Which of a repository's own <c>TASKS.md</c> sections (SF-707) a tracker item currently belongs in —
-/// mirrors this repository's own documented convention (see <see cref="TasksMdParser"/>). <see cref="Other"/> is
-/// any heading outside the four recognized ones (e.g. <c>## Optional backlog</c>): never eligible for automatic
-/// task creation, and never a write-back target.</summary>
-public enum TrackerSection { InProgress, NextUp, Completed, Blocked, Other }
-
-/// <summary>One item parsed from a repository's own <c>TASKS.md</c> (SF-707) — see <see cref="TasksMdParser"/>
-/// for the exact convention. <paramref name="DependencyIds"/> is parsed only from a dedicated nested
-/// <c>- Dependencies: SF-1, SF-2.</c> line, never from free-form prose elsewhere in the item.
-/// <paramref name="StartLine"/>/<paramref name="EndLineExclusive"/> are 0-based line indices into the file as
-/// <see cref="TasksMdParser.Normalize"/> splits it, used by <see cref="TasksMdWriter"/> to relocate the item's
-/// exact original lines rather than reconstructing them from parsed fields (which would risk losing formatting
-/// <see cref="TasksMdParser"/> does not itself round-trip).</summary>
-public sealed record TrackerItem(string Id, string Title, string Description, bool Checked, TrackerSection Section,
-    IReadOnlyList<string> DependencyIds, int StartLine, int EndLineExclusive);
-
-/// <summary>One <c>task_type='TrackerFile'</c> task (SF-707), with enough state for <c>Factory.GitHubSync.Worker</c>
-/// to decide whether the repository's <c>TASKS.md</c> still needs to be updated to reflect it.
-/// <paramref name="WritebackSection"/> is the section TASKS.md was last confirmed to reflect for this task, or
-/// <see langword="null"/> if no write-back has ever succeeded for it yet.</summary>
-public sealed record TrackerFileTask(Guid TaskId, string TrackerItemId, FactoryTaskStatus Status, string? FailureReason,
-    TrackerSection? WritebackSection);
-
-/// <summary>Maps a task's live <see cref="FactoryTaskStatus"/> to the <see cref="TrackerSection"/> its TASKS.md
-/// item belongs in (SF-707) — the single place this decision is made, so task creation (which starts a task at
-/// <see cref="TrackerSection.NextUp"/>) and <c>Factory.GitHubSync.Worker</c>'s write-back reconciliation can never
-/// disagree about what a given status means for the tracker file.</summary>
-public static class TrackerSectionMapper
-{
-    public static TrackerSection From(FactoryTaskStatus status) => status switch
-    {
-        FactoryTaskStatus.Pending => TrackerSection.NextUp,
-        FactoryTaskStatus.Claimed or FactoryTaskStatus.Preparing or FactoryTaskStatus.Planning or
-        FactoryTaskStatus.Implementing or FactoryTaskStatus.Validating or FactoryTaskStatus.Reviewing or FactoryTaskStatus.Stopping or
-            FactoryTaskStatus.ReadyForPublish or FactoryTaskStatus.Published or FactoryTaskStatus.WaitingForQuota => TrackerSection.InProgress,
-        FactoryTaskStatus.Completed => TrackerSection.Completed,
-        FactoryTaskStatus.NeedsHuman or FactoryTaskStatus.Rejected or FactoryTaskStatus.Failed or FactoryTaskStatus.Cancelled => TrackerSection.Blocked,
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
-    };
-}
-
 /// <summary>One piece of operator feedback recorded against a task (SF-613) — a correction or a manual-test
 /// failure attached when the operator continues a resting task rather than accepting it as-is. Every feedback
 /// row stays permanently, so prior instructions remain auditable even once superseded by a later one.</summary>
 public sealed record TaskFeedback(Guid Id, Guid TaskId, string Body, DateTimeOffset CreatedAt, string CreatedBy);
+
+/// <summary>Durable marker and instructions for an operator-requested merge-conflict repair. The marker is
+/// stored with task feedback so the next orchestrator run can select the specialized agent purpose without
+/// adding workflow state to the coding agent.</summary>
+public static class MergeConflictRepair
+{
+    public const string CreatedBy = "merge-conflict";
+    public const string Feedback = "GitHub confirmed that this pull request conflicts with the base branch. Fetch the latest base branch, merge it into the existing task branch, preserve both sides' intent, resolve every conflict, and commit the fix before validation.";
+}
 
 /// <param name="ResumableSessionId">The provider session id this task's most recent invocation reported, paired
 /// with <paramref name="ResumableSessionAgent"/> (SF-701) — <see langword="null"/> if that invocation's agent
@@ -160,16 +126,20 @@ public sealed record ProcessResult(
 }
 
 /// <summary>Whether an <see cref="IAgentRunner"/> invocation is implementing the task (the default, and the only
-/// purpose that existed before SF-702) or performing a bounded, opt-in second-agent review pass over already
-/// committed work. <see cref="CliAgentRunner"/> uses this to choose the prompt it sends and which result file
-/// (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads back.</summary>
-public enum AgentRunPurpose { Implement, Review }
+/// purpose that existed before SF-702), performing a bounded, opt-in second-agent review pass over already
+/// committed work, fixing structured review findings, or repairing a merge conflict on an existing pull-request
+/// branch. <see cref="CliAgentRunner"/> uses this to choose the prompt it sends and which result file
+/// (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads.</summary>
+public enum AgentRunPurpose { Implement, Review, Fix, MergeConflict }
 
 /// <param name="ResumeSessionId">The provider session id to resume (SF-701), if the selected agent matches the
 /// one <see cref="FactoryTask.ResumableSessionAgent"/> recorded and that agent's <see cref="AgentProfile.SupportsSessionResume"/>
 /// is enabled — <see langword="null"/> for a fresh session, exactly as before this task.</param>
-/// <param name="Purpose">Implement (default) or Review (SF-702) — see <see cref="AgentRunPurpose"/>.</param>
-public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null, string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement, string? TaskClass = null);
+/// <param name="Purpose">Implement (default), Review, Fix, or MergeConflict — see <see cref="AgentRunPurpose"/>.</param>
+/// <param name="ReviewFindings">Structured findings supplied only to a Fix invocation.</param>
+public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null,
+    string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement, string? TaskClass = null,
+    IReadOnlyList<ReviewFinding>? ReviewFindings = null);
 
 /// <param name="Window">The classified reset window a detected quota signal falls into; <see cref="QuotaWindow.None"/>
 /// when <paramref name="QuotaDetected"/> is <see langword="false"/>. See <see cref="QuotaClassifier"/>.</param>
@@ -185,6 +155,25 @@ public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, 
     DateTimeOffset? QuotaResetAt = null, QuotaWindow Window = QuotaWindow.None, QuotaResetKind ResetKind = QuotaResetKind.None,
     string? QuotaDetail = null, string? ProviderSessionId = null, AgentReviewResult? ReviewResult = null,
     string? Model = null, string? ReasoningEffort = null);
+
+public sealed record AgentConversationTurn(string Role, string Content);
+
+public sealed record AgentConversationRequest(
+    IReadOnlyList<AgentConversationTurn> Turns,
+    string WorkingDirectory,
+    string? TaskClass = null,
+    TimeSpan? Timeout = null);
+
+public sealed record AgentConversationResult(
+    ProcessResult Process,
+    string Response,
+    bool QuotaDetected,
+    DateTimeOffset? QuotaResetAt = null,
+    QuotaWindow Window = QuotaWindow.None,
+    QuotaResetKind ResetKind = QuotaResetKind.None,
+    string? QuotaDetail = null,
+    string? Model = null,
+    string? ReasoningEffort = null);
 
 public sealed record AgentAvailability(string Agent, bool Available, string? Version, string? Error);
 
@@ -289,18 +278,34 @@ public static class StepLogPaths
 /// <c>.factory/config.json</c>'s <c>smokeTest</c> key. <see langword="null"/> (the default — absent from the
 /// file) means <c>SmokeTestStep</c> is skipped entirely; a repository must explicitly configure this to start a
 /// local server and launch a browser at all.</param>
-/// <param name="SerializeSameBatchTrackerTasks">Opt-in (SF-618): when <see langword="true"/>, every tracker-file
-/// task <c>Factory.GitHubSync.Worker</c> creates from the same <c>SyncTrackerFileAsync</c> pass is chained to the
-/// task created immediately before it in that same pass, in TASKS.md file order — without requiring each item to
-/// hand-author a <c>Dependencies:</c> line. Defaults to <see langword="false"/>: items queued in the same poll
-/// cycle are independently claimable, exactly as before this option existed.</param>
+/// <param name="MaxReviewFixAttempts">Maximum implementation-agent fix invocations prompted by actionable
+/// review findings before the task stops for a human. Zero preserves the original immediate-human behavior.</param>
 public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<ValidationCommand> BuildCommands, IReadOnlyList<ValidationCommand> TestCommands,
     int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual", int MaxQuotaInterruptions = 20,
-    SmokeTestConfiguration? SmokeTest = null, bool SerializeSameBatchTrackerTasks = false)
+    SmokeTestConfiguration? SmokeTest = null, int MaxReviewFixAttempts = 1, DeploymentConfiguration? Deployments = null)
 {
     public static RepositoryConfiguration Default { get; } =
-        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null, false);
+        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null, 1, null);
 }
+
+/// <summary>Human-triggered deployment provisioning declared by a repository. Values in
+/// <see cref="VercelDeploymentConfiguration.EnvironmentVariables"/> and
+/// <see cref="SupabaseDeploymentConfiguration.DbPasswordEnvironmentVariable"/> are host environment-variable
+/// names, never secret values committed to the repository.</summary>
+public sealed record DeploymentConfiguration(VercelDeploymentConfiguration? Vercel = null, SupabaseDeploymentConfiguration? Supabase = null);
+
+public sealed record VercelDeploymentConfiguration(string ProjectName, IReadOnlyList<string> EnvironmentVariables, string Environment = "production", string? ProjectUrl = null);
+
+public sealed record SupabaseDeploymentConfiguration(string ProjectName, string? ProjectRef, string? OrganizationId, string? Region,
+    string DbPasswordEnvironmentVariable = "SUPABASE_DB_PASSWORD", string? ProjectUrl = null);
+
+public sealed record DeploymentRecord(long RepositoryId, string Provider, string ExternalProjectId, string ProjectUrl,
+    IReadOnlyDictionary<string, string> LinkageMetadata, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+
+public sealed record DeploymentProvisioningRequest(GitHubRepository Repository, string WorkingDirectory, DeploymentConfiguration Configuration);
+
+public sealed record DeploymentProvisioningResult(string Provider, string ExternalProjectId, string ProjectUrl,
+    IReadOnlyDictionary<string, string> LinkageMetadata);
 
 /// <summary>Opt-in configuration for SF-703's local browser smoke tests. <paramref name="InstallCommand"/>, when
 /// set, runs once before <paramref name="StartCommand"/> — a task's Git worktree only ever contains tracked files
@@ -610,7 +615,10 @@ public sealed record AgentProfile(
     string? Model = null,
     string? ReasoningEffort = null,
     bool AllowAutomaticFallback = true,
-    IReadOnlyList<AgentClassProfile>? Classes = null)
+    IReadOnlyList<AgentClassProfile>? Classes = null,
+    IReadOnlyList<string>? ConversationArguments = null,
+    string? ConversationPromptDelivery = null,
+    int ConversationTimeoutMinutes = 5)
 {
     /// <summary>CLI arguments for the cheap authentication pre-flight. Kept as a property so existing positional
     /// profile construction remains source-compatible while configuration can opt every registered profile into its

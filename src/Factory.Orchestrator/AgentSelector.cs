@@ -57,6 +57,14 @@ public sealed class AgentSelector
         return null;
     }
 
+    public async Task<IAgentRunner?> SelectExactAsync(string agentName, CancellationToken cancellationToken, string taskClass = "quick")
+    {
+        var runner = runners.FirstOrDefault(r => string.Equals(r.Name, agentName, StringComparison.OrdinalIgnoreCase));
+        if (runner is null || !runner.SupportsTaskClass(taskClass)) return null;
+        if (await tasks.IsAgentPausedAsync(runner.Provider, cancellationToken)) return null;
+        return await tasks.IsAgentAtQuotaAsync(runner.Provider, cancellationToken) ? null : runner;
+    }
+
     private IEnumerable<IAgentRunner> Order(string? preferredAgent)
     {
         if (preferredAgent is null) return runners.Where(r => r.AllowAutomaticFallback);

@@ -32,6 +32,7 @@ public static class ServiceCollectionExtensions
         services.Configure<GitHubSyncOptions>(configuration.GetSection("GitHub"));
         services.Configure<WorktreeCleanupOptions>(configuration.GetSection("WorktreeCleanup"));
         services.Configure<DigestOptions>(configuration.GetSection("Digest"));
+        services.Configure<AssistantOptions>(configuration.GetSection("Assistant"));
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IAgentResultReader, AgentResultReader>();
@@ -53,6 +54,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
         services.AddSingleton<IWorktreeInspector, GitWorktreeInspector>();
         services.AddSingleton<IRepositoryConfigurationReader, RepositoryConfigurationReader>();
+        services.AddSingleton<IEnvironmentVariableReader, EnvironmentVariableReader>();
+        services.AddSingleton<IDeploymentProvider, VercelDeploymentProvider>();
+        services.AddSingleton<IDeploymentProvider, SupabaseDeploymentProvider>();
+        services.AddSingleton<IDeploymentStore, PostgresDeploymentStore>();
+        services.AddSingleton<IDeploymentProvisioner, DeploymentProvisioner>();
         services.AddSingleton<ITaskContextWriter, TaskContextWriter>();
         services.AddSingleton<IGitHubClient, GhCliClient>();
         services.AddSingleton<IGitHubPublisher, GhCliPublisher>();
@@ -61,7 +67,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGitHubStore, PostgresGitHubStore>();
         services.AddSingleton<ITaskStore, PostgresTaskStore>();
         services.AddSingleton<IDigestStore, PostgresDigestStore>();
-        services.AddSingleton<ITrackerFileSync, TrackerFileSync>();
         services.AddSingleton<IBrowserSmokeTestRunner, PlaywrightSmokeTestRunner>();
         services.AddSingleton<DatabaseMigrator>();
         return services;

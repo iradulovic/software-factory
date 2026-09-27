@@ -10,7 +10,7 @@ const replySchema = z.object({
   observed: z.string(), explanation: z.string().nullable(), suggestion: z.string().nullable(),
   evidence: z.array(z.object({ label: z.string(), detail: z.string(), href: z.string() })),
   action: z.object({ label: z.string(), path: z.string(), outcomePath: z.string(), expectedPaused: z.boolean().nullable() }).nullable(),
-  asOf: z.string()
+  asOf: z.string(), route: z.enum(["deterministic", "assistant"]).default("deterministic"), agent: z.string().nullable().default(null)
 });
 type Reply = z.infer<typeof replySchema>;
 type Exchange = { question: string; reply: Reply; outcome?: string; error?: string };
@@ -18,11 +18,22 @@ function safeHref(href: string) { return href.startsWith("/") && !href.startsWit
 const controlHistorySchema = z.array(z.object({ id: z.number(), scope: z.string(), paused: z.boolean(),
   reason: z.string().nullable(), actor: z.string(), occurredAt: z.string() }));
 
-async function ask(question: string): Promise<Reply> {
+function replyContent(reply: Reply) {
+  return [reply.observed, reply.explanation, reply.suggestion].filter(Boolean).join("\n\n");
+}
+
+async function ask(question: string, history: Exchange[] = []): Promise<Reply> {
+  const conversation = history.slice(-10).flatMap(exchange => [
+    { role: "user", content: exchange.question },
+    { role: "assistant", content: replyContent(exchange.reply) }
+  ]);
   const response = await fetch(`${apiBase}/api/operator/ask`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: question })
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: question, history: conversation })
   });
-  if (!response.ok) throw new Error(`Factory API returned ${response.status}`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error ?? `Factory API returned ${response.status}`);
+  }
   return replySchema.parse(await response.json());
 }
 
@@ -64,7 +75,7 @@ export default function OperatorPage() {
     if (!question.trim() || busy) return;
     setBusy(true); setError(null); setDraft("");
     try {
-      const reply = await ask(question.trim());
+      const reply = await ask(question.trim(), history);
       setHistory(previous => [...previous, { question: question.trim(), reply }]);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Question failed."); }
     finally { setBusy(false); }
@@ -90,15 +101,15 @@ export default function OperatorPage() {
     <header><div className="flex items-start justify-between gap-4"><div><p className="eyebrow">Operator</p><h1 className="mt-1 text-2xl font-semibold">Ask the factory</h1></div>
       {history.length > 0 && <button type="button" disabled={busy} onClick={clearConversation} className="rounded border border-[var(--border)] px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-50">Clear</button>}
     </div>
-      <p className="mt-2 text-sm text-muted-foreground">Answers come from recorded factory state. Explanations and suggested actions are shown separately. No coding agent is required.</p></header>
+      <p className="mt-2 text-sm text-muted-foreground">Known operational questions use recorded factory state without an agent call. Everything else continues as a read-only CLI conversation.</p></header>
     <div className="flex flex-wrap gap-2">{examples.map(example => <button type="button" key={example} disabled={busy} onClick={() => void send(example)} className="rounded border border-[var(--border)] px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-50">{example}</button>)}</div>
     <div className="panel min-h-0 flex-1 space-y-4 overflow-y-auto p-4" aria-live="polite">
       {history.length === 0 && <div className="py-12 text-center text-sm text-muted-foreground">Ask about current work, blockers, today’s changes, or a task’s retry history. Name a full task ID for task controls.</div>}
       {history.map((entry, index) => <article key={index} className="space-y-3 border-b border-[var(--border)] pb-4 last:border-0">
         <p className="text-sm font-semibold">{entry.question}</p>
         <div className="rounded border border-[var(--border)] bg-accent/30 p-3 text-sm">
-          <p className="text-[11px] font-semibold uppercase text-muted-foreground">Observed · {new Date(entry.reply.asOf).toLocaleString()}</p>
-          <p className="mt-1">{entry.reply.observed}</p>
+          <p className="text-[11px] font-semibold uppercase text-muted-foreground">{entry.reply.route === "assistant" ? `${entry.reply.agent ?? "Assistant"} · CLI` : "Observed"} · {new Date(entry.reply.asOf).toLocaleString()}</p>
+          <p className="mt-1 whitespace-pre-wrap">{entry.reply.observed}</p>
           {entry.reply.explanation && <><p className="mt-3 text-[11px] font-semibold uppercase text-muted-foreground">Explanation</p><p>{entry.reply.explanation}</p></>}
           {entry.reply.suggestion && <><p className="mt-3 text-[11px] font-semibold uppercase text-muted-foreground">Suggestion</p><p>{entry.reply.suggestion}</p></>}
           {entry.reply.evidence.length > 0 && <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs">{entry.reply.evidence.map((item, at) => safeHref(item.href)
@@ -114,7 +125,7 @@ export default function OperatorPage() {
       {controlHistory.data?.filter(item => item.scope === "__global__").slice(0, 3).map(item => <p className="mt-1 text-muted-foreground" key={item.id}>{item.paused ? "Paused" : "Resumed"} by {item.actor} · {new Date(item.occurredAt).toLocaleString()}{item.reason ? ` · ${item.reason}` : ""}</p>)}
       {controlHistory.data?.length === 0 && <p className="mt-1 text-muted-foreground">No dispatch control changes recorded.</p>}
     </section>
-    <form onSubmit={onSubmit} className="flex gap-2"><input aria-label="Ask the factory" value={draft} onChange={event => setDraft(event.target.value)} maxLength={1000} placeholder="Ask a question about factory state…" className="min-w-0 flex-1 rounded border border-[var(--border)] bg-background px-3 py-2 text-sm" />
+    <form onSubmit={onSubmit} className="flex gap-2"><input aria-label="Ask the factory" value={draft} onChange={event => setDraft(event.target.value)} maxLength={1000} placeholder="Ask about factory state or talk to the assistant…" className="min-w-0 flex-1 rounded border border-[var(--border)] bg-background px-3 py-2 text-sm" />
       <button type="submit" disabled={busy || !draft.trim()} className="rounded bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50">Ask</button></form>
     {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
   </div>;
