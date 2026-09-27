@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { Activity, Bell, Boxes, CircleGauge, Database, ListTodo, LoaderCircle, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
+import { Activity, Bell, Boxes, CircleAlert, CircleGauge, Database, ListTodo, LoaderCircle, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, globalPauseScope, githubStatusSchema, pauseStateSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { AssistantDrawer } from "@/components/assistant-drawer";
@@ -81,7 +81,7 @@ export function Shell({ children, defaultSidebarOpen }: { children: React.ReactN
       </Sidebar>
       <SidebarInset className="min-h-0 min-w-0 w-0 max-w-full overflow-hidden">
         <header className="flex h-16 min-w-0 shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] bg-[color:var(--background)/.85] px-3 backdrop-blur md:gap-3 md:px-5">
-          <div className="flex min-w-0 items-center gap-2 md:gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2 md:gap-3">
             <SidebarTrigger className="shrink-0" />
             <div className="min-w-0">
               <p className="text-xs uppercase tracking-[.16em] text-muted-foreground">Operations</p>
@@ -89,14 +89,15 @@ export function Shell({ children, defaultSidebarOpen }: { children: React.ReactN
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
-            <div role="group" aria-label="Dispatch and nudge controls" className="flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-muted/20 p-1">
+            <div role="group" aria-label="Dispatch and nudge controls" className="flex items-center gap-0.5">
               <DispatchPausePill />
               <NudgePill />
             </div>
-            <ThemeToggle />
-            <div role="group" aria-label="Service health">
+            <div role="group" aria-label="Service health" className="flex items-center">
               <ServiceHealthPopover />
             </div>
+            <span role="separator" aria-orientation="vertical" className="mx-0.5 h-5 w-px bg-[var(--border)] sm:mx-1" />
+            <ThemeToggle />
           </div>
         </header>
         <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">{children}</div>
@@ -114,7 +115,7 @@ function ThemeToggle() {
     setMounted(true);
   }, []);
 
-  if (!mounted) return <Button variant="ghost" size="icon" className="size-8" disabled aria-label="Toggle theme" />;
+  if (!mounted) return <Button variant="ghost" size="icon" className="size-8" disabled aria-label="Theme controls loading" />;
 
   const isDark = resolvedTheme === "dark";
   return (
@@ -122,7 +123,7 @@ function ThemeToggle() {
       variant="ghost"
       size="icon"
       className="size-8"
-      aria-label="Toggle theme"
+      aria-label={`Switch to ${isDark ? "light" : "dark"} theme`}
       onClick={() => setTheme(isDark ? "light" : "dark")}
     >
       {isDark ? <Sun /> : <Moon />}
@@ -167,34 +168,58 @@ export function DispatchPausePill() {
       client.invalidateQueries({ queryKey: ["agents-status"] })
     ])
   });
-  const status = error ? "Unavailable" : isLoading ? "Checking…" : globalPaused ? "Paused" : "Running";
-  const cueTone = error ? "bg-red-500" : globalPaused ? "bg-amber-500" : "bg-emerald-500";
-  const buttonTone = error ? "text-red-500" : globalPaused ? "text-amber-500 hover:text-amber-400" : "text-emerald-500 hover:text-emerald-400";
-  const accessibleAction = `${action}. Dispatch is ${status.toLowerCase()}.`;
+  const status = error ? "Unavailable" : data === undefined || isLoading ? "Checking" : globalPaused ? "Paused" : "Running";
+  const cueTone = status === "Unavailable" ? "bg-[var(--badge-red-fg)]" : status === "Paused" ? "bg-[var(--badge-amber-fg)]" : status === "Running" ? "bg-[var(--badge-green-fg)]" : "bg-muted-foreground";
+  const buttonTone = status === "Unavailable" ? "text-[var(--badge-red-fg)]" : status === "Paused" ? "text-[var(--badge-amber-fg)] hover:opacity-80" : status === "Running" ? "text-[var(--badge-green-fg)] hover:opacity-80" : "text-muted-foreground";
+  const stateDescription = status === "Running"
+    ? "Dispatch running — pause new tasks."
+    : status === "Paused"
+      ? "Dispatch paused — resume new tasks."
+      : status === "Unavailable"
+        ? "Dispatch unavailable — status must be restored before changing dispatch."
+        : "Dispatch status is checking.";
+  const accessibleAction = mutation.isPending
+    ? `${globalPaused ? "Resuming" : "Pausing"} new tasks. Dispatch is ${status.toLowerCase()}.`
+    : stateDescription;
+  const failureMessage = mutation.error instanceof Error
+    ? `${globalPaused ? "Resume" : "Pause"} failed: ${mutation.error.message}. Activate to try again.`
+    : error
+      ? `Dispatch status is unavailable: ${error instanceof Error ? error.message : "the control endpoint could not be reached"}. Controls are disabled until status returns.`
+      : null;
   return <TooltipProvider delayDuration={250}>
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className={`relative size-8 rounded-md ${buttonTone}`}
-          aria-label={accessibleAction}
-          aria-pressed={globalPaused}
-          disabled={!ready || mutation.isPending}
-          onClick={() => mutation.mutate()}
-        >
-          {mutation.isPending ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : globalPaused ? <Play className="size-4" aria-hidden="true" /> : <Pause className="size-4" aria-hidden="true" />}
-          <span className={`absolute right-1 top-1 size-1.5 rounded-full ring-2 ring-[var(--background)] ${cueTone}`} aria-hidden="true" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-64">
-        <p className="font-medium">{mutation.isPending ? `${globalPaused ? "Resuming" : "Pausing"} new dispatch…` : action}</p>
-        <p className="mt-0.5 text-[11px] opacity-80">Controls whether new factory tasks are dispatched.</p>
-        {mutation.error instanceof Error ? <p className="mt-1 text-[11px]">{mutation.error.message}</p> : null}
-      </TooltipContent>
-    </Tooltip>
-    {mutation.error instanceof Error ? <span className="sr-only" role="status">{mutation.error.message}</span> : null}
+    <div className="relative">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={`relative size-8 rounded-md ${buttonTone}`}
+            aria-label={accessibleAction}
+            aria-pressed={ready ? globalPaused : undefined}
+            aria-busy={mutation.isPending}
+            disabled={!ready || mutation.isPending}
+            onClick={() => mutation.mutate()}
+          >
+            {mutation.isPending || status === "Checking"
+              ? <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+              : status === "Unavailable"
+                ? <CircleAlert className="size-4" aria-hidden="true" />
+                : globalPaused
+                  ? <Play className="size-4" aria-hidden="true" />
+                  : <Pause className="size-4" aria-hidden="true" />}
+            <span className={`absolute right-1 top-1 size-1.5 rounded-full ring-2 ring-[var(--background)] ${cueTone}`} aria-hidden="true" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-64 motion-reduce:animate-none">
+          <p className="font-medium">{accessibleAction}</p>
+          <p className="mt-0.5 text-[11px] opacity-80">Controls whether new factory tasks are dispatched.</p>
+          {mutation.error instanceof Error ? <p className="mt-1 text-[11px]">{action} failed: {mutation.error.message}</p> : null}
+          {error instanceof Error ? <p className="mt-1 text-[11px]">Status unavailable: {error.message}</p> : null}
+        </TooltipContent>
+      </Tooltip>
+      {failureMessage ? <div role="alert" className="absolute right-0 top-full z-50 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-md border border-[var(--badge-red-border)] bg-popover p-3 text-xs leading-5 text-[var(--badge-red-fg)] shadow-md">{failureMessage}</div> : null}
+    </div>
   </TooltipProvider>;
 }
 
@@ -234,8 +259,9 @@ export function NudgePill() {
     <PopoverTrigger asChild>
       <button
         type="button"
-        className="relative flex size-8 items-center justify-center rounded-md bg-transparent text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+        className="relative flex size-8 items-center justify-center rounded-md bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         aria-label={hasUnread ? `View nudges, ${unreadCount} unread` : "View nudges"}
+        aria-expanded={open}
         onPointerEnter={event => { if (event.pointerType === "mouse") { openedByHover.current = true; openPanel(); } }}
         onPointerLeave={event => { if (event.pointerType === "mouse") { openedByHover.current = false; scheduleClose(); } }}
         onClick={event => { if (openedByHover.current && open) event.preventDefault(); }}
@@ -247,12 +273,12 @@ export function NudgePill() {
           }
         }}
       >
-        <Bell className={`size-4 ${hasUnread ? "text-amber-400" : ""}`} aria-hidden="true" />
+        <Bell className={`size-4 ${hasUnread ? "text-[var(--badge-amber-fg)]" : ""}`} aria-hidden="true" />
         {hasUnread ? <>
           <span className="absolute -left-0.5 -top-0.5 flex size-2.5" aria-hidden="true">
-            <span className="nudge-attention-dot size-full rounded-full bg-amber-400 ring-2 ring-[var(--background)]" />
+            <span className="size-full rounded-full bg-[var(--badge-amber-fg)] ring-2 ring-[var(--background)]" />
           </span>
-          <span className="absolute -right-2 -top-2 min-w-4 rounded-full bg-amber-400 px-1 text-center text-[10px] font-bold leading-4 text-slate-950" aria-hidden="true">{unreadCount > 99 ? "99+" : unreadCount}</span>
+          <span className="absolute -right-2 -top-2 min-w-4 rounded-full bg-[var(--badge-amber-fg)] px-1 text-center text-[10px] font-bold leading-4 text-[var(--background)]" aria-hidden="true">{unreadCount > 99 ? "99+" : unreadCount}</span>
         </> : null}
       </button>
     </PopoverTrigger>
