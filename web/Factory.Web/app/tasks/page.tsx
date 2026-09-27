@@ -13,10 +13,15 @@ const responseSchema = z.object({items:z.array(taskSchema),total:z.number(),page
 const repositoriesSchema = z.array(z.object({id:z.number(),owner:z.string(),name:z.string()}));
 const agentsSchema = z.array(z.object({agent:z.string()}));
 const column = createColumnHelper<FactoryTask>();
+function AgentCell({task}:{task:FactoryTask}) {
+  const codingClass=task.taskClass??"Legacy / unrecorded";
+  const modelEffort=`${task.agentModel??"Not recorded"}${task.agentReasoningEffort?` · ${task.agentReasoningEffort}`:""}`;
+  return <div className="w-48 min-w-0"><div>{task.agent}</div><dl className="mt-0.5 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-1 text-xs text-muted-foreground"><dt>Coding class:</dt><dd className="min-w-0 break-words">{codingClass}</dd><dt>Model / effort:</dt><dd className="min-w-0 break-words">{modelEffort}</dd></dl></div>;
+}
 const columns = [
   column.accessor("title",{header:"Task",cell:i=><Link className="font-medium hover:text-emerald-400" href={`/tasks/${i.row.original.id}`}>{i.getValue()}</Link>}),
   column.accessor("repository",{header:"Repository"}), column.accessor("issueNumber",{header:"Issue",cell:i=>i.getValue()?`#${i.getValue()}`:"—"}),
-  column.accessor("status",{header:"Status",cell:i=><Badge value={i.getValue()}/>}), column.accessor("agent",{header:"Agent"}),
+  column.accessor("status",{header:"Status",cell:i=><Badge value={i.getValue()}/>}), column.accessor("agent",{header:"Agent",cell:i=><AgentCell task={i.row.original}/>}),
   column.accessor("requireHumanMerge",{header:"Merge policy",cell:i=><MergePolicyBadge requireHumanMerge={i.getValue()}/>}),
   column.accessor("priority",{header:"Priority",cell:i=>i.getValue()?<span className="tabular-nums">{i.getValue()}</span>:<span className="text-muted-foreground/60">—</span>}),
   column.accessor("createdAt",{header:"Created",cell:i=>new Date(i.getValue()).toLocaleString()}),
