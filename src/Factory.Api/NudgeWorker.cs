@@ -64,7 +64,7 @@ public sealed class NudgeWorker(NpgsqlDataSource db, NudgeStore store, ITaskStor
             }
             if (!anyAvailable)
                 sources.Add(new AttentionSourceRow { Id = "global", Kind = "AllAgentsUnavailable",
-                    Title = "No agent can claim work", Reason = "Every configured agent is quota blocked, paused, or unavailable.",
+                    Title = "No agent can claim work", Reason = "Every configured agent is quota blocked, paused, unavailable, or unauthenticated.",
                     FirstObservedAt = now, LastObservedAt = now });
         }
         var items = AttentionProjection.ForTasks(taskRows, now, githubOptions.Value.MaxCiRepairAttempts)

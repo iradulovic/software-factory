@@ -240,7 +240,7 @@ app.MapGet("/api/attention", async (NpgsqlDataSource db, IOptions<FactoryOptions
     var agents = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, usageSnapshots, usageOptions.Value, ct);
     if (agents.Count > 0 && agents.All(agent => agent.State is "QuotaBlocked" or "Unavailable" or "Unknown" or "Paused"))
         sources.Add(new AttentionSourceRow { Id = "global", Kind = "AllAgentsUnavailable", Title = "No agent can claim work",
-            Reason = "Every configured agent is quota blocked, paused, or unavailable.", FirstObservedAt = now, LastObservedAt = now });
+            Reason = "Every configured agent is quota blocked, paused, unavailable, or unauthenticated.", FirstObservedAt = now, LastObservedAt = now });
     var staleAfter = Math.Max(options.Value.PollingIntervalSeconds, options.Value.LeaseHeartbeatSeconds) * 3;
     var latestWorker = await c.ExecuteScalarAsync<DateTimeOffset?>(new CommandDefinition(
         "SELECT max(last_seen_at) FROM factory.worker", cancellationToken: ct));

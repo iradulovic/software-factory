@@ -8,7 +8,8 @@ export function Badge({ value }: { value: string }) {
 }
 const agentStateTones: Record<string, string> = { Unavailable: "red", Unknown: "amber", QuotaBlocked: "amber", Installed: "amber", Busy: "blue", Verified: "green" };
 export function agentStateDescription(state: string) {
-  if (state === "Installed") return "The version check passed, but this exact profile has no successful invocation yet. Runs under other profiles or former names do not count.";
+  if (state === "Unavailable") return "The CLI is missing, timed out, or not authenticated. Check the error below and re-authenticate it before dispatching.";
+  if (state === "Installed") return "The installed and authentication checks passed, but this exact profile has no successful invocation yet. Runs under other profiles or former names do not count.";
   if (state === "Verified") return "This exact profile has at least one successful CLI invocation. Task build and test validation are separate.";
   return state.replace(/([a-z])([A-Z])/g, "$1 $2");
 }

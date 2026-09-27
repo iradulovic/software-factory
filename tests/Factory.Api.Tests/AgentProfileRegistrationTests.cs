@@ -35,8 +35,12 @@ public sealed class AgentProfileRegistrationTests : IClassFixture<AgentProfileRe
         Assert.NotNull(configuredProfiles[1].ConversationArguments);
         Assert.Equal(("MoonshotAI", "moonshotai/kimi-k2.6", null), (runners[2].Provider, runners[2].Model, runners[2].ReasoningEffort));
 
+        Assert.Equal(["login", "status"], configuredProfiles.Single(p => p.Name == "Codex").AuthenticationArguments);
+        Assert.Equal(["auth", "status"], configuredProfiles.Single(p => p.Name == "Claude").AuthenticationArguments);
+
         var piProfile = configuredProfiles.Single(p => p.Name == "Pi");
         Assert.Equal(["--print", "--model", "moonshotai/kimi-k2.6"], piProfile.Arguments);
+        Assert.Equal(["auth", "check", "--model", "moonshotai/kimi-k2.6", "--no-refresh"], piProfile.AuthenticationArguments);
         Assert.Equal("stdin", piProfile.PromptDelivery);
         Assert.Empty(piProfile.QuotaSignatures ?? []);
         Assert.Empty(piProfile.WeeklyQuotaSignatures ?? []);

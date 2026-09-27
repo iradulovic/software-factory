@@ -615,7 +615,7 @@ public sealed class TaskExecutorTests
         await harness.ExecuteAsync();
 
         Assert.Equal(FactoryTaskStatus.WaitingForQuota, harness.Store.Status);
-        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.WaitingForQuota, "No configured agent supporting coding class 'quick' is available (paused or at quota).");
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.WaitingForQuota, "No configured agent supporting coding class 'quick' is available (paused, at quota, missing, or unauthenticated).");
         Assert.Empty(harness.Store.AgentRuns);
         Assert.Equal(0, harness.AgentInvocations);
     }
