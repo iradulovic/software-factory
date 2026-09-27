@@ -6,10 +6,16 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const shell = read("components/shell.tsx");
+const layout = read("app/layout.tsx");
 const overview = read("app/page.tsx");
 const attention = read("components/attention-queue.tsx");
 const styles = read("app/globals.css");
 
+assert.match(layout, /import \{ cookies \} from "next\/headers"/, "the server layout must read the sidebar preference before rendering");
+assert.match(layout, /const sidebarState = cookieStore\.get\("sidebar_state"\)\?\.value/, "the saved desktop sidebar cookie must be read during initial rendering");
+assert.match(layout, /const defaultSidebarOpen = sidebarState !== "false"/, "only a saved false value should collapse the desktop sidebar");
+assert.match(layout, /<Shell defaultSidebarOpen=\{defaultSidebarOpen\}>/, "the server-rendered sidebar preference must reach the shell");
+assert.match(shell, /<SidebarProvider defaultOpen=\{defaultSidebarOpen\}/, "the saved preference must initialize the sidebar provider");
 assert.match(styles, /html,body\s*\{\s*height:100%;\s*overflow:hidden;\s*}/, "the document must not own app scrolling");
 assert.match(shell, /overflow-y-auto overflow-x-hidden/, "only the central pane may scroll vertically");
 assert.match(overview, /return <div className="min-w-0 space-y-5">/, "dashboard content must be allowed to shrink");

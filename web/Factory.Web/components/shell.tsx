@@ -34,11 +34,11 @@ const navigation = [
   ["Database", "/database", Database]
 ] as const;
 
-export function Shell({ children }: { children: React.ReactNode }) {
+export function Shell({ children, defaultSidebarOpen }: { children: React.ReactNode; defaultSidebarOpen: boolean }) {
   const { data } = useQuery({ queryKey: ["workers"], queryFn: () => getJson("/api/workers", z.array(workerSchema)) });
   const pathname = usePathname();
   return (
-    <SidebarProvider className="h-svh min-h-0 min-w-0 max-w-full overflow-hidden">
+    <SidebarProvider defaultOpen={defaultSidebarOpen} className="h-svh min-h-0 min-w-0 max-w-full overflow-hidden">
       <Sidebar collapsible="icon" className="border-[var(--border)]">
         <SidebarHeader className="h-16 shrink-0 border-b border-[var(--border)] px-2 py-3">
           <div className="flex items-center gap-3 px-1">
