@@ -5,6 +5,7 @@ import "./globals.css";
 import { Providers } from "@/components/providers";
 import { Shell } from "@/components/shell";
 import { ThemeProvider } from "@/components/theme-provider";
+import { AssistantSessionProvider } from "@/components/assistant-drawer";
 
 const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
 
@@ -19,7 +20,9 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
       <body>
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
           <Providers>
-            <Shell defaultSidebarOpen={defaultSidebarOpen}>{children}</Shell>
+            <AssistantSessionProvider>
+              <Shell defaultSidebarOpen={defaultSidebarOpen}>{children}</Shell>
+            </AssistantSessionProvider>
           </Providers>
         </ThemeProvider>
       </body>
