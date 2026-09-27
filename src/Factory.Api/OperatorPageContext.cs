@@ -125,6 +125,31 @@ public sealed class OperatorPageContextResolver(NpgsqlDataSource dataSource, ICl
     {
         if (Guid.TryParse(id, out var publicationId))
         {
+            var releasePlan = await db.QuerySingleOrDefaultAsync<ContextRow>(new CommandDefinition("""
+                SELECT p.id::text AS "Id",p.status AS "Status",p.title AS "Title",p.summary AS "Detail",
+                  p.created_at AS "LastChangedAt"
+                FROM factory.release_plan p WHERE p.id=@publicationId
+                """, new { publicationId }, cancellationToken: ct));
+            if (releasePlan is not null)
+            {
+                var releaseItems = (await db.QueryAsync<ReleaseContextItemRow>(new CommandDefinition("""
+                    SELECT item.action_status AS "ActionStatus",item.action_error AS "ActionError",task.status AS "TaskStatus",
+                      ci.overall_status AS "CiStatus",issue.state AS "IssueState"
+                    FROM factory.release_plan_item item
+                    LEFT JOIN github.issue issue ON issue.repository_id=item.repository_id AND issue.issue_number=item.issue_number
+                    LEFT JOIN LATERAL (SELECT status FROM factory.task WHERE github_issue_id=issue.id ORDER BY created_at DESC LIMIT 1) task ON true
+                    LEFT JOIN factory.task_ci_status ci ON ci.task_id=(SELECT id FROM factory.task WHERE github_issue_id=issue.id ORDER BY created_at DESC LIMIT 1)
+                    WHERE item.release_plan_id=@publicationId
+                    """, new { publicationId }, cancellationToken: ct))).ToArray();
+                var states = releaseItems.Select(item => new ReleaseItemState(item.ActionStatus == "Applied", item.ActionError,
+                    item.TaskStatus, item.CiStatus, item.IssueState)).ToArray();
+                var releaseStatus = ReleasePlanProjection.ResolvePlanStatus(releasePlan.Status!, states);
+                var completed = states.Count(item => item.TaskStatus == "Completed");
+                var summary = $"Release plan: {releasePlan.Title}\nStatus: {releaseStatus}\nProgress: {completed}/{states.Length} tasks complete\n{Limit(releasePlan.Detail ?? "", 600)}";
+                return Current("release", id, $"{releasePlan.Title} · {releaseStatus}", summary,
+                    href, null, releasePlan.LastChangedAt, viewedAt);
+            }
+
             var publication = await db.QuerySingleOrDefaultAsync<ContextRow>(new CommandDefinition("""
                 SELECT p.id::text AS "Id",p.status AS "Status",t.id::text AS "TaskId",t.title AS "Title",
                   gr.owner || '/' || gr.name AS "Repository",p.pull_request_number AS "PullRequestNumber",
@@ -233,6 +258,15 @@ public sealed class OperatorPageContextResolver(NpgsqlDataSource dataSource, ICl
     private static string Limit(string value, int length) => value.Length <= length ? value : value[..length] + "…";
 
     private sealed record ParsedRoute(string? Kind, string? RouteId, bool RequiresEntity, bool Invalid, string? Href);
+
+    private sealed class ReleaseContextItemRow
+    {
+        public string ActionStatus { get; init; } = "";
+        public string? ActionError { get; init; }
+        public string? TaskStatus { get; init; }
+        public string? CiStatus { get; init; }
+        public string? IssueState { get; init; }
+    }
 
     private sealed class ContextRow
     {

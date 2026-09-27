@@ -63,6 +63,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGitHubClient, GhCliClient>();
         services.AddSingleton<IGitHubPublisher, GhCliPublisher>();
         services.AddSingleton<IIssueReadyLabelWriter, GhCliIssueReadyLabelWriter>();
+        services.AddSingleton<IReleaseIssueWriter, GhCliReleaseIssueWriter>();
         services.AddSingleton<IRepositoryBootstrapper, RepositoryBootstrapper>();
         services.AddSingleton<IGitHubStore, PostgresGitHubStore>();
         services.AddSingleton<ITaskStore, PostgresTaskStore>();

@@ -13,7 +13,10 @@
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
-  <ItemGroup><ProjectReference Include="..\..\src\Factory.Infrastructure\Factory.Infrastructure.csproj" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Factory.Api\Factory.Api.csproj" />
+    <ProjectReference Include="..\..\src\Factory.Infrastructure\Factory.Infrastructure.csproj" />
+  </ItemGroup>
 
   <ItemGroup>
     <Using Include="Xunit" />

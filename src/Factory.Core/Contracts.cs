@@ -618,3 +618,17 @@ public interface IIssueReadyLabelWriter
 {
     Task<GitHubWriteResult> SetReadyAsync(string owner, string name, int issueNumber, bool isReady, CancellationToken cancellationToken);
 }
+
+/// <summary>Idempotent GitHub issue writes requested only after an operator approves a durable release plan.</summary>
+public interface IReleaseIssueWriter
+{
+    /// <summary>Returns an existing issue carrying <paramref name="idempotencyMarker"/> or creates it once and
+    /// returns the resulting issue number and URL. The marker is included in the issue body for crash recovery.</summary>
+    Task<ReleaseIssueWriteResult> CreateOrGetAsync(string owner, string name, string title, string body,
+        string idempotencyMarker, CancellationToken cancellationToken);
+
+    /// <summary>Appends approved release content to the latest GitHub issue body, preserving any edits made since
+    /// the last sync. Repeating the same marker is a no-op.</summary>
+    Task<GitHubWriteResult> EnsureBodyContentAsync(string owner, string name, int issueNumber,
+        string idempotencyMarker, string content, CancellationToken cancellationToken);
+}

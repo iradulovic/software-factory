@@ -381,6 +381,83 @@ public sealed class GhCliIssueReadyLabelWriter(IProcessRunner runner) : IIssueRe
     }
 }
 
+/// <summary>Operator-approved issue creation and additive body edits for durable release plans. Every process runs
+/// through <see cref="IProcessRunner"/>; created issues carry a stable marker so a retry after an API restart can
+/// recover the GitHub write before attempting another create.</summary>
+public sealed class GhCliReleaseIssueWriter(IProcessRunner runner) : IReleaseIssueWriter
+{
+    public async Task<ReleaseIssueWriteResult> CreateOrGetAsync(string owner, string name, string title, string body,
+        string idempotencyMarker, CancellationToken cancellationToken)
+    {
+        var repository = $"{owner}/{name}";
+        var search = await runner.RunAsync(new ProcessRequest("gh",
+            ["issue", "list", "--repo", repository, "--search", $"in:body {idempotencyMarker}", "--state", "all", "--limit", "2", "--json", "number,url"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!search.Succeeded)
+            return new ReleaseIssueWriteResult(false, null, null, search.StandardError.Trim());
+
+        try
+        {
+            using var document = JsonDocument.Parse(search.StandardOutput);
+            var existing = document.RootElement.EnumerateArray().FirstOrDefault();
+            if (existing.ValueKind == JsonValueKind.Object)
+            {
+                var number = existing.GetProperty("number").GetInt32();
+                var url = existing.TryGetProperty("url", out var urlValue) ? urlValue.GetString() : null;
+                return new ReleaseIssueWriteResult(true, number, url ?? IssueUrl(owner, name, number), null);
+            }
+        }
+        catch (JsonException ex)
+        {
+            return new ReleaseIssueWriteResult(false, null, null, $"GitHub returned invalid issue search data: {ex.Message}");
+        }
+
+        var created = await runner.RunAsync(new ProcessRequest("gh",
+            ["issue", "create", "--repo", repository, "--title", title, "--body", body],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
+        if (!created.Succeeded)
+            return new ReleaseIssueWriteResult(false, null, null, created.StandardError.Trim());
+
+        var createdUrl = created.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault();
+        if (!int.TryParse(createdUrl?.TrimEnd('/').Split('/').LastOrDefault(), out var issueNumber))
+            return new ReleaseIssueWriteResult(false, null, createdUrl, "gh issue create succeeded but printed no issue URL with a number.");
+        return new ReleaseIssueWriteResult(true, issueNumber, createdUrl, null);
+    }
+
+    public async Task<GitHubWriteResult> EnsureBodyContentAsync(string owner, string name, int issueNumber,
+        string idempotencyMarker, string content, CancellationToken cancellationToken)
+    {
+        var repository = $"{owner}/{name}";
+        var viewed = await runner.RunAsync(new ProcessRequest("gh",
+            ["issue", "view", issueNumber.ToString(), "--repo", repository, "--json", "body,state"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!viewed.Succeeded) return new GitHubWriteResult(false, viewed.StandardError.Trim());
+
+        string body;
+        try
+        {
+            using var document = JsonDocument.Parse(viewed.StandardOutput);
+            if (!string.Equals(document.RootElement.GetProperty("state").GetString(), "OPEN", StringComparison.OrdinalIgnoreCase))
+                return new GitHubWriteResult(false, "The selected issue is no longer open.");
+            body = document.RootElement.GetProperty("body").GetString() ?? "";
+        }
+        catch (JsonException ex)
+        {
+            return new GitHubWriteResult(false, $"GitHub returned invalid issue data: {ex.Message}");
+        }
+
+        if (body.Contains(idempotencyMarker, StringComparison.Ordinal)) return new GitHubWriteResult(true, null);
+        var updatedBody = string.IsNullOrWhiteSpace(body) ? content : $"{body.TrimEnd()}\n\n{content}";
+        var updated = await runner.RunAsync(new ProcessRequest("gh",
+            ["issue", "edit", issueNumber.ToString(), "--repo", repository, "--body", updatedBody],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        return updated.Succeeded ? new GitHubWriteResult(true, null) : new GitHubWriteResult(false, updated.StandardError.Trim());
+    }
+
+    private static string IssueUrl(string owner, string name, int issueNumber) =>
+        $"https://github.com/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/issues/{issueNumber}";
+}
+
 internal sealed class GitHubRepositoryRow
 {
     public long Id { get; init; }

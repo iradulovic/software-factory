@@ -41,9 +41,11 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                         // checkpoint guarantees it is safely re-fetched next cycle rather than silently skipped.
                         var syncStartedAt = clock.UtcNow;
                         var imported = 0; var created = 0; var cancelled = 0;
+                        var synchronizedIssues = new List<GitHubIssue>();
                         foreach (var issue in await client.GetIssuesAsync(repository, repository.LastSyncedAt, stoppingToken))
                         {
                             var saved = await store.UpsertIssueAsync(repository.Id, issue, stoppingToken);
+                            synchronizedIssues.Add(saved);
                             imported++;
                             if (await tasks.CreateForIssueIfEligibleAsync(saved, repository.DefaultBranch, stoppingToken))
                             {
@@ -58,8 +60,12 @@ public sealed class Worker(DatabaseMigrator migrator, IGitHubStore store, IGitHu
                                 : !issue.Labels.Contains("factory:ready", StringComparer.OrdinalIgnoreCase) ? "The factory:ready label was removed on GitHub." : null;
                             if (reason is not null && await tasks.CancelPendingForIssueAsync(saved.Id, reason, stoppingToken)) cancelled++;
 
-                            await ReconcileIssueDependenciesAsync(repository, saved, stoppingToken);
                         }
+                        // Reconcile after every changed issue in this repository has had a chance to create its task.
+                        // This also makes dependencies written by an approved release plan effective in the same
+                        // sync cycle, regardless of whether GitHub returned prerequisite or dependent first.
+                        foreach (var issue in synchronizedIssues)
+                            await ReconcileIssueDependenciesAsync(repository, issue, stoppingToken);
                         // Backdated by SyncCheckpoint.SafetyMargin rather than persisted as-is: GitHub's search API
                         // (see GetIssuesAsync) is eventually consistent, so an issue that changed just before
                         // syncStartedAt can miss this cycle's results because it isn't indexed yet. Without the
