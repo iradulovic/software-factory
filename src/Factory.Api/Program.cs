@@ -68,6 +68,7 @@ builder.Services.AddSingleton(sp => new NpgsqlDataSourceBuilder(sp.GetRequiredSe
 builder.Services.AddSingleton<NudgeStore>();
 builder.Services.AddScoped<IOperatorStateResponder, OperatorChat>();
 builder.Services.AddSingleton<IAssistantConversation, AssistantConversation>();
+builder.Services.AddScoped<OperatorPageContextResolver>();
 builder.Services.AddScoped<OperatorAskRouter>();
 builder.Services.AddHttpClient();
 builder.Services.Configure<AgentUsageOptions>(builder.Configuration.GetSection("AgentUsage"));
@@ -201,7 +202,8 @@ app.MapGet("/api/execution/current", async (NpgsqlDataSource db, CancellationTok
     return Results.Ok(CurrentExecutionProjection.Create(row, dashboardUrl, DateTimeOffset.UtcNow));
 });
 
-app.MapPost("/api/operator/ask", async (OperatorQuestion question, OperatorAskRouter chat, CancellationToken ct) =>
+app.MapPost("/api/operator/ask", async (OperatorQuestion question, OperatorAskRouter chat,
+    OperatorPageContextResolver contextResolver, CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(question.Text) || question.Text.Length > 1000)
         return Results.BadRequest(new { error = "Enter a question of at most 1000 characters." });
@@ -211,7 +213,8 @@ app.MapPost("/api/operator/ask", async (OperatorQuestion question, OperatorAskRo
         return Results.BadRequest(new { error = "Conversation history must contain at most 20 valid user/assistant messages and 12,000 characters." });
     try
     {
-        return Results.Ok(await chat.AnswerAsync(question.Text.Trim(), history, ct));
+        var context = await contextResolver.ResolveAsync(question.Context, ct);
+        return Results.Ok(await chat.AnswerAsync(question.Text.Trim(), history, context, ct));
     }
     catch (AssistantCapacityException ex)
     {
