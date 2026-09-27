@@ -47,13 +47,18 @@ public static class ServiceCollectionExtensions
         {
             services.AddSingleton<IAgentRunner>(sp => new CliAgentRunner(profile, sp.GetRequiredService<IProcessRunner>(), sp.GetRequiredService<IAgentResultReader>(),
                 sp.GetRequiredService<IAgentReviewResultReader>(), sp.GetRequiredService<IClock>()));
-            services.AddSingleton<IAgentAvailabilityChecker>(sp => new CliAgentAvailabilityChecker(profile, sp.GetRequiredService<IProcessRunner>()));
+            services.AddSingleton<IAgentAvailabilityChecker>(sp => new CliAgentAvailabilityChecker(profile, sp.GetRequiredService<IProcessRunner>(), sp.GetRequiredService<IClock>()));
         }
 
         services.AddSingleton<IRepositoryCache, RepositoryCache>();
         services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
         services.AddSingleton<IWorktreeInspector, GitWorktreeInspector>();
         services.AddSingleton<IRepositoryConfigurationReader, RepositoryConfigurationReader>();
+        services.AddSingleton<IEnvironmentVariableReader, EnvironmentVariableReader>();
+        services.AddSingleton<IDeploymentProvider, VercelDeploymentProvider>();
+        services.AddSingleton<IDeploymentProvider, SupabaseDeploymentProvider>();
+        services.AddSingleton<IDeploymentStore, PostgresDeploymentStore>();
+        services.AddSingleton<IDeploymentProvisioner, DeploymentProvisioner>();
         services.AddSingleton<ITaskContextWriter, TaskContextWriter>();
         services.AddSingleton<IGitHubClient, GhCliClient>();
         services.AddSingleton<IGitHubPublisher, GhCliPublisher>();

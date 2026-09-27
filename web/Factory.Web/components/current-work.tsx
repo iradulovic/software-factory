@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ExternalLink, Radio } from "lucide-react";
-import { apiBase, currentExecutionSchema, getJson, type CurrentExecution } from "@/lib/api";
+import { apiBase, currentExecutionSchema, getJson, runDetailsSchema, type CurrentExecution, type FactoryRunStep } from "@/lib/api";
 import { Badge, Duration } from "@/components/ui";
 
 const tailBytes = 64 * 1024;
@@ -32,6 +32,13 @@ function statusMessage(snapshot: CurrentExecution) {
   }
 }
 
+function stepDurationSeconds(step: FactoryRunStep, now: number) {
+  if (step.durationMs != null) return step.durationMs / 1000;
+  if (step.status !== "Running") return null;
+  const startedAt = new Date(step.startedAt).getTime();
+  return Number.isFinite(startedAt) ? Math.max(0, (now - startedAt) / 1000) : null;
+}
+
 export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(() => Date.now());
@@ -42,6 +49,14 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
     retry: false
   });
   const execution = snapshot.error ? null : snapshot.data;
+  const runId = execution?.runId ?? null;
+  const runDetails = useQuery({
+    queryKey: ["run", runId],
+    queryFn: () => getJson(`/api/runs/${runId}`, runDetailsSchema),
+    enabled: !!runId && !snapshot.error,
+    refetchInterval: runId ? 3000 : false,
+    retry: false
+  });
   const cancel = useMutation({
     mutationFn: async (taskId: string) => {
       const response = await fetch(`${apiBase}/api/tasks/${taskId}/cancel`, { method: "POST" });
@@ -100,6 +115,7 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
   const output = stepId && !log.error && !log.isPending ? readableOutput(log.data ?? "") : "";
   const isAgent = execution?.stepType === "AgentImplementation";
   const isTailLimited = log.data ? new TextEncoder().encode(log.data).length >= tailBytes : false;
+  const steps = runDetails.data?.steps.filter(step => step.status !== "Pending") ?? [];
 
   return <section className="panel min-w-0 overflow-hidden" aria-label="Current work">
     <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--border)] p-4 sm:p-5">
@@ -130,19 +146,26 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
           <p className="border-l-2 border-emerald-500 pl-3">{statusMessage(execution)} <span className="block text-muted-foreground">{execution.lastProgressAt ? new Date(execution.lastProgressAt).toLocaleTimeString() : "Time unknown"}</span></p>
           {execution.implementationAttempt != null && execution.implementationAttempt > 1 && <p className="border-l-2 border-amber-500 pl-3">Retry attempt {execution.implementationAttempt} of {execution.maxImplementationAttempts ?? "?"}</p>}
           {execution.stepType?.includes("Validat") && <p className="border-l-2 border-blue-500 pl-3">Independent validation is in progress.</p>}
+          {quotaAgents.length > 0 && <p className="border-l-2 border-amber-500 pl-3">Quota blocked: {quotaAgents.join(", ")}</p>}
+          {runId && runDetails.isPending && <p className="border-l-2 border-[var(--border)] pl-3 text-muted-foreground">Loading run step history...</p>}
+          {runId && runDetails.error && <p className="border-l-2 border-amber-500 pl-3 text-amber-300">Run step history unavailable. The current execution status is still live.</p>}
+          {runId && !runDetails.isPending && !runDetails.error && steps.length === 0 && <p className="border-l-2 border-[var(--border)] pl-3 text-muted-foreground">No steps recorded yet.</p>}
+          {steps.map(step => <div className="border-l-2 border-[var(--border)] pl-3" key={step.id}>
+            <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{step.stepType.replace(/([a-z])([A-Z])/g, "$1 $2")}</span><span className="flex items-center gap-2"><Badge value={step.status}/><Duration seconds={stepDurationSeconds(step, now)}/></span></div>
+            <span className="mt-1 block text-muted-foreground">Attempt {step.attempt}{step.completedAt ? ` - ${new Date(step.completedAt).toLocaleTimeString()}` : " - in progress"}</span>
+          </div>)}
         </div> : <p className="mt-3 text-xs text-muted-foreground">{snapshot.error ? "Execution events unavailable while the API is offline." : "No active execution events."}</p>}
-        {quotaAgents.length > 0 && <p className="mt-3 border-l-2 border-amber-500 pl-3 text-xs">Quota blocked: {quotaAgents.join(", ")}</p>}
       </div>
       <div className="min-w-0 p-4 sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="eyebrow">Process output</p><p className="mt-1 text-xs text-muted-foreground">{lastOutputAt ? `New output seen ${age(new Date(lastOutputAt).toISOString(), now)}` : "Output timestamp unavailable · progress time shown above"}</p></div><div className="flex items-center gap-3">{stepId && <a className="text-xs text-emerald-400 hover:underline" href={`${apiBase}/api/steps/${stepId}/log`} target="_blank" rel="noreferrer">Full log ↗</a>}<button className="flex items-center gap-1 text-xs text-emerald-400 disabled:text-muted-foreground" disabled={!stepId || followTail} onClick={() => setFollowTail(true)}><ArrowDown className="size-3.5"/>Follow tail {followTail ? "on" : "off"}</button></div></div>
-        <div ref={transcript} onScroll={event => { const node = event.currentTarget; if (node.scrollHeight - node.scrollTop - node.clientHeight > 32) setFollowTail(false); }} className="mt-3 h-64 min-w-0 overflow-auto rounded border border-[var(--border)] bg-black/30 p-3 sm:h-80" role="log" aria-label="Current process output" aria-live="off">
+        <div ref={transcript} onScroll={event => { const node = event.currentTarget; if (node.scrollHeight - node.scrollTop - node.clientHeight > 32) setFollowTail(false); }} className="console mt-3 h-64 min-w-0 overflow-auto rounded p-3 sm:h-80" role="log" aria-label="Current process output" aria-live="off">
           {snapshot.error ? <p className="text-xs text-amber-300">Live output unavailable while the API is offline.</p>
             : !execution?.taskId ? <p className="text-xs text-muted-foreground">No process is running.</p>
             : !stepId ? <p className="text-xs text-muted-foreground">{statusMessage(execution)}</p>
             : log.error ? <p className="text-xs text-amber-300">Log unavailable or not written yet. Retrying on the next refresh.</p>
             : log.isPending ? <p className="text-xs text-muted-foreground">Loading current step output…</p>
             : !output ? <p className="text-xs text-muted-foreground">The current step has not produced output yet.</p>
-            : <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-5 text-emerald-300">{output}</pre>}
+            : <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-5">{output}</pre>}
         </div>
         {isTailLimited && <p className="mt-2 text-xs text-amber-300">Showing the latest 64 KiB only. Earlier output may be truncated; open the full log for all output.</p>}
         {stepId && !isAgent && <p className="mt-2 text-xs text-muted-foreground">Output belongs to the current {execution?.stepType?.replace(/([a-z])([A-Z])/g, "$1 $2")} step.</p>}

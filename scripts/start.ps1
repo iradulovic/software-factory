@@ -97,6 +97,11 @@ function Sync-ServicesWorktree {
                 Remove-Item -Recurse -Force $servicesWorktreeDir
                 Invoke-Git worktree add --detach $servicesWorktreeDir origin/main | Out-Null
             } else {
+                # The worktree must always be disposable: discard any dirty tracked/untracked state
+                # left behind (e.g. a stray manual edit) *before* switching commits, so a dirty
+                # worktree can never abort the sync - only then check out and pin to origin/main.
+                Invoke-Git -C $servicesWorktreeDir reset --hard --quiet | Out-Null
+                Invoke-Git -C $servicesWorktreeDir clean -fd --quiet -e node_modules -e bin -e obj -e .next | Out-Null
                 Invoke-Git -C $servicesWorktreeDir checkout --detach --quiet origin/main | Out-Null
                 Invoke-Git -C $servicesWorktreeDir reset --hard --quiet origin/main | Out-Null
                 Invoke-Git -C $servicesWorktreeDir clean -fd --quiet -e node_modules -e bin -e obj -e .next | Out-Null

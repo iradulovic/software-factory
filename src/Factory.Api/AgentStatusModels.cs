@@ -1,8 +1,10 @@
 using Factory.Core;
+using Factory.Api;
 
 public sealed class AgentStatsRow
 {
     public string? ActiveTask { get; init; }
+    public string? TaskClass { get; init; }
     public int RunsToday { get; init; }
     public int SuccessfulRuns { get; init; }
     public DateTimeOffset? QuotaDetectedAt { get; init; }
@@ -12,7 +14,8 @@ public sealed class AgentStatsRow
 /// never a hardcoded default.</summary>
 public enum AgentOperationalState
 {
-    /// <summary>The version-check process failed, timed out, or the executable could not be found at all.</summary>
+    /// <summary>The installed-version or authentication pre-flight failed, timed out, or the executable could not
+    /// be found at all.</summary>
     Unavailable,
 
     /// <summary>The availability check itself could not be completed (an unexpected error, not a normal
@@ -28,29 +31,31 @@ public enum AgentOperationalState
     /// regardless of whether any task happens to be invoking it right now.</summary>
     QuotaBlocked,
 
-    /// <summary>Installed and not at quota, and a task is currently invoking it right now
+    /// <summary>Installed and authenticated, not at quota, and a task is currently invoking it right now
     /// (<c>factory.task.current_agent</c>).</summary>
     Busy,
 
-    /// <summary>Installed, not at quota, not currently busy, and has completed at least one successful
+    /// <summary>Installed and authenticated, not at quota, not currently busy, and has completed at least one successful
     /// invocation — real evidence the CLI is actually authenticated and working, not just present on disk.</summary>
     Verified,
 
-    /// <summary>The version check passed, but no successful invocation has ever been recorded — installed, but
-    /// authentication/permission readiness is not yet evidenced either way.</summary>
+    /// <summary>The installed and authentication checks passed, but no successful invocation has ever been
+    /// recorded.</summary>
     Installed
 }
 
 public static class AgentOperationalStateResolver
 {
-    /// <param name="availabilityCheckSucceeded">Whether the version-check process ran and exited successfully.</param>
+    /// <param name="availabilityCheckSucceeded">Whether the installed-version and authentication pre-flight
+    /// processes ran and exited successfully.</param>
     /// <param name="availabilityCheckErrored">Whether the availability check itself threw an unexpected error,
     /// distinct from a normal "not installed"/"timed out" outcome.</param>
     /// <param name="isPaused">Whether the operator has paused this specific agent (SF-610).</param>
     /// <param name="isAtQuota">The independently persisted current quota status for this agent.</param>
     /// <param name="isBusy">Whether a task is currently invoking this agent right now.</param>
     /// <param name="hasSuccessfulRunForProfile">Whether this provider has ever completed a successful invocation,
-    /// including historical Codex preset names. This verifies provider readiness, not a particular model.</param>
+    /// including historical Codex preset names. This adds invocation evidence to the successful pre-flight checks,
+    /// not a particular model guarantee.</param>
     public static AgentOperationalState Resolve(bool availabilityCheckSucceeded, bool availabilityCheckErrored, bool isPaused, bool isAtQuota, bool isBusy, bool hasSuccessfulRunForProfile)
     {
         if (availabilityCheckErrored) return AgentOperationalState.Unknown;
@@ -76,9 +81,10 @@ public static class AgentOperationalStateResolver
 /// configuration that isn't set up anywhere else in this project.</param>
 /// <param name="PauseReason">Only meaningful when <see cref="State"/> is "Paused".</param>
 public sealed record AgentStatus(
-    string Agent, string State, string? Version, string? Error, string? ActiveTask,
+    string Agent, string State, string? Version, string? Error, string? ActiveTask, string? TaskClass,
     int RunsToday, int SuccessfulRuns, DateTimeOffset? QuotaDetectedAt,
-    DateTimeOffset? QuotaResetAt, string? QuotaWindow, string? QuotaResetKind, string? PauseReason);
+    DateTimeOffset? QuotaResetAt, string? QuotaWindow, string? QuotaResetKind, string? PauseReason,
+    UsageSnapshot Usage, double UsageWarningThresholdPercent, double UsageCriticalThresholdPercent);
 
 public sealed record GitHubStatus(string State, string? Error);
 

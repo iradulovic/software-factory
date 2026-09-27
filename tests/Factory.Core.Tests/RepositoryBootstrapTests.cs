@@ -33,6 +33,6 @@ public sealed class RepositoryBootstrapTests
             A signed-in researcher creates a note and sees it in the dashboard.
             """;
 
-        Assert.Equal(expected.ReplaceLineEndings("\n"), body);
+        Assert.Equal(expected.ReplaceLineEndings("\n"), body.ReplaceLineEndings("\n"));
     }
 }

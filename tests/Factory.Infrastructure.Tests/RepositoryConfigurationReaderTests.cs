@@ -25,7 +25,30 @@ public sealed class RepositoryConfigurationReaderTests
         var configuration = RepositoryConfigurationReader.Parse("{}", "origin/main");
 
         Assert.Null(configuration.SmokeTest);
+        Assert.Null(configuration.Deployments);
     }
+
+    [Fact]
+    public void Deployment_targets_are_parsed_without_secret_values()
+    {
+        var configuration = RepositoryConfigurationReader.Parse("""
+            {"deployments":{"vercel":{"projectName":"acme-web","environmentVariables":["DATABASE_URL"]},
+              "supabase":{"projectName":"acme-db","projectRef":"abc123","dbPasswordEnvironmentVariable":"ACME_DB_PASSWORD"}}}
+            """, "origin/main");
+
+        Assert.Equal("acme-web", configuration.Deployments!.Vercel!.ProjectName);
+        Assert.Equal(["DATABASE_URL"], configuration.Deployments.Vercel.EnvironmentVariables);
+        Assert.Equal("production", configuration.Deployments.Vercel.Environment);
+        Assert.Equal("abc123", configuration.Deployments.Supabase!.ProjectRef);
+        Assert.Equal("ACME_DB_PASSWORD", configuration.Deployments.Supabase.DbPasswordEnvironmentVariable);
+    }
+
+    [Theory]
+    [InlineData("""{"deployments":{"vercel":{"projectName":"","environmentVariables":[]}}}""")]
+    [InlineData("""{"deployments":{"vercel":{"projectName":"web","environmentVariables":[""]}}}""")]
+    [InlineData("""{"deployments":{"supabase":{"projectName":"db"}}}""")]
+    public void Invalid_deployment_configuration_fails_clearly(string json) =>
+        Assert.Contains(".factory/config.json", Assert.Throws<InvalidOperationException>(() => RepositoryConfigurationReader.Parse(json, "origin/main")).Message);
 
     [Fact]
     public void Smoke_test_is_parsed_with_its_own_defaults_when_only_the_required_fields_are_set()

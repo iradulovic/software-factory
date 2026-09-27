@@ -8,7 +8,8 @@ export function Badge({ value }: { value: string }) {
 }
 const agentStateTones: Record<string, string> = { Unavailable: "red", Unknown: "amber", QuotaBlocked: "amber", Installed: "amber", Busy: "blue", Verified: "green" };
 export function agentStateDescription(state: string) {
-  if (state === "Installed") return "The version check passed, but this exact profile has no successful invocation yet. Runs under other profiles or former names do not count.";
+  if (state === "Unavailable") return "The CLI is missing, timed out, or not authenticated. Check the error below and re-authenticate it before dispatching.";
+  if (state === "Installed") return "The installed and authentication checks passed, but this exact profile has no successful invocation yet. Runs under other profiles or former names do not count.";
   if (state === "Verified") return "This exact profile has at least one successful CLI invocation. Task build and test validation are separate.";
   return state.replace(/([a-z])([A-Z])/g, "$1 $2");
 }
@@ -42,7 +43,7 @@ export function StepLog({ id, running, hasLog }: { id: string; running: boolean;
   if (!hasLog) return null;
   return (
     <div className="mt-2">
-      {running && <div className="mb-2"><p className="eyebrow">Live tail</p><pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-[11px] text-emerald-300">{error ? "Live tail unavailable" : (data || "Waiting for output…")}</pre></div>}
+      {running && <div className="mb-2"><p className="eyebrow">Live tail</p><pre className="console mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded p-3 text-[11px]">{error ? "Live tail unavailable" : (data || "Waiting for output…")}</pre></div>}
       <a className="text-xs text-emerald-400 hover:underline" href={`${apiBase}/api/steps/${id}/log`} target="_blank" rel="noreferrer">View full log</a>
     </div>
   );

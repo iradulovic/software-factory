@@ -10,8 +10,8 @@ public sealed class CliAgentRunnerTests
         new("Codex", "codex", ["exec", "--full-auto", "-"], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, quotaCooldownHours);
 
     [Theory]
-    [InlineData("quick", "gpt-5.6-luna", "max")]
-    [InlineData("deep", "gpt-5.6-sol", "medium")]
+    [InlineData("quick", "gpt-6-luna", "max")]
+    [InlineData("deep", "gpt-6-sol", "medium")]
     public async Task Configured_class_selects_the_actual_cli_model_and_effort(string taskClass, string model, string effort)
     {
         var profile = AgentProfilesOptions.DefaultProfiles.Single();
@@ -268,6 +268,41 @@ public sealed class CliAgentRunnerTests
 
         Assert.Contains("Address the independent review findings", runner.Request!.StandardInput);
         Assert.Contains("[high] src/Export.cs:42 - Handle empty input", runner.Request.StandardInput);
+        Assert.Equal(agentResult, result.Result);
+        Assert.Null(result.ReviewResult);
+    }
+
+    [Fact]
+    public async Task Merge_conflict_purpose_sends_reconciliation_prompt_and_reads_the_implementation_result()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agentResult = new AgentResult("completed", "Conflict resolved", ["dotnet test"], true, ["src/Export.cs"], [], false, null);
+        var agent = new CliAgentRunner(Codex(), runner, new StubResultReader(agentResult), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            Purpose: AgentRunPurpose.MergeConflict), CancellationToken.None);
+
+        Assert.Contains("merge conflict", runner.Request!.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("fetch origin", runner.Request.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("merge", runner.Request.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("preserving", runner.Request.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(agentResult, result.Result);
+        Assert.Null(result.ReviewResult);
+    }
+
+    [Fact]
+    public async Task Base_branch_conflict_purpose_resolves_the_existing_merge_without_starting_another()
+    {
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, "done", "", false, false));
+        var agentResult = new AgentResult("completed", "Resolved and committed", [], true, ["src/Export.cs"], [], false, null);
+        var agent = new CliAgentRunner(Codex(), runner, new StubResultReader(agentResult), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            Purpose: AgentRunPurpose.BaseBranchConflict), CancellationToken.None);
+
+        Assert.Contains("in-progress base-branch merge", runner.Request!.StandardInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Do not fetch", runner.Request.StandardInput);
+        Assert.Contains("commit to finish the existing merge", runner.Request.StandardInput);
         Assert.Equal(agentResult, result.Result);
         Assert.Null(result.ReviewResult);
     }

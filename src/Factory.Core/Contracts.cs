@@ -73,6 +73,21 @@ public interface ITaskStore
     /// than either staying permanently exhausted or granting unlimited retries. Returns <see langword="false"/>
     /// if the task does not currently rest in one of the allowed statuses.</summary>
     Task<bool> ContinueWithFeedbackAsync(Guid taskId, string feedback, CancellationToken cancellationToken);
+    Task PauseForAgentHumanRequestAsync(Guid taskId, Guid runId, Guid agentRunId, AgentHumanRequest request,
+        string reason, string? branchName, string? headCommit, CancellationToken cancellationToken);
+    Task<IReadOnlyList<PersistedAgentHumanRequest>> GetAgentHumanRequestsAsync(Guid taskId, CancellationToken cancellationToken);
+    Task<bool> ResolveAgentHumanRequestAsync(Guid taskId, Guid requestId, string resolution, string answer,
+        string? branchName, string? headCommit, CancellationToken cancellationToken);
+    Task<bool> ClassifyLegacyVerificationAsync(Guid taskId, string checks, string branchName, string headCommit,
+        CancellationToken cancellationToken);
+    Task<PersistedAgentHumanRequest?> GetPostImplementationRequestAsync(Guid taskId, CancellationToken cancellationToken);
+    Task AdvancePostImplementationHeadAsync(Guid taskId, string headCommit, CancellationToken cancellationToken);
+
+    /// <summary>Queues an operator-requested repair for a currently published factory-owned pull request whose
+    /// latest synchronized GitHub mergeability is <c>Conflict</c>. The existing branch and worktree are preserved,
+    /// and the next run is marked for the specialized merge-conflict agent purpose. Returns <see langword="false"/>
+    /// when the pull request is no longer eligible or another operator action already owns it.</summary>
+    Task<bool> TriggerMergeConflictRepairAsync(Guid taskId, CancellationToken cancellationToken);
 
     /// <summary>Every piece of operator feedback recorded for a task, oldest first — permanent and auditable,
     /// even once a later continuation supersedes it (SF-613).</summary>
@@ -504,6 +519,29 @@ public interface IWorktreeManager
 }
 public sealed record WorktreeLocation(string BranchName, string Path);
 public interface IRepositoryConfigurationReader { Task<RepositoryConfiguration> ReadAsync(string worktreePath, string baseRef, CancellationToken cancellationToken); }
+
+/// <summary>One external deployment platform boundary. Implementations only provision/link infrastructure;
+/// steady-state production deployments remain owned by each platform's Git integration.</summary>
+public interface IDeploymentProvider
+{
+    string Provider { get; }
+    Task<DeploymentProvisioningResult> ProvisionAsync(DeploymentProvisioningRequest request, CancellationToken cancellationToken);
+}
+
+public interface IDeploymentStore
+{
+    Task<DeploymentRecord> UpsertAsync(long repositoryId, DeploymentProvisioningResult result, CancellationToken cancellationToken);
+    Task<IReadOnlyList<DeploymentRecord>> ListAsync(long repositoryId, CancellationToken cancellationToken);
+}
+
+public interface IDeploymentProvisioner
+{
+    Task<DeploymentRecord> ProvisionAsync(GitHubRepository repository, string provider, CancellationToken cancellationToken);
+}
+
+/// <summary>Reads secrets from the API host's existing environment. This is deliberately a reader, not a new
+/// persistent secret store.</summary>
+public interface IEnvironmentVariableReader { string? Get(string name); }
 public interface IWorktreeInspector
 {
     Task<bool> HasChangesAsync(string worktreePath, string baseRef, CancellationToken cancellationToken);

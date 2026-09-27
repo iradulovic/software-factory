@@ -27,6 +27,19 @@ export const runSchema = z.object({
   status:z.string(),workerId:z.string(),durationSeconds:z.number(),currentStep:z.string().nullable(),result:z.string().nullable()
 });
 export type FactoryRun = z.infer<typeof runSchema>;
+export const runStepSchema = z.object({
+  id:z.string(),runId:z.string(),stepType:z.string(),status:z.string(),startedAt:z.string(),completedAt:z.string().nullable(),
+  durationMs:z.number().nullable(),attempt:z.number(),error:z.string().nullable(),output:z.string().nullable(),hasLog:z.boolean(),outputTruncated:z.boolean()
+});
+export type FactoryRunStep = z.infer<typeof runStepSchema>;
+export const runAgentSchema = z.object({
+  id:z.string(),runId:z.string(),agent:z.string(),purpose:z.string(),model:z.string().nullable(),reasoningEffort:z.string().nullable(),
+  selectionReason:z.string().nullable(),taskClass:z.string().nullable(),startedAt:z.string(),completedAt:z.string().nullable(),durationSeconds:z.number().nullable(),
+  exitCode:z.number().nullable(),status:z.string(),stdout:z.string().nullable(),stderr:z.string().nullable(),quotaDetected:z.boolean(),attemptNumber:z.number(),
+  needsHuman:z.boolean(),resultJson:z.unknown().nullable(),resultSummary:z.string().nullable(),testsRun:z.array(z.string()),testsPassed:z.boolean().nullable(),
+  filesChanged:z.array(z.string()),risks:z.array(z.string()),humanReason:z.string().nullable()
+});
+export const runDetailsSchema = z.object({run:runSchema,steps:z.array(runStepSchema),agentRuns:z.array(runAgentSchema)});
 export const repositorySchema = z.object({
   id:z.number(),owner:z.string(),name:z.string(),cloneUrl:z.string(),defaultBranch:z.string(),isEnabled:z.boolean(),lastSyncedAt:z.string().nullable(),
   latestSyncFailure:z.string().nullable(),latestSyncFailureAt:z.string().nullable()
@@ -34,21 +47,24 @@ export const repositorySchema = z.object({
 export type Repository = z.infer<typeof repositorySchema>;
 export const repositoryDetailSchema = repositorySchema.extend({
   createdAt:z.string(),updatedAt:z.string(),issueCount:z.number(),taskCount:z.number(),
-  configuration:z.object({baseBranch:z.string(),buildCommands:z.array(z.string()),testCommands:z.array(z.string()),maxImplementationAttempts:z.number(),maxReviewAttempts:z.number(),requireHumanMerge:z.boolean(),publish:z.string()}).nullable()
+  configuration:z.object({baseBranch:z.string(),buildCommands:z.array(z.string()),testCommands:z.array(z.string()),maxImplementationAttempts:z.number(),maxReviewAttempts:z.number(),requireHumanMerge:z.boolean(),publish:z.string(),deployments:z.object({vercel:z.object({projectName:z.string()}).nullable(),supabase:z.object({projectName:z.string()}).nullable()}).nullable()}).nullable(),
+  deployments:z.array(z.object({repositoryId:z.number(),provider:z.string(),externalProjectId:z.string(),projectUrl:z.string(),linkageMetadata:z.record(z.string(),z.string()),createdAt:z.string(),updatedAt:z.string()}))
 });
 export type RepositoryDetail = z.infer<typeof repositoryDetailSchema>;
 export const issueSchema=z.object({id:z.number(),issueNumber:z.number(),title:z.string(),state:z.string(),author:z.string(),createdAt:z.string(),updatedAt:z.string(),repository:z.string(),labels:z.array(z.string()).nullable(),eligible:z.boolean(),taskCount:z.number()});
 export type GitHubIssue=z.infer<typeof issueSchema>;
 export const agentStatusSchema = z.object({
-  agent:z.string(),state:z.string(),version:z.string().nullable(),error:z.string().nullable(),activeTask:z.string().nullable(),
+  agent:z.string(),state:z.string(),version:z.string().nullable(),error:z.string().nullable(),activeTask:z.string().nullable(),taskClass:z.string().nullable(),
   runsToday:z.number(),successfulRuns:z.number(),quotaDetectedAt:z.string().nullable(),
-  quotaResetAt:z.string().nullable(),quotaWindow:z.string().nullable(),quotaResetKind:z.string().nullable(),pauseReason:z.string().nullable()
+  quotaResetAt:z.string().nullable(),quotaWindow:z.string().nullable(),quotaResetKind:z.string().nullable(),pauseReason:z.string().nullable(),
+  usage:z.object({provider:z.string(),isKnown:z.boolean(),isStale:z.boolean(),fiveHour:z.object({usedPercent:z.number(),resetsAt:z.string()}).nullable(),weekly:z.object({usedPercent:z.number(),resetsAt:z.string()}).nullable(),capturedAt:z.string(),unknownReason:z.string().nullable()}),
+  usageWarningThresholdPercent:z.number(),usageCriticalThresholdPercent:z.number()
 });
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 export const githubStatusSchema = z.object({ state:z.string(), error:z.string().nullable() });
 export type GitHubStatus = z.infer<typeof githubStatusSchema>;
 export const pauseStateSchema = z.object({
-  scope:z.string(),paused:z.boolean(),reason:z.string().nullable(),pausedAt:z.string().nullable(),pausedBy:z.string().nullable()
+  scope:z.string(),paused:z.boolean(),pausedAt:z.string().nullable(),pausedBy:z.string().nullable()
 });
 export type PauseState = z.infer<typeof pauseStateSchema>;
 export const globalPauseScope = "__global__";
@@ -118,11 +134,9 @@ export type DatabaseQueryResult = z.infer<typeof databaseQueryResultSchema>;
 
 export const apiBase = process.env.NEXT_PUBLIC_FACTORY_API_URL ?? "http://localhost:5080";
 
-export async function postPause(path: string, reason?: string): Promise<void> {
+export async function postPause(path: string): Promise<void> {
   const response = await fetch(`${apiBase}${path}`, {
-    method: "POST",
-    headers: reason ? { "Content-Type": "application/json" } : undefined,
-    body: reason ? JSON.stringify({ reason }) : undefined
+    method: "POST"
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { error?: string } | null;

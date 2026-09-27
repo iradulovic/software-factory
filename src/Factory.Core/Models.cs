@@ -39,6 +39,15 @@ public sealed record IssueDependencyRef(string? Owner, string? Name, int IssueNu
 /// row stays permanently, so prior instructions remain auditable even once superseded by a later one.</summary>
 public sealed record TaskFeedback(Guid Id, Guid TaskId, string Body, DateTimeOffset CreatedAt, string CreatedBy);
 
+/// <summary>Durable marker and instructions for an operator-requested merge-conflict repair. The marker is
+/// stored with task feedback so the next orchestrator run can select the specialized agent purpose without
+/// adding workflow state to the coding agent.</summary>
+public static class MergeConflictRepair
+{
+    public const string CreatedBy = "merge-conflict";
+    public const string Feedback = "GitHub confirmed that this pull request conflicts with the base branch. Fetch the latest base branch, merge it into the existing task branch, preserve both sides' intent, resolve every conflict, and commit the fix before validation.";
+}
+
 /// <param name="ResumableSessionId">The provider session id this task's most recent invocation reported, paired
 /// with <paramref name="ResumableSessionAgent"/> (SF-701) — <see langword="null"/> if that invocation's agent
 /// does not support or report one. Only ever resumed by a following invocation of the *same* agent; a different
@@ -69,7 +78,8 @@ public sealed record FactoryTask(
     string? ResumableSessionAgent = null,
     string? PreferredAgentReason = null,
     string? AgentRoutingError = null,
-    string? TaskClass = null);
+    string? TaskClass = null,
+    Guid? PostImplementationRequestId = null);
 
 /// <param name="LastSyncedAt">The point in time through which this repository's issues are known to be fully
 /// synchronized, used as the incremental sync checkpoint; <see langword="null"/> before the first sync.</param>
@@ -118,14 +128,15 @@ public sealed record ProcessResult(
 
 /// <summary>Whether an <see cref="IAgentRunner"/> invocation is implementing the task (the default, and the only
 /// purpose that existed before SF-702), performing a bounded, opt-in second-agent review pass over already
-/// committed work, or fixing structured review findings. <see cref="CliAgentRunner"/> uses this to choose the
-/// prompt it sends and which result file (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads.</summary>
-public enum AgentRunPurpose { Implement, Review, Fix }
+/// committed work, fixing structured review findings, or repairing a merge conflict on an existing pull-request
+/// branch or while syncing a task branch with its current base. <see cref="CliAgentRunner"/> uses this to choose
+/// the prompt it sends and which result file (<c>.factory/result.json</c> vs. <c>.factory/review.json</c>) it reads.</summary>
+public enum AgentRunPurpose { Implement, Review, Fix, MergeConflict, BaseBranchConflict }
 
 /// <param name="ResumeSessionId">The provider session id to resume (SF-701), if the selected agent matches the
 /// one <see cref="FactoryTask.ResumableSessionAgent"/> recorded and that agent's <see cref="AgentProfile.SupportsSessionResume"/>
 /// is enabled — <see langword="null"/> for a fresh session, exactly as before this task.</param>
-/// <param name="Purpose">Implement (default), Review, or Fix — see <see cref="AgentRunPurpose"/>.</param>
+/// <param name="Purpose">Implement (default), Review, Fix, MergeConflict, or BaseBranchConflict — see <see cref="AgentRunPurpose"/>.</param>
 /// <param name="ReviewFindings">Structured findings supplied only to a Fix invocation.</param>
 public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, string WorkingDirectory, int AttemptNumber, string? LogPath = null,
     string? ResumeSessionId = null, AgentRunPurpose Purpose = AgentRunPurpose.Implement, string? TaskClass = null,
@@ -195,7 +206,17 @@ public sealed record DispatchPauseState(string Scope, bool Paused, string? Reaso
 }
 
 public sealed record AgentResult(string Status, string Summary, IReadOnlyList<string> TestsRun, bool TestsPassed,
-    IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason);
+    IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, bool NeedsHuman, string? HumanReason,
+    AgentHumanRequest? HumanRequest = null);
+
+public sealed record AgentHumanRequest(string Kind, string Prompt, IReadOnlyList<string>? Choices,
+    IReadOnlyList<string>? Checks, string? Context);
+
+public sealed record PersistedAgentHumanRequest(Guid Id, Guid TaskId, Guid AgentRunId, string Kind, string Prompt,
+    IReadOnlyList<string> Choices, IReadOnlyList<string> Checks, string? Context, string? BranchName,
+    string? HeadCommit, DateTimeOffset CreatedAt, string? Resolution, string? Answer, DateTimeOffset? ResolvedAt,
+    AgentResult? AgentResult = null, string? AgentName = null, string? AgentPurpose = null,
+    string? ProviderSessionId = null, string? ContinuationHeadCommit = null);
 
 /// <summary>The single source of truth for <c>.factory/result.json</c>'s accepted <see cref="AgentResult.Status"/>
 /// values (SF-605): both <c>AgentResultReader</c>'s validation and the completion contract generated into
@@ -272,11 +293,30 @@ public static class StepLogPaths
 /// review findings before the task stops for a human. Zero preserves the original immediate-human behavior.</param>
 public sealed record RepositoryConfiguration(string BaseBranch, IReadOnlyList<ValidationCommand> BuildCommands, IReadOnlyList<ValidationCommand> TestCommands,
     int MaxImplementationAttempts, int MaxReviewAttempts, bool RequireHumanMerge, string Publish = "manual", int MaxQuotaInterruptions = 20,
-    SmokeTestConfiguration? SmokeTest = null, int MaxReviewFixAttempts = 1)
+    SmokeTestConfiguration? SmokeTest = null, int MaxReviewFixAttempts = 1, DeploymentConfiguration? Deployments = null)
 {
     public static RepositoryConfiguration Default { get; } =
-        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null, 1);
+        new("main", [new ValidationCommand("dotnet", ["build"])], [new ValidationCommand("dotnet", ["test"])], 2, 1, true, "manual", 20, null, 1, null);
 }
+
+/// <summary>Human-triggered deployment provisioning declared by a repository. Values in
+/// <see cref="VercelDeploymentConfiguration.EnvironmentVariables"/> and
+/// <see cref="SupabaseDeploymentConfiguration.DbPasswordEnvironmentVariable"/> are host environment-variable
+/// names, never secret values committed to the repository.</summary>
+public sealed record DeploymentConfiguration(VercelDeploymentConfiguration? Vercel = null, SupabaseDeploymentConfiguration? Supabase = null);
+
+public sealed record VercelDeploymentConfiguration(string ProjectName, IReadOnlyList<string> EnvironmentVariables, string Environment = "production", string? ProjectUrl = null);
+
+public sealed record SupabaseDeploymentConfiguration(string ProjectName, string? ProjectRef, string? OrganizationId, string? Region,
+    string DbPasswordEnvironmentVariable = "SUPABASE_DB_PASSWORD", string? ProjectUrl = null);
+
+public sealed record DeploymentRecord(long RepositoryId, string Provider, string ExternalProjectId, string ProjectUrl,
+    IReadOnlyDictionary<string, string> LinkageMetadata, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+
+public sealed record DeploymentProvisioningRequest(GitHubRepository Repository, string WorkingDirectory, DeploymentConfiguration Configuration);
+
+public sealed record DeploymentProvisioningResult(string Provider, string ExternalProjectId, string ProjectUrl,
+    IReadOnlyDictionary<string, string> LinkageMetadata);
 
 /// <summary>Opt-in configuration for SF-703's local browser smoke tests. <paramref name="InstallCommand"/>, when
 /// set, runs once before <paramref name="StartCommand"/> — a task's Git worktree only ever contains tracked files
@@ -560,6 +600,9 @@ public sealed record PreviousAttemptSummary(
 /// <param name="SessionIdPattern">An optional regular expression, with a named capture group <c>sessionId</c>,
 /// matched against this invocation's stdout to extract the provider's own session/thread id. Only consulted when
 /// <see cref="SupportsSessionResume"/> is <see langword="true"/>.</param>
+/// <param name="AuthenticationArguments">The non-mutating CLI arguments that prove this profile is authenticated.
+/// The command must not start a login flow or refresh credentials. An empty list leaves the profile unavailable so
+/// a newly registered agent cannot be dispatched without an explicit authentication check.</param>
 /// <param name="Provider">The underlying subscription/CLI this profile draws from — e.g. "Codex" or "Claude"
 /// (SF-704). Defaults to <see cref="Name"/> when unset. Class-specific model settings stay within one provider
 /// profile, while quota and pause remain keyed by provider.</param>
@@ -588,6 +631,14 @@ public sealed record AgentProfile(
     string? ConversationPromptDelivery = null,
     int ConversationTimeoutMinutes = 5)
 {
+    /// <summary>CLI arguments for the cheap authentication pre-flight. Kept as a property so existing positional
+    /// profile construction remains source-compatible while configuration can opt every registered profile into its
+    /// provider's documented status command.</summary>
+    public IReadOnlyList<string> AuthenticationArguments { get; init; } = Array.Empty<string>();
+
+    /// <summary>How long the last authentication/version result may be reused by dispatch and status readers.</summary>
+    public int AuthenticationCacheSeconds { get; init; } = 30;
+
     /// <summary>Configuration binding constructor. Defaults let a profile omit optional settings such as quota
     /// signatures without the binder trying to construct the positional record from a missing constructor value.</summary>
     public AgentProfile() : this(string.Empty, string.Empty, Array.Empty<string>(), "stdin", 90,

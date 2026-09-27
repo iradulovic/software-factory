@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http;
 using Factory.Core;
 using Factory.Infrastructure;
@@ -9,6 +10,81 @@ namespace Factory.Orchestrator.Tests;
 
 public sealed class TaskExecutorTests
 {
+    [Fact]
+    public async Task Verified_continuation_skips_implementation_and_runs_the_normal_gates()
+    {
+        var harness = new Harness { ResumeRequestId = Guid.NewGuid() };
+        Directory.CreateDirectory(harness.WorktreePath);
+        try
+        {
+            harness.Store.HumanRequests.Add(new(harness.ResumeRequestId.Value, harness.ClaimedTask.Id, Guid.NewGuid(),
+                "verification", "Check dashboard", [], ["Open dashboard"], null, harness.ClaimedTask.BranchName,
+                "head-sha", DateTimeOffset.UtcNow, "passed", "Opened dashboard", DateTimeOffset.UtcNow,
+                AgentResult: Harness.Agent("completed", "Done").Result));
+            await harness.ExecuteAsync();
+            Assert.Equal(0, harness.AgentInvocations);
+            Assert.DoesNotContain("CreateWorktree", harness.Store.StepOrder);
+            Assert.DoesNotContain("WriteContext", harness.Store.StepOrder);
+            Assert.Contains("CollectDiff", harness.Store.StepOrder);
+            Assert.Contains("Build", harness.Store.StepOrder);
+            Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+        }
+        finally { Directory.Delete(harness.WorktreePath, true); }
+    }
+
+    [Fact]
+    public async Task Changed_verified_commit_fails_before_validation_or_publication()
+    {
+        var harness = new Harness { ResumeRequestId = Guid.NewGuid() };
+        Directory.CreateDirectory(harness.WorktreePath);
+        try
+        {
+            harness.Store.HumanRequests.Add(new(harness.ResumeRequestId.Value, harness.ClaimedTask.Id, Guid.NewGuid(),
+                "verification", "Check dashboard", [], ["Open dashboard"], null, harness.ClaimedTask.BranchName,
+                "different-head", DateTimeOffset.UtcNow, "passed", "Opened dashboard", DateTimeOffset.UtcNow));
+            await harness.ExecuteAsync();
+            Assert.Equal(0, harness.AgentInvocations);
+            Assert.DoesNotContain("CollectDiff", harness.Store.StepOrder);
+            Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
+            Assert.Empty(harness.Store.PublicationRequests);
+        }
+        finally { Directory.Delete(harness.WorktreePath, true); }
+    }
+
+    [Fact]
+    public async Task Restart_uses_the_orchestrator_recorded_post_sync_head_without_another_agent_run()
+    {
+        var harness = new Harness { ResumeRequestId = Guid.NewGuid() };
+        Directory.CreateDirectory(harness.WorktreePath);
+        try
+        {
+            harness.Store.HumanRequests.Add(new(harness.ResumeRequestId.Value, harness.ClaimedTask.Id, Guid.NewGuid(),
+                "verification", "Check dashboard", [], ["Open dashboard"], null, harness.ClaimedTask.BranchName,
+                "verified-before-sync", DateTimeOffset.UtcNow, "passed", "Opened dashboard", DateTimeOffset.UtcNow,
+                ContinuationHeadCommit: "head-sha"));
+            await harness.ExecuteAsync();
+            Assert.Equal(0, harness.AgentInvocations);
+            Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+        }
+        finally { Directory.Delete(harness.WorktreePath, true); }
+    }
+
+    [Fact]
+    public async Task Completed_agent_verification_request_pauses_before_diff_collection_with_its_head()
+    {
+        var agent = Harness.Agent("completed", "Implemented", "Check dashboard", needsHuman: true);
+        var harness = new Harness { AgentResult = agent with { Result = agent.Result! with
+        {
+            HumanRequest = new AgentHumanRequest("verification", "Does the table render?", [], ["Open Tasks page"], "No browser available")
+        } } };
+        await harness.ExecuteAsync();
+        var request = Assert.Single(harness.Store.HumanRequests);
+        Assert.Equal("verification", request.Kind);
+        Assert.Equal("head-sha", request.HeadCommit);
+        Assert.Equal(FactoryTaskStatus.NeedsHuman, harness.Store.Status);
+        Assert.DoesNotContain("CollectDiff", harness.Store.StepOrder);
+    }
+
     [Fact]
     public async Task A_resumable_session_for_the_selected_agent_is_offered_back_to_it()
     {
@@ -46,8 +122,10 @@ public sealed class TaskExecutorTests
 
         var runId = await harness.ExecuteAsync();
 
-        Assert.Equal(new[] { "PrepareRepository", "CreateWorktree", "WriteContext", "AgentImplementation", "CollectDiff", "Build", "Test", "PreparePublication" }, harness.Store.StepOrder);
+        Assert.Equal(new[] { "PrepareRepository", "CreateWorktree", "WriteContext", "AgentImplementation", "CollectDiff", "Build", "Test", "SyncBaseBranch", "PreparePublication" }, harness.Store.StepOrder);
         Assert.All(harness.Store.StepOrder, stepType => Assert.Equal(ExecutionStatus.Succeeded, harness.Store.Step(stepType).Status));
+        Assert.Single(harness.Store.StepOrder, stepType => stepType == "Build");
+        Assert.Single(harness.Store.StepOrder, stepType => stepType == "Test");
         Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
         Assert.Equal(ExecutionStatus.Succeeded, harness.Store.Runs[runId]);
         Assert.Equal(new (FactoryTaskStatus, FactoryTaskStatus, string?)[]
@@ -57,6 +135,82 @@ public sealed class TaskExecutorTests
             (FactoryTaskStatus.Implementing, FactoryTaskStatus.Validating, null),
             (FactoryTaskStatus.Validating, FactoryTaskStatus.ReadyForPublish, null)
         }, harness.Store.Transitions);
+    }
+
+    [Fact]
+    public async Task Moved_base_branch_is_merged_and_validation_runs_again_before_publication()
+    {
+        var harness = new Harness { BaseBranchMoved = true };
+
+        await harness.ExecuteAsync();
+
+        Assert.Contains(harness.GitCommands, request => request.Arguments.SequenceEqual(["merge", "--no-edit", "--no-ff", "base-head"]));
+        Assert.Equal(2, harness.Store.StepOrder.Count(step => step == "Build"));
+        Assert.Equal(2, harness.Store.StepOrder.Count(step => step == "Test"));
+        Assert.True(harness.Store.StepOrder.IndexOf("SyncBaseBranch") < harness.Store.StepOrder.LastIndexOf("Build"));
+        Assert.True(harness.Store.StepOrder.LastIndexOf("Test") < harness.Store.StepOrder.IndexOf("PreparePublication"));
+        Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+        Assert.Equal("merged-head", Assert.Single(harness.Store.ValidatedHeadCommits).HeadCommit);
+    }
+
+    [Fact]
+    public async Task Base_branch_conflicts_use_the_bounded_specialized_agent_and_revalidate()
+    {
+        var harness = new Harness { BaseBranchMoved = true, BaseMergeConflicts = true };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(AgentRunPurpose.BaseBranchConflict, harness.LastAgentRunRequest!.Purpose);
+        var conflictRun = Assert.Single(harness.Store.AgentRuns, run => run.Purpose == nameof(AgentRunPurpose.BaseBranchConflict));
+        Assert.False(conflictRun.CountsAsImplementationAttempt);
+        Assert.Equal(1, harness.ConflictResolutionInvocations);
+        Assert.Equal(2, harness.Store.StepOrder.Count(step => step == "Build"));
+        Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+    }
+
+    [Fact]
+    public async Task Blocked_base_branch_conflict_resolution_moves_the_task_to_needs_human()
+    {
+        var harness = new Harness
+        {
+            BaseBranchMoved = true,
+            BaseMergeConflicts = true,
+            ConflictResolutionResult = Harness.Agent("blocked", "Could not reconcile the API changes", "Need an operator to choose the contract")
+        };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.NeedsHuman, harness.Store.Status);
+        Assert.Contains("Automatic base-branch conflict resolution failed", harness.Store.Transitions.Last().Reason);
+        Assert.Empty(harness.Store.PublicationRequests);
+        Assert.Single(harness.Store.AgentRuns, run => run.Purpose == nameof(AgentRunPurpose.BaseBranchConflict));
+    }
+
+    [Fact]
+    public async Task Failed_validation_after_base_sync_moves_the_task_to_needs_human_without_retrying_implementation()
+    {
+        var harness = new Harness { BaseBranchMoved = true, BaseMergeConflicts = true, FailValidationAfterBaseSync = true };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.NeedsHuman, harness.Store.Status);
+        Assert.Equal(2, harness.AgentInvocations);
+        Assert.Empty(harness.Store.PublicationRequests);
+        Assert.Contains("Base branch synchronization completed, but validation failed", harness.Store.Transitions.Last().Reason);
+    }
+
+    [Fact]
+    public async Task Configured_smoke_tests_run_again_after_the_base_branch_is_merged()
+    {
+        var harness = new Harness
+        {
+            BaseBranchMoved = true,
+            SmokeTest = new SmokeTestConfiguration(new ValidationCommand("npm", ["run", "start"]), "http://localhost:3000", ["/"])
+        };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(2, harness.Store.StepOrder.Count(step => step == "SmokeTest"));
     }
 
     [Fact]
@@ -256,6 +410,22 @@ public sealed class TaskExecutorTests
         await harness.ExecuteAsync();
 
         Assert.Same(feedback, harness.WrittenAttempt!.Feedback);
+    }
+
+    [Fact]
+    public async Task Merge_conflict_feedback_selects_specialized_agent_purpose_and_republishes_the_existing_pr()
+    {
+        var harness = new Harness();
+        harness.Store.Feedback = [new TaskFeedback(Guid.NewGuid(), harness.ClaimedTask.Id, MergeConflictRepair.Feedback,
+            DateTimeOffset.UtcNow, MergeConflictRepair.CreatedBy)];
+
+        var runId = await harness.ExecuteAsync();
+
+        Assert.Equal(AgentRunPurpose.MergeConflict, harness.LastAgentRunRequest!.Purpose);
+        Assert.Equal(nameof(AgentRunPurpose.MergeConflict), Assert.Single(harness.Store.AgentRuns).Purpose);
+        var publication = Assert.Single(harness.Store.PublicationRequests);
+        Assert.Equal(runId, publication.RunId);
+        Assert.Equal(MergeConflictRepair.CreatedBy, publication.RequestedBy);
     }
 
     [Fact]
@@ -520,7 +690,7 @@ public sealed class TaskExecutorTests
         await harness.ExecuteAsync();
 
         Assert.Equal(FactoryTaskStatus.WaitingForQuota, harness.Store.Status);
-        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.WaitingForQuota, "No configured agent supporting coding class 'quick' is available (paused or at quota).");
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Implementing, FactoryTaskStatus.WaitingForQuota, "No configured agent supporting coding class 'quick' is available (paused, at quota, missing, or unauthenticated).");
         Assert.Empty(harness.Store.AgentRuns);
         Assert.Equal(0, harness.AgentInvocations);
     }
@@ -754,8 +924,11 @@ public sealed class TaskExecutorTests
     {
         public FakeTaskStore Store { get; } = new();
         public List<ProcessRequest> Commands { get; } = [];
+        public List<ProcessRequest> GitCommands { get; } = [];
         public RepositoryConfiguration Configuration { get; init; } = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])], 2, 1, true);
+        public SmokeTestConfiguration? SmokeTest { get; init; }
         public AgentRunResult AgentResult { get; init; } = Agent("completed", "Implemented the export");
+        public AgentRunResult ConflictResolutionResult { get; init; } = Agent("completed", "Resolved and committed the base-branch merge");
         public AgentReviewResult ReviewAgentResult { get; init; } = new("completed", "Nothing to flag", [], false, null);
         public Queue<AgentReviewResult> ReviewAgentResults { get; } = new();
         public bool RepositoryFound { get; init; } = true;
@@ -768,10 +941,15 @@ public sealed class TaskExecutorTests
         public Exception? AgentThrows { get; init; }
         public bool WaitForAgentCancellation { get; init; }
         public bool WaitForValidationCancellation { get; init; }
+        public bool BaseBranchMoved { get; init; }
+        public bool BaseMergeConflicts { get; init; }
+        public bool FailValidationAfterBaseSync { get; init; }
+        public int ConflictResolutionInvocations { get; private set; }
         public TaskCompletionSource AgentStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ValidationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string? ConfigurationBaseRef { get; private set; }
-        public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
+        public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", Guid.NewGuid().ToString("N"));
+        public Guid? ResumeRequestId { get; init; }
         public string? PreferredAgent { get; init; }
         public string ReviewPreferredAgent { get; init; } = "Codex";
         public string? ResumableSessionAgent { get; init; }
@@ -781,8 +959,9 @@ public sealed class TaskExecutorTests
         public IReadOnlyList<string> IssueLabels { get; init; } = [];
         private FactoryTask? _claimedTask;
         public FactoryTask ClaimedTask => _claimedTask ??= new(Guid.NewGuid(), 1, 2, 42, "Add invoice export", "", "GitHubIssue", 0,
-            FactoryTaskStatus.Claimed, PreferredAgent, "main", null, null, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null,
-            ResumableSessionId, ResumableSessionAgent);
+            FactoryTaskStatus.Claimed, PreferredAgent, "main", ResumeRequestId is null ? null : "factory/42-add-invoice-export",
+            ResumeRequestId is null ? null : WorktreePath, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null,
+            ResumableSessionId, ResumableSessionAgent, PostImplementationRequestId: ResumeRequestId);
         public List<(string Owner, string Name, int IssueNumber, string Body)> Comments { get; } = [];
         public List<string> Labels { get; } = [];
         public AttemptContext? WrittenAttempt { get; set; }
@@ -812,13 +991,16 @@ public sealed class TaskExecutorTests
                 new PrepareRepositoryStep(Store, new FakeGitHubStore(this)),
                 new CreateWorktreeStep(Store, new FakeWorktrees(this)),
                 new WriteContextStep(Store, new FakeContextWriter(this), new FakeConfigurationReader(this)),
-                new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), NullLogger<RunAgentStep>.Instance),
+                new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), new FakeInspector(this), NullLogger<RunAgentStep>.Instance),
                 new CollectDiffStep(Store, new FakeInspector(this)),
                 new ValidateStep(Store, new FakeProcessRunner(this), Options.Create(new FactoryOptions())),
-                new SmokeTestStep(Store, new FakeProcessRunner(this), new UnusedBrowserSmokeTestRunner(), new UnusedHttpClientFactory(), Options.Create(new FactoryOptions())),
+                new SmokeTestStep(Store, new FakeProcessRunner(this), new SuccessfulBrowserSmokeTestRunner(), new SuccessfulHttpClientFactory(), Options.Create(new FactoryOptions())),
+                new SyncBaseBranchStep(Store, new FakeProcessRunner(this), new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store),
+                    Options.Create(new FactoryOptions()), NullLogger<SyncBaseBranchStep>.Instance),
                 new PreparePublicationStep(Store, new FakeInspector(this)),
                 new ReviewStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions { ReviewPreferredAgent = ReviewPreferredAgent }), NullLogger<ReviewStep>.Instance),
                 new TaskGitHubNotifier(Store, new FakeGitHubPublisher(this), Options.Create(new FactoryOptions()), NullLogger<TaskGitHubNotifier>.Instance),
+                new FakeInspector(this), new FakeConfigurationReader(this),
                 NullLogger<TaskExecutor>.Instance);
             await executor.ExecuteAsync(ClaimedTask, runId, cancellationToken);
             return runId;
@@ -854,7 +1036,8 @@ public sealed class TaskExecutorTests
         {
             public Task<bool> HasChangesAsync(string worktreePath, string baseRef, CancellationToken cancellationToken) => Task.FromResult(harness.HasChanges);
             public Task<ChangeSummary> SummarizeAsync(string worktreePath, string baseRef, CancellationToken cancellationToken) => Task.FromResult(new ChangeSummary(
-                harness.IsClean, harness.CurrentBranchOverride ?? "factory/42-add-invoice-export", "base-sha", "head-sha",
+                harness.IsClean, harness.CurrentBranchOverride ?? "factory/42-add-invoice-export",
+                harness.BaseBranchMoved ? "base-head" : "base-sha", harness.BaseBranchMoved ? "merged-head" : "head-sha",
                 harness.HasChanges ? ["src/Export.cs"] : [], 12, 3));
         }
 
@@ -880,6 +1063,11 @@ public sealed class TaskExecutorTests
                 if (request.Purpose == AgentRunPurpose.Review)
                     return Task.FromResult(new AgentRunResult(Process(), null, null, false,
                         ReviewResult: harness.ReviewAgentResults.TryDequeue(out var review) ? review : harness.ReviewAgentResult));
+                if (request.Purpose == AgentRunPurpose.BaseBranchConflict)
+                {
+                    harness.ConflictResolutionInvocations++;
+                    return Task.FromResult(harness.ConflictResolutionResult);
+                }
                 return Task.FromResult(harness.AgentResult);
             }
 
@@ -896,27 +1084,40 @@ public sealed class TaskExecutorTests
             public Task<RepositoryConfiguration> ReadAsync(string worktreePath, string baseRef, CancellationToken cancellationToken)
             {
                 harness.ConfigurationBaseRef = baseRef;
-                return Task.FromResult(harness.Configuration);
+                return Task.FromResult(harness.SmokeTest is null ? harness.Configuration : harness.Configuration with { SmokeTest = harness.SmokeTest });
             }
         }
 
-        // No Harness test opts into RepositoryConfiguration.SmokeTest, so SmokeTestStep always returns Ok
-        // without ever touching either of these — SmokeTestStep itself has its own dedicated tests.
-        private sealed class UnusedBrowserSmokeTestRunner : IBrowserSmokeTestRunner
+        private sealed class SuccessfulBrowserSmokeTestRunner : IBrowserSmokeTestRunner
         {
             public Task<IReadOnlyList<SmokeTestCheckResult>> RunAsync(string baseUrl, IReadOnlyList<string> checkPaths, string artifactsDirectory, TimeSpan timeout, CancellationToken cancellationToken) =>
-                throw new NotSupportedException();
+                Task.FromResult<IReadOnlyList<SmokeTestCheckResult>>(checkPaths.Select(path => new SmokeTestCheckResult(path, true, null, null, TimeSpan.Zero)).ToArray());
         }
 
-        private sealed class UnusedHttpClientFactory : IHttpClientFactory
+        private sealed class SuccessfulHttpClientFactory : IHttpClientFactory
         {
-            public HttpClient CreateClient(string name) => throw new NotSupportedException();
+            public HttpClient CreateClient(string name) => new(new SuccessfulHandler());
+
+            private sealed class SuccessfulHandler : HttpMessageHandler
+            {
+                protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+                    Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            }
         }
 
         private sealed class FakeProcessRunner(Harness harness) : IProcessRunner
         {
             public async Task<ProcessResult> RunAsync(ProcessRequest request, CancellationToken cancellationToken)
             {
+                if (request.FileName == "git")
+                {
+                    harness.GitCommands.Add(request);
+                    var (exitCode, output, error) = GitResponse(request);
+                    var gitStart = DateTimeOffset.UtcNow;
+                    return new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, gitStart, gitStart.AddSeconds(1),
+                        exitCode, output, error, false, false);
+                }
+
                 harness.Commands.Add(request);
                 if (harness.WaitForValidationCancellation)
                 {
@@ -924,8 +1125,28 @@ public sealed class TaskExecutorTests
                     await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 }
                 var succeeds = harness.CommandSucceeds(request);
+                if (harness.FailValidationAfterBaseSync && request.FileName == "custom-build" &&
+                    harness.Commands.Count(command => command.FileName == "custom-build") > 1)
+                    succeeds = false;
                 var start = DateTimeOffset.UtcNow;
                 return new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, start.AddSeconds(1), succeeds ? 0 : 1, "output", succeeds ? "" : harness.CommandFailureOutput, false, false);
+            }
+
+            private (int ExitCode, string Output, string Error) GitResponse(ProcessRequest request)
+            {
+                if (request.Arguments.SequenceEqual(["merge-base", "--is-ancestor", "base-head", "HEAD"]))
+                    return harness.BaseBranchMoved ? (1, "", "") : (0, "", "");
+                if (request.Arguments.SequenceEqual(["rev-parse", "--verify", "HEAD"])) return (0, "task-head", "");
+                if (request.Arguments.SequenceEqual(["rev-parse", "--verify", "origin/main^{commit}"])) return (0, "base-head", "");
+                if (request.Arguments.SequenceEqual(["merge", "--no-edit", "--no-ff", "base-head"]))
+                    return harness.BaseMergeConflicts ? (1, "", "CONFLICT (content): merge conflict") : (0, "", "");
+                if (request.Arguments.SequenceEqual(["diff", "--name-only", "--diff-filter=U"]))
+                    return harness.BaseMergeConflicts ? (0, "src/Export.cs", "") : (0, "", "");
+                if (request.Arguments.SequenceEqual(["rev-parse", "--abbrev-ref", "HEAD"])) return (0, "factory/42-add-invoice-export", "");
+                if (request.Arguments.SequenceEqual(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])) return (1, "", "");
+                if (request.Arguments.SequenceEqual(["rev-list", "--parents", "-n", "1", "HEAD"])) return (0, "merge-commit task-head base-head", "");
+                if (request.Arguments.SequenceEqual(["status", "--porcelain", "--untracked-files=all"])) return (0, "", "");
+                return (0, "", "");
             }
         }
 

@@ -8,7 +8,8 @@ namespace Factory.Orchestrator;
 /// <summary>Selects which configured agent runs this attempt, invokes it, records the invocation, and interprets
 /// its result contract. Agent selection (see <see cref="AgentSelector"/>) is the only agent-specific branching
 /// here: everything else is written against the agent-agnostic <see cref="AgentRunResult"/> contract.</summary>
-public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOptions<FactoryOptions> options, ILogger<RunAgentStep> logger) : IPipelineStep
+public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOptions<FactoryOptions> options,
+    IWorktreeInspector inspector, ILogger<RunAgentStep> logger) : IPipelineStep
 {
     public async Task<PipelineStepResult> ExecuteAsync(PipelineContext context, CancellationToken cancellationToken)
     {
@@ -30,12 +31,12 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
             return PipelineStepResult.NeedsHuman($"No configured agent supports coding class '{taskClass}'.");
 
         var agent = await selector.SelectAsync(preferred, cancellationToken, taskClass);
-        if (agent is null) return PipelineStepResult.WaitingForQuota($"No configured agent supporting coding class '{taskClass}' is available (paused or at quota).");
+        if (agent is null) return PipelineStepResult.WaitingForQuota($"No configured agent supporting coding class '{taskClass}' is available (paused, at quota, missing, or unauthenticated).");
         var selectionReason = preferred is null
             ? $"Selected '{agent.Name}' for coding class '{taskClass}' from configured provider order."
             : string.Equals(preferred, agent.Name, StringComparison.OrdinalIgnoreCase)
                 ? context.Task.PreferredAgentReason ?? $"Selected the task's preferred provider '{preferred}' for coding class '{taskClass}'."
-                : $"Provider fallback selected '{agent.Name}' instead of '{preferred}' for coding class '{taskClass}' because the preferred provider is paused, at quota, or does not support the class.";
+                : $"Provider fallback selected '{agent.Name}' instead of '{preferred}' for coding class '{taskClass}' because the preferred provider is paused, at quota, unavailable, unauthenticated, or does not support the class.";
 
         // Persisted from the moment the agent is actually selected — before it runs, not only once it finishes —
         // so a task currently mid-invocation is correctly attributed to the agent really running it, including
@@ -56,15 +57,16 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
     {
         var stepId = await tasks.StartStepAsync(context.RunId, "AgentImplementation", context.AttemptNumber, cancellationToken);
         var agentRunId = Guid.NewGuid();
-        logger.LogInformation("Task {TaskId} run {RunId} step {StepId} agent run {AgentRunId} starting initial implementation attempt {Attempt}",
-            context.Task.Id, context.RunId, stepId, agentRunId, context.AttemptNumber);
+        logger.LogInformation("Task {TaskId} run {RunId} step {StepId} agent run {AgentRunId} starting {Purpose} attempt {Attempt}",
+            context.Task.Id, context.RunId, stepId, agentRunId, context.AgentPurpose, context.AttemptNumber);
         var logPath = StepLogPaths.Resolve(options.Value.LogsDirectory, context.RunId, stepId);
         // A previously recorded session is only ever offered back to the *same* agent that produced it (SF-701) —
         // a fallback to a different agent (quota, pause) always gets a fresh invocation, exactly as before this
         // task, since a different provider's CLI cannot use another provider's private session id.
         var resumeSessionId = context.Task.ResumableSessionAgent == agent.Name ? context.Task.ResumableSessionId : null;
         var taskClass = context.Task.TaskClass ?? "quick";
-        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber, logPath, resumeSessionId, TaskClass: taskClass), cancellationToken);
+        var result = await agent.RunAsync(new AgentRunRequest(context.Task.Id, context.RunId, stepId, context.Worktree!.Path, context.AttemptNumber,
+            logPath, resumeSessionId, context.AgentPurpose, TaskClass: taskClass), cancellationToken);
         context.ImplementingAgent = agent.Name;
         context.ImplementationSessionId = result.ProviderSessionId;
         // A quota-interrupted invocation never got a real chance to implement anything, so it is excluded from
@@ -75,7 +77,7 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
             result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result,
             CountsAsImplementationAttempt: !result.QuotaDetected, ProviderSessionId: result.ProviderSessionId,
             Model: result.Model ?? agent.Model, ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort,
-            SelectionReason: selectionReason, TaskClass: taskClass), cancellationToken);
+            SelectionReason: selectionReason, Purpose: context.AgentPurpose.ToString(), TaskClass: taskClass), cancellationToken);
 
         // Quota status is persisted independently of this task's run: every invocation updates it, whether or not
         // quota was detected, so a status that cleared is reflected immediately for AgentSelector rather than only
@@ -125,6 +127,14 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
         }
         if (agentResult.Status is "blocked" or "needs-human" || agentResult.NeedsHuman)
         {
+            context.AgentResult = agentResult;
+            if (agentResult.HumanRequest is { } request)
+            {
+                var snapshot = request.Kind == "verification"
+                    ? await inspector.SummarizeAsync(context.Worktree!.Path, context.BaseRef, cancellationToken)
+                    : null;
+                context.PendingHumanRequest = (agentRunId, request, snapshot?.CurrentBranch, snapshot?.HeadCommit);
+            }
             await tasks.CompleteStepAsync(stepId, ExecutionStatus.Succeeded, null, agentResult.Summary, cancellationToken);
             var reason = agentResult.HumanReason ?? agentResult.Summary;
             return PipelineStepResult.NeedsHuman(agentResult.Status == "blocked" ? $"Agent blocked: {reason}" : reason);

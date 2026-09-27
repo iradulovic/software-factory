@@ -34,6 +34,9 @@ public sealed class WriteContextStep(ITaskStore tasks, ITaskContextWriter contex
         // The most recent operator feedback, if any (SF-613) — surfaced on every attempt within its cycle, not
         // just the first, since a repeat automatic repair (SF-606) still needs to address it too.
         var feedback = (await tasks.GetFeedbackAsync(context.Task.Id, cancellationToken)).LastOrDefault();
+        context.AgentPurpose = string.Equals(feedback?.CreatedBy, MergeConflictRepair.CreatedBy, StringComparison.OrdinalIgnoreCase)
+            ? AgentRunPurpose.MergeConflict
+            : AgentRunPurpose.Implement;
         await contextWriter.WriteAsync(worktree.Path, context.Repository!, context.Issue, context.Task,
             new AttemptContext(attemptNumber, configuration.MaxImplementationAttempts, previous, feedback), cancellationToken);
 

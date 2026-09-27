@@ -58,14 +58,14 @@ public sealed class AgentProfilesOptions
     /// it instead of in place of it — registering every configured agent twice.</summary>
     public static readonly IReadOnlyList<AgentProfile> DefaultProfiles =
     [
-        new("Codex", "codex", [], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
+        new AgentProfile("Codex", "codex", [], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
             SessionIdPattern: @"session id: (?<sessionId>[0-9a-fA-F-]{36})",
             Provider: "Codex",
             Classes: [
-                new("quick", "gpt-5.6-luna", "max", ["exec", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--dangerously-bypass-approvals-and-sandbox", "-"]),
-                new("deep", "gpt-5.6-sol", "medium", ["exec", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"])
+                new("quick", "gpt-6-luna", "max", ["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--dangerously-bypass-approvals-and-sandbox", "-"]),
+                new("deep", "gpt-6-sol", "medium", ["exec", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"])
             ],
-            ConversationArguments: ["exec", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"max\"", "--sandbox", "read-only", "-"])
+            ConversationArguments: ["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--sandbox", "read-only", "-"]) with { AuthenticationArguments = ["login", "status"] }
     ];
 
     public List<AgentProfile> Profiles { get; set; } = [];

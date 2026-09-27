@@ -93,6 +93,34 @@ internal sealed class FakeTaskStore : ITaskStore
         if (NextContinueWithFeedbackAllowed) FeedbackRecorded.Add(feedback);
         return Task.FromResult(NextContinueWithFeedbackAllowed);
     }
+    public List<PersistedAgentHumanRequest> HumanRequests { get; } = [];
+    public async Task PauseForAgentHumanRequestAsync(Guid taskId, Guid runId, Guid agentRunId, AgentHumanRequest request,
+        string reason, string? branchName, string? headCommit, CancellationToken ct)
+    {
+        HumanRequests.Add(new(Guid.NewGuid(), taskId, agentRunId, request.Kind, request.Prompt, request.Choices ?? [], request.Checks ?? [],
+            request.Context, branchName, headCommit, DateTimeOffset.UtcNow, null, null, null));
+        await TransitionAsync(taskId, FactoryTaskStatus.Implementing, FactoryTaskStatus.NeedsHuman, reason, ct);
+        await CompleteRunAsync(runId, ExecutionStatus.Succeeded, ct);
+    }
+    public Task<IReadOnlyList<PersistedAgentHumanRequest>> GetAgentHumanRequestsAsync(Guid taskId, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<PersistedAgentHumanRequest>>(HumanRequests.Where(r => r.TaskId == taskId).ToList());
+    public Task<bool> ResolveAgentHumanRequestAsync(Guid taskId, Guid requestId, string resolution, string answer, string? branchName, string? headCommit, CancellationToken ct) => Task.FromResult(false);
+    public Task<bool> ClassifyLegacyVerificationAsync(Guid taskId, string checks, string branchName, string headCommit, CancellationToken ct) => Task.FromResult(false);
+    public Task<PersistedAgentHumanRequest?> GetPostImplementationRequestAsync(Guid taskId, CancellationToken ct) =>
+        Task.FromResult<PersistedAgentHumanRequest?>(HumanRequests.FirstOrDefault(r => r.TaskId == taskId && r.Resolution == "passed"));
+    public Task AdvancePostImplementationHeadAsync(Guid taskId, string headCommit, CancellationToken ct)
+    {
+        var index = HumanRequests.FindIndex(r => r.TaskId == taskId && r.Resolution == "passed");
+        if (index >= 0) HumanRequests[index] = HumanRequests[index] with { ContinuationHeadCommit = headCommit };
+        return Task.CompletedTask;
+    }
+    public bool NextMergeConflictRepairAllowed { get; set; } = true;
+    public List<Guid> MergeConflictRepairsTriggered { get; } = [];
+    public Task<bool> TriggerMergeConflictRepairAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        if (NextMergeConflictRepairAllowed) MergeConflictRepairsTriggered.Add(taskId);
+        return Task.FromResult(NextMergeConflictRepairAllowed);
+    }
     public IReadOnlyList<TaskFeedback> Feedback { get; set; } = [];
     public Task<IReadOnlyList<TaskFeedback>> GetFeedbackAsync(Guid taskId, CancellationToken cancellationToken) => Task.FromResult(Feedback);
     public Task<bool> CancelPendingForIssueAsync(long issueId, string reason, CancellationToken cancellationToken) => Task.FromResult(false);

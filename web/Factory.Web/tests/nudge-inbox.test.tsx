@@ -5,7 +5,7 @@ import { NudgeCard, type Nudge } from "../components/nudge-inbox";
 
 const base: Nudge = {
   id: "1", kind: "NeedsHuman", title: "Task needs a decision", explanation: "Open the task",
-  href: "/tasks/1", occurredAt: "2026-09-25T10:00:00Z", resolvedAt: null, readAt: null,
+  href: "/tasks/1", taskId: null, occurredAt: "2026-09-25T10:00:00Z", resolvedAt: null, readAt: null,
   deliveryStatus: "Failed", deliveryAttempts: 1, deliveryError: "HTTP 503"
 };
 
@@ -17,4 +17,10 @@ test("nudge shows unread, failed delivery, and a task link; resolution is distin
   const resolved = renderToStaticMarkup(<NudgeCard item={{ ...base, resolvedAt: "2026-09-25T11:00:00Z", readAt: "2026-09-25T11:00:00Z" }} reading={false} markRead={() => {}} />);
   assert.match(resolved, /Resolved/);
   assert.doesNotMatch(resolved, /Mark read/);
+});
+
+test("merge-conflict nudge offers the fix action", () => {
+  const conflict = renderToStaticMarkup(<NudgeCard item={{ ...base, id: "2", kind: "MergeConflict", title: "Pull request conflict", taskId: "1" }}
+    reading={false} markRead={() => {}} fixConflict={() => {}} />);
+  assert.match(conflict, /Fix conflict/);
 });

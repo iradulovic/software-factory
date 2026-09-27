@@ -31,7 +31,7 @@ const string TaskListSql = $"""
       CASE WHEN t.current_agent IS NULL THEN (SELECT ar.model FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1) END AS "agentModel",
       CASE WHEN t.current_agent IS NULL THEN (SELECT ar.reasoning_effort FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1) END AS "agentReasoningEffort",
       COALESCE(t.current_agent_reason,(SELECT ar.selection_reason FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1),t.preferred_agent_reason) AS "agentSelectionReason",
-      t.agent_routing_error AS "agentRoutingError", t.task_class AS "taskClass"
+      t.agent_routing_error AS "agentRoutingError", t.task_class AS "taskClass", t.base_branch AS "baseBranch"
     FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id LEFT JOIN github.issue i ON i.id=t.github_issue_id
     """;
 
@@ -50,6 +50,7 @@ static TaskResponse AddConfiguredAgentMetadata(TaskResponse task, IEnumerable<IA
 const string AgentStatsSql = """
     SELECT
       (SELECT t.title FROM factory.task t WHERE t.current_agent=ANY(@names) ORDER BY t.started_at DESC LIMIT 1) AS "ActiveTask",
+      (SELECT t.task_class FROM factory.task t WHERE t.current_agent=ANY(@names) ORDER BY t.started_at DESC LIMIT 1) AS "TaskClass",
       (SELECT count(*) FROM factory.agent_run WHERE agent=ANY(@names) AND started_at >= CURRENT_DATE) AS "RunsToday",
       (SELECT count(*) FROM factory.agent_run WHERE agent=ANY(@names) AND status='Succeeded') AS "SuccessfulRuns",
       (SELECT started_at FROM factory.agent_run WHERE agent=ANY(@names) AND quota_detected=true ORDER BY started_at DESC LIMIT 1) AS "QuotaDetectedAt"
@@ -69,7 +70,17 @@ builder.Services.AddScoped<IOperatorStateResponder, OperatorChat>();
 builder.Services.AddSingleton<IAssistantConversation, AssistantConversation>();
 builder.Services.AddScoped<OperatorAskRouter>();
 builder.Services.AddHttpClient();
-if (!builder.Environment.IsEnvironment("Testing")) builder.Services.AddHostedService<NudgeWorker>();
+builder.Services.Configure<AgentUsageOptions>(builder.Configuration.GetSection("AgentUsage"));
+builder.Services.AddSingleton<IAgentUsageSnapshotStore, AgentUsageSnapshotStore>();
+var configuredUsageProviders = (builder.Configuration.GetSection("Agents").Get<AgentProfilesOptions>()?.Profiles
+    ?? [.. AgentProfilesOptions.DefaultProfiles]).Select(profile => profile.EffectiveProvider).ToHashSet(StringComparer.OrdinalIgnoreCase);
+if (configuredUsageProviders.Contains("Codex")) builder.Services.AddSingleton<IAgentUsageProvider, CodexUsageProvider>();
+if (configuredUsageProviders.Contains("Claude")) builder.Services.AddSingleton<IAgentUsageProvider, ClaudeUsageProvider>();
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddHostedService<NudgeWorker>();
+    builder.Services.AddHostedService<AgentUsageWorker>();
+}
 
 var app = builder.Build();
 app.UseCors();
@@ -102,7 +113,7 @@ app.MapGet("/health", async (NpgsqlDataSource db, CancellationToken ct) =>
     }
 });
 
-app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, IEnumerable<IAgentRunner> agents, ITaskStore tasks, IOptions<FactoryOptions> options, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
+app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, IEnumerable<IAgentRunner> agents, ITaskStore tasks, IAgentUsageSnapshotStore usageSnapshots, IOptions<AgentUsageOptions> usageOptions, IOptions<FactoryOptions> options, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
     var metrics = await c.QuerySingleAsync<DashboardMetricsRow>(new CommandDefinition("""
@@ -159,7 +170,7 @@ app.MapGet("/api/dashboard", async (NpgsqlDataSource db, IEnumerable<IAgentAvail
             OR (SELECT count(*) FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.quota_detected AND NOT ar.counts_as_implementation_attempt) >= 2)
         ORDER BY t.created_at DESC LIMIT 20
         """, cancellationToken: ct));
-    var agentStatus = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct);
+    var agentStatus = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, usageSnapshots, usageOptions.Value, ct);
 
     // A cap on outstanding review work (SF-612) — ReadyForPublish + Published tasks — so unattended
     // implementation can never outrun the operator's own review capacity. Zero or negative disables it.
@@ -214,7 +225,7 @@ app.MapPost("/api/operator/ask", async (OperatorQuestion question, OperatorAskRo
 
 app.MapGet("/api/attention", async (NpgsqlDataSource db, IOptions<FactoryOptions> options,
     IOptions<GitHubSyncOptions> githubOptions, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers,
-    ITaskStore tasks, CancellationToken ct) =>
+    ITaskStore tasks, IAgentUsageSnapshotStore usageSnapshots, IOptions<AgentUsageOptions> usageOptions, CancellationToken ct) =>
 {
     var now = DateTimeOffset.UtcNow;
     await using var c = await db.OpenConnectionAsync(ct);
@@ -226,10 +237,10 @@ app.MapGet("/api/attention", async (NpgsqlDataSource db, IOptions<FactoryOptions
     if (reviewLimit > 0 && reviewCount >= reviewLimit)
         sources.Add(new AttentionSourceRow { Id = "global", Kind = "ReviewBacklog", Title = "Review backlog limit reached",
             Reason = $"{reviewCount}/{reviewLimit} tasks await publication or merge.", FirstObservedAt = now, LastObservedAt = now });
-    var agents = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct);
+    var agents = await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, usageSnapshots, usageOptions.Value, ct);
     if (agents.Count > 0 && agents.All(agent => agent.State is "QuotaBlocked" or "Unavailable" or "Unknown" or "Paused"))
         sources.Add(new AttentionSourceRow { Id = "global", Kind = "AllAgentsUnavailable", Title = "No agent can claim work",
-            Reason = "Every configured agent is quota blocked, paused, or unavailable.", FirstObservedAt = now, LastObservedAt = now });
+            Reason = "Every configured agent is quota blocked, paused, unavailable, or unauthenticated.", FirstObservedAt = now, LastObservedAt = now });
     var staleAfter = Math.Max(options.Value.PollingIntervalSeconds, options.Value.LeaseHeartbeatSeconds) * 3;
     var latestWorker = await c.ExecuteScalarAsync<DateTimeOffset?>(new CommandDefinition(
         "SELECT max(last_seen_at) FROM factory.worker", cancellationToken: ct));
@@ -257,11 +268,26 @@ app.MapGet("/api/nudges", async (NudgeStore nudges, CancellationToken ct) =>
 });
 app.MapPost("/api/nudges/{id:guid}/read", async (Guid id, NudgeStore nudges, CancellationToken ct) =>
     await nudges.MarkReadAsync(id, ct) ? Results.NoContent() : Results.NotFound());
+app.MapPost("/api/nudges/{id:guid}/fix-conflict", async (Guid id, NudgeStore nudges, ITaskStore tasks, CancellationToken ct) =>
+{
+    var nudge = await nudges.GetAsync(id, ct);
+    if (nudge is null) return Results.NotFound();
+    if (!string.Equals(nudge.Kind, "MergeConflict", StringComparison.Ordinal) || nudge.TaskId is null || nudge.ResolvedAt is not null)
+        return Results.Conflict(new { error = "This nudge is not an active merge-conflict action." });
+    if (!await tasks.TriggerMergeConflictRepairAsync(nudge.TaskId.Value, ct))
+        return Results.Conflict(new { error = "The pull request is no longer eligible for merge-conflict repair." });
+    await nudges.MarkReadAsync(id, ct);
+    return Results.Accepted($"/api/tasks/{nudge.TaskId.Value}", new { message = "Merge-conflict repair queued." });
+});
+app.MapPost("/api/tasks/{id:guid}/fix-conflict", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
+    await tasks.TriggerMergeConflictRepairAsync(id, ct)
+        ? Results.Accepted($"/api/tasks/{id}", new { message = "Merge-conflict repair queued." })
+        : Results.Conflict(new { error = "The pull request is no longer eligible for merge-conflict repair." }));
 
-app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct) =>
+app.MapGet("/api/agents/status", async (NpgsqlDataSource db, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, IAgentUsageSnapshotStore usageSnapshots, IOptions<AgentUsageOptions> usageOptions, CancellationToken ct) =>
 {
     await using var c = await db.OpenConnectionAsync(ct);
-    return Results.Ok(await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, ct));
+    return Results.Ok(await ComputeAgentStatusAsync(c, availabilityCheckers, tasks, usageSnapshots, usageOptions.Value, ct));
 });
 
 app.MapGet("/api/github/status", async (IGitHubAvailabilityChecker checker, CancellationToken ct) =>
@@ -270,7 +296,7 @@ app.MapGet("/api/github/status", async (IGitHubAvailabilityChecker checker, Canc
 // Durable pause/resume (SF-610). Pausing stops new dispatch only — a task already claimed and executing always
 // finishes, and publication of already-validated work is untouched, since it consumes no agent's subscription.
 app.MapGet("/api/control/pause", async (ITaskStore tasks, CancellationToken ct) =>
-    Results.Ok(await tasks.GetAllDispatchPausesAsync(ct)));
+    Results.Ok((await tasks.GetAllDispatchPausesAsync(ct)).Select(PauseState.From)));
 
 app.MapGet("/api/control/history", async (NpgsqlDataSource db, CancellationToken ct) =>
 {
@@ -281,12 +307,12 @@ app.MapGet("/api/control/history", async (NpgsqlDataSource db, CancellationToken
         """, cancellationToken: ct)));
 });
 
-app.MapPost("/api/control/pause", async (PauseRequest? body, HttpRequest request, ITaskStore tasks, CancellationToken ct) =>
+app.MapPost("/api/control/pause", async (HttpRequest request, ITaskStore tasks, CancellationToken ct) =>
 {
     var header = request.Headers["X-Expected-Paused"].ToString();
     if (header.Length > 0 && !bool.TryParse(header, out _)) return Results.BadRequest(new { error = "Invalid expected pause state." });
     bool? expected = header.Length == 0 ? null : bool.Parse(header);
-    return await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, true, body?.Reason, "operator", ct, expected)
+    return await tasks.SetDispatchPauseAsync(DispatchPauseScope.Global, true, null, "operator", ct, expected)
         ? Results.NoContent() : Results.Conflict(new { error = "Dispatch state changed. Refresh before pausing." });
 });
 
@@ -340,7 +366,7 @@ app.MapGet("/api/tasks", async (string? status, string? repository, string? agen
     return Results.Ok(new { items, total, page = normalizedPage, pageSize = query.Size });
 });
 
-app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskStore tasks, IEnumerable<IAgentRunner> agents, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
+app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskStore tasks, IWorktreeInspector inspector, IEnumerable<IAgentRunner> agents, IOptions<GitHubSyncOptions> githubOptions, CancellationToken ct) =>
 {
     using var activity = FactoryTelemetry.Source.StartActivity("api.get_task");
     activity?.SetTag("factory.task_id", id);
@@ -398,9 +424,16 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
         attemptRow.ciRepairs, attemptRow.maxImplementation, attemptRow.maxQuotaInterruptions,
         maxCiRepairs = githubOptions.Value.MaxCiRepairAttempts, attemptRow.latestRetryReason };
     var reviewFindings = await tasks.GetReviewFindingsAsync(id, ct);
+    var humanRequests = await tasks.GetAgentHumanRequestsAsync(id, ct);
+    ChangeSummary? verificationWorkspace = null;
+    if (taskRow.Status == "NeedsHuman" && !string.IsNullOrWhiteSpace(taskRow.WorktreePath) && Directory.Exists(taskRow.WorktreePath))
+    {
+        try { verificationWorkspace = await inspector.SummarizeAsync(taskRow.WorktreePath, $"origin/{taskRow.BaseBranch}", ct); }
+        catch (InvalidOperationException) { /* An unavailable worktree is shown as absent; pass remains disabled. */ }
+    }
     var dependencyDtos = dependencies.Select(d => new { d.TaskId, d.DependsOnTaskId, d.DependsOnTitle, DependsOnStatus = d.DependsOnStatus.ToString(), d.Source });
     return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos, feedback, ciStatus, mergeStatus, mergeRequests, taskEvents,
-        validatedHeadCommit = attemptRow.validatedHeadCommit, attempts, reviewFindings });
+        validatedHeadCommit = attemptRow.validatedHeadCommit, attempts, reviewFindings, humanRequests, verificationWorkspace });
 });
 
 app.MapPost("/api/tasks/{id:guid}/stop-repairs", async (Guid id, ITaskStore tasks, CancellationToken ct) =>
@@ -466,6 +499,63 @@ app.MapPost("/api/tasks/{id:guid}/continue", async (Guid id, ContinueRequest bod
     return await tasks.ContinueWithFeedbackAsync(id, body.Feedback, ct)
         ? Results.Accepted($"/api/tasks/{id}")
         : Results.Conflict(new { error = "Task cannot be continued from its current state." });
+});
+
+app.MapPost("/api/tasks/{id:guid}/human-request", async (Guid id, ResolveAgentRequest body,
+    ITaskStore tasks, NpgsqlDataSource db, IWorktreeInspector inspector, CancellationToken ct) =>
+{
+    if (!Guid.TryParse(body.RequestId, out var requestId) || string.IsNullOrWhiteSpace(body.Answer) ||
+        body.Resolution is not ("answer" or "passed" or "failed"))
+        return Results.BadRequest(new { error = "A request, resolution, and answer are required." });
+    if (body.Resolution == "passed")
+    {
+        await using var c = await db.OpenConnectionAsync(ct);
+        var task = await c.QuerySingleOrDefaultAsync<VerificationWorkspaceRow>(new CommandDefinition("""
+            SELECT branch_name AS "BranchName",worktree_path AS "WorktreePath",base_branch AS "BaseBranch"
+            FROM factory.task WHERE id=@id
+            """, new { id }, cancellationToken: ct));
+        if (task?.WorktreePath is null || task.BranchName != body.BranchName || !Directory.Exists(task.WorktreePath))
+            return Results.Conflict(new { error = "The verified workspace is unavailable or its branch changed. Continue with feedback." });
+        try
+        {
+            var summary = await inspector.SummarizeAsync(task.WorktreePath, $"origin/{task.BaseBranch}", ct);
+            if (!summary.IsClean || summary.CurrentBranch != body.BranchName || summary.HeadCommit != body.HeadCommit)
+                return Results.Conflict(new { error = "The verified branch is dirty or its commit changed. Continue with feedback." });
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.Conflict(new { error = "The verified workspace could not be inspected. Continue with feedback." });
+        }
+    }
+    return await tasks.ResolveAgentHumanRequestAsync(id, requestId, body.Resolution, body.Answer,
+        body.BranchName, body.HeadCommit, ct)
+        ? Results.Accepted($"/api/tasks/{id}") : Results.Conflict(new { error = "This request is no longer pending or does not match the verified commit." });
+});
+
+app.MapPost("/api/tasks/{id:guid}/legacy-verification", async (Guid id, LegacyVerificationRequest body,
+    ITaskStore tasks, NpgsqlDataSource db, IWorktreeInspector inspector, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(body.Checks) || string.IsNullOrWhiteSpace(body.BranchName) || string.IsNullOrWhiteSpace(body.HeadCommit))
+        return Results.BadRequest(new { error = "Checks, branch, and full commit are required." });
+    await using var c = await db.OpenConnectionAsync(ct);
+    var task = await c.QuerySingleOrDefaultAsync<VerificationWorkspaceRow>(new CommandDefinition("""
+        SELECT branch_name AS "BranchName",worktree_path AS "WorktreePath",base_branch AS "BaseBranch"
+        FROM factory.task WHERE id=@id
+        """, new { id }, cancellationToken: ct));
+    if (task?.WorktreePath is null || task.BranchName != body.BranchName || !Directory.Exists(task.WorktreePath))
+        return Results.Conflict(new { error = "The branch or worktree is unavailable. Continue with feedback." });
+    try
+    {
+        var summary = await inspector.SummarizeAsync(task.WorktreePath, $"origin/{task.BaseBranch}", ct);
+        if (!summary.IsClean || summary.CurrentBranch != body.BranchName || summary.HeadCommit != body.HeadCommit)
+            return Results.Conflict(new { error = "The branch is dirty or the commit changed. Continue with feedback." });
+    }
+    catch (InvalidOperationException)
+    {
+        return Results.Conflict(new { error = "The workspace could not be inspected. Continue with feedback." });
+    }
+    return await tasks.ClassifyLegacyVerificationAsync(id, body.Checks, body.BranchName, body.HeadCommit, ct)
+        ? Results.Accepted($"/api/tasks/{id}") : Results.Conflict(new { error = "The latest agent result is not eligible for legacy verification." });
 });
 
 app.MapPost("/api/tasks/{id:guid}/review-time", async (Guid id, ReviewTimeRequest body, ITaskStore tasks, CancellationToken ct) =>
@@ -716,7 +806,7 @@ app.MapGet("/api/repositories", Query("""
     ) failure ON TRUE
     ORDER BY r.owner,r.name
     """));
-app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, IRepositoryConfigurationReader configurationReader, CancellationToken ct) =>
+app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, IRepositoryConfigurationReader configurationReader, IDeploymentStore deploymentStore, CancellationToken ct) =>
 {
     using var activity = FactoryTelemetry.Source.StartActivity("api.get_repository");
     activity?.SetTag("factory.repository_id", id);
@@ -740,7 +830,28 @@ app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, I
     RepositoryConfiguration? configuration = null;
     if (!string.IsNullOrWhiteSpace(worktreePath) && Directory.Exists(worktreePath))
         configuration = await configurationReader.ReadAsync(worktreePath, $"origin/{(string)item.defaultBranch}", ct);
-    return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration });
+    var deployments = await deploymentStore.ListAsync(id, ct);
+    return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration, deployments });
+});
+
+app.MapPost("/api/repositories/{id:long}/deployments/provision", async (long id, ProvisionDeploymentRequest body,
+    NpgsqlDataSource db, IDeploymentProvisioner provisioner, CancellationToken ct) =>
+{
+    await using var c = await db.OpenConnectionAsync(ct);
+    var repository = await c.QuerySingleOrDefaultAsync<GitHubRepository>(new CommandDefinition("""
+        SELECT id,owner,name,clone_url AS "CloneUrl",default_branch AS "DefaultBranch",is_enabled AS "IsEnabled",last_synced_at AS "LastSyncedAt"
+        FROM github.repository WHERE id=@id
+        """, new { id }, cancellationToken: ct));
+    if (repository is null) return Results.NotFound(new { error = $"No repository with id {id}." });
+    if (string.IsNullOrWhiteSpace(body.Provider)) return Results.BadRequest(new { error = "Provider is required." });
+    try
+    {
+        return Results.Ok(await provisioner.ProvisionAsync(repository, body.Provider.Trim(), ct));
+    }
+    catch (DeploymentProvisioningException exception)
+    {
+        return Results.Json(new { error = exception.Message }, statusCode: StatusCodes.Status502BadGateway);
+    }
 });
 
 // SF-711: an operator adding a repository here needs no service restart — Factory.GitHubSync.Worker already
@@ -901,7 +1012,7 @@ static Func<NpgsqlDataSource, CancellationToken, Task<IResult>> Query(string sql
 
 // Shared by /api/dashboard and /api/agents/status so the header's compact status pill and the full Overview
 // panel can never disagree about an agent's state.
-static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, CancellationToken ct)
+static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c, IEnumerable<IAgentAvailabilityChecker> availabilityCheckers, ITaskStore tasks, IAgentUsageSnapshotStore usageSnapshots, AgentUsageOptions usageOptions, CancellationToken ct)
 {
     var agentStatus = new List<AgentStatus>();
     foreach (var checker in availabilityCheckers)
@@ -932,8 +1043,9 @@ static async Task<List<AgentStatus>> ComputeAgentStatusAsync(NpgsqlConnection c,
             ? (quotaStatus.ResetAt, quotaStatus.Window.ToString(), quotaStatus.ResetKind.ToString())
             : (null, null, null);
         agentStatus.Add(new AgentStatus(checker.Agent, state.ToString(), version, error,
-            stats.ActiveTask, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, quotaResetAt, quotaWindow, quotaResetKind,
-            pause.Paused ? pause.Reason : null));
+            stats.ActiveTask, stats.TaskClass, stats.RunsToday, stats.SuccessfulRuns, stats.QuotaDetectedAt, quotaResetAt, quotaWindow, quotaResetKind,
+            pause.Paused ? pause.Reason : null, usageSnapshots.GetOrUnknown(checker.Provider, DateTimeOffset.UtcNow),
+            usageOptions.WarningThresholdPercent, usageOptions.CriticalThresholdPercent));
     }
     return agentStatus;
 }

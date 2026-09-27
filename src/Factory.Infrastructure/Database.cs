@@ -62,11 +62,12 @@ internal sealed class TaskRow
     public string? PreferredAgentReason { get; init; }
     public string? AgentRoutingError { get; init; }
     public string? TaskClass { get; init; }
+    public Guid? PostImplementationRequestId { get; init; }
 
     public FactoryTask ToModel() => new(Id, RepositoryId, GitHubIssueId, IssueNumber, Title, Description, TaskType, Priority,
         Enum.Parse<FactoryTaskStatus>(Status), PreferredAgent, BaseBranch, BranchName, WorktreePath, ClaimedBy, Offset(ClaimedAt), Offset(LeaseUntil),
         Offset(CreatedAt), Offset(StartedAt), Offset(CompletedAt), Offset(FailedAt), FailureReason, ResumableSessionId, ResumableSessionAgent,
-        PreferredAgentReason, AgentRoutingError, TaskClass);
+        PreferredAgentReason, AgentRoutingError, TaskClass, PostImplementationRequestId);
 
     private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     private static DateTimeOffset? Offset(DateTime? value) => value is null ? null : Offset(value.Value);
@@ -81,7 +82,7 @@ internal sealed class WorktreeCleanupCandidateRow
     public string RepositoryName { get; init; } = "";
 }
 
-public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock clock) : ITaskStore
+public sealed partial class PostgresTaskStore(IOptions<FactoryOptions> options, IClock clock) : ITaskStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<FactoryTaskStatus> CancellableRestingStatuses =
@@ -109,7 +110,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
                   SELECT 1 FROM factory.task_dependency td JOIN factory.task dep ON dep.id=td.depends_on_task_id
                   WHERE td.task_id=factory.task.id AND dep.status <> 'Completed'
                 )
-                AND (@maxOutstandingReviewWork <= 0 OR (
+                AND (post_implementation_request_id IS NOT NULL OR @maxOutstandingReviewWork <= 0 OR (
                   -- SF-612: cap outstanding review work (validated-but-unpublished ReadyForPublish plus
                   -- already-published-awaiting-merge Published) so unattended implementation can never outrun
                   -- the operator's own review capacity. Only a brand-new Pending claim is gated — publication
@@ -143,6 +144,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
                 t.preferred_agent_reason AS "PreferredAgentReason",
                 t.agent_routing_error AS "AgentRoutingError",
                 t.task_class AS "TaskClass",
+                t.post_implementation_request_id AS "PostImplementationRequestId",
                 t.base_branch AS "BaseBranch",
                 t.branch_name AS "BranchName",
                 t.worktree_path AS "WorktreePath",
@@ -177,6 +179,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
               claimed."BaseBranch",
               claimed."BranchName",
               claimed."WorktreePath",
+              claimed."PostImplementationRequestId",
               claimed."ClaimedBy",
               claimed."ClaimedAt",
               claimed."LeaseUntil",
@@ -325,9 +328,10 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         // for an abandoned execution (this is what keeps a validated ReadyForPublish task, for example, from being
         // implemented again while it waits for a human to publish it).
         var releaseOwnership = TaskStateMachine.RetainsWorkerOwnership(next) ? "" : ", claimed_by=NULL, claimed_at=NULL, lease_until=NULL";
+        var clearContinuation = next == FactoryTaskStatus.Pending ? ", post_implementation_request_id=NULL" : "";
         var sql = $"""
             WITH updated AS (
-              UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion}{releaseOwnership}, current_agent=NULL,current_agent_reason=NULL WHERE id=@taskId AND status=@expected
+              UPDATE factory.task SET status=@next, failure_reason=@failureReason{completion}{releaseOwnership}{clearContinuation}, current_agent=NULL,current_agent_reason=NULL WHERE id=@taskId AND status=@expected
               RETURNING id
             ), logged AS (
               INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
@@ -440,13 +444,19 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         if (!ContinuableStatuses.Contains(current)) return false;
         TaskStateMachine.EnsureCanTransition(current, FactoryTaskStatus.Pending);
 
+        await connection.ExecuteAsync(new CommandDefinition("""
+            UPDATE factory.agent_human_request SET resolution=CASE WHEN kind='decision' THEN 'answer' ELSE 'failed' END,
+              answer=@feedback,resolved_at=now(),resolved_by='operator'
+            WHERE task_id=@taskId AND resolution IS NULL
+            """, new { taskId, feedback }, transaction, cancellationToken: cancellationToken));
+
         await connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO factory.task_feedback(id,task_id,body,created_by) VALUES(@id,@taskId,@feedback,'operator')",
             new { id = Guid.NewGuid(), taskId, feedback }, transaction, cancellationToken: cancellationToken));
         // The existing branch/worktree are deliberately left untouched — the whole point is to keep working on
         // the same changes, not start over, so a later publish updates the same pull request instead of a new one.
         await connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId",
+            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL,post_implementation_request_id=NULL WHERE id=@taskId",
             new { taskId }, transaction, cancellationToken: cancellationToken));
         await connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,@current,'Pending','Continued with operator feedback','human')",
@@ -525,11 +535,14 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         var currentText = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition("SELECT status FROM factory.task WHERE id=@taskId FOR UPDATE", new { taskId }, transaction, cancellationToken: cancellationToken));
         if (currentText is null) return false;
         if (await HasActiveManualMergeAsync(connection, transaction, taskId, cancellationToken)) return false;
+        if (await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS(SELECT 1 FROM factory.agent_human_request WHERE task_id=@taskId AND resolution IS NULL)",
+            new { taskId }, transaction, cancellationToken: cancellationToken))) return false;
         var current = Enum.Parse<FactoryTaskStatus>(currentText);
         if (!allowedSources.Contains(current)) return false;
         TaskStateMachine.EnsureCanTransition(current, next);
         var sql = resetExecution
-            ? "UPDATE factory.task SET status=@next,claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId"
+            ? "UPDATE factory.task SET status=@next,claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL,post_implementation_request_id=NULL WHERE id=@taskId"
             : "UPDATE factory.task SET status=@next,claimed_by=NULL,claimed_at=NULL,lease_until=NULL WHERE id=@taskId";
         await connection.ExecuteAsync(new CommandDefinition(sql, new { taskId, next = next.ToString() }, transaction, cancellationToken: cancellationToken));
         await connection.ExecuteAsync(new CommandDefinition(
@@ -981,7 +994,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         // The existing branch/worktree are deliberately left untouched, exactly as ContinueWithFeedbackAsync does —
         // the next attempt keeps working on the same changes, so a later publish updates the same pull request.
         await connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId",
+            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL,post_implementation_request_id=NULL WHERE id=@taskId",
             new { taskId }, transaction, cancellationToken: cancellationToken));
         await connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,'Published','Pending',@feedback,'orchestrator')",
@@ -989,6 +1002,46 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE factory.task_ci_status SET repair_triggered_for_commit=@headCommit WHERE task_id=@taskId",
             new { taskId, headCommit }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    /// <summary>Queues an operator-requested merge-conflict repair for a published task. The task row, conflict
+    /// observation, existing pull request, branch, and worktree are checked in one transaction so the action can
+    /// never start a new task branch or repair a pull request that has already moved on.</summary>
+    public async Task<bool> TriggerMergeConflictRepairAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var candidate = await connection.QuerySingleOrDefaultAsync<MergeConflictRepairCandidateRow>(new CommandDefinition("""
+            SELECT t.status AS "Status",t.branch_name AS "BranchName",t.worktree_path AS "WorktreePath",
+              m.status AS "MergeStatus",p.pull_request_number AS "PullRequestNumber"
+            FROM factory.task t
+            JOIN factory.task_merge_status m ON m.task_id=t.id
+            LEFT JOIN LATERAL (
+              SELECT pull_request_number FROM factory.publication
+              WHERE task_id=t.id AND status='PullRequestCreated' AND pull_request_number IS NOT NULL
+              ORDER BY completed_at DESC LIMIT 1
+            ) p ON true
+            WHERE t.id=@taskId AND t.status='Published' AND NOT t.repair_paused
+              AND t.branch_name IS NOT NULL AND t.worktree_path IS NOT NULL
+              AND m.status='Conflict' AND p.pull_request_number IS NOT NULL
+            FOR UPDATE OF t
+            """, new { taskId }, transaction, cancellationToken: cancellationToken));
+        if (candidate is null || await HasActiveManualMergeAsync(connection, transaction, taskId, cancellationToken)) return false;
+        TaskStateMachine.EnsureCanTransition(FactoryTaskStatus.Published, FactoryTaskStatus.Pending);
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_feedback(id,task_id,body,created_by) VALUES(@id,@taskId,@feedback,@createdBy)",
+            new { id = Guid.NewGuid(), taskId, feedback = MergeConflictRepair.Feedback, createdBy = MergeConflictRepair.CreatedBy },
+            transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL,post_implementation_request_id=NULL WHERE id=@taskId",
+            new { taskId }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,'Published','Pending',@reason,'human')",
+            new { taskId, reason = "Merge-conflict repair requested by operator." }, transaction, cancellationToken: cancellationToken));
         await transaction.CommitAsync(cancellationToken);
         return true;
     }
@@ -1038,7 +1091,7 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         // TriggerCiRepairAsync do — the next attempt keeps working on the same changes, so a later publish updates
         // the same pull request.
         await connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL WHERE id=@taskId",
+            "UPDATE factory.task SET status='Pending',claimed_by=NULL,claimed_at=NULL,lease_until=NULL,failure_reason=NULL,failed_at=NULL,completed_at=NULL,post_implementation_request_id=NULL WHERE id=@taskId",
             new { taskId }, transaction, cancellationToken: cancellationToken));
         await connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor) VALUES(@taskId,'Published','Pending',@reason,'orchestrator')",
@@ -1579,7 +1632,9 @@ public sealed class PostgresTaskStore(IOptions<FactoryOptions> options, IClock c
         foreach (var pause in pauses.Where(p => p.Paused))
         {
             var title = pause.Scope == DispatchPauseScope.Global ? "Factory dispatch paused" : $"Agent {pause.Scope} paused";
-            var detail = pause.Reason is { Length: > 0 } ? $"Paused by {pause.PausedBy}: {pause.Reason}" : $"Paused by {pause.PausedBy}";
+            var detail = pause.Scope == DispatchPauseScope.Global
+                ? $"Paused by {pause.PausedBy}"
+                : pause.Reason is { Length: > 0 } ? $"Paused by {pause.PausedBy}: {pause.Reason}" : $"Paused by {pause.PausedBy}";
             alerts.Add(new DigestAlertCandidate("Pause", $"pause:{pause.Scope}", title, detail, null, null, pause.PausedAt ?? clock.UtcNow));
         }
 
@@ -1832,6 +1887,15 @@ internal sealed class TaskRepairPauseRow
 {
     public string Status { get; init; } = "";
     public bool RepairPaused { get; init; }
+}
+
+internal sealed class MergeConflictRepairCandidateRow
+{
+    public string Status { get; init; } = "";
+    public string BranchName { get; init; } = "";
+    public string WorktreePath { get; init; } = "";
+    public string MergeStatus { get; init; } = "";
+    public int PullRequestNumber { get; init; }
 }
 
 internal sealed class ManualMergeCandidateRow

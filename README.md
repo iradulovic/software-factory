@@ -53,12 +53,14 @@ To start a new application, `POST /api/repositories/bootstrap` creates `owner/na
 Registration is automatic rather than an edit to `GitHub:Repositories`: the sync worker reads enabled database rows on every poll. For manual verification without creating live resources in CI, call the endpoint with a disposable repository, confirm it appears enabled in `GET /api/repositories`, then confirm its labeled issue appears in `GET /api/issues` and produces a pending task after the next configured sync interval.
 
 ## Repository and agent configuration
+
+Each profile declares a non-mutating `AuthenticationArguments` probe (`codex login status`, `claude auth status`, or Pi's `pi auth check ... --no-refresh`). The factory caches the pre-flight briefly, skips unauthenticated providers with structured logs, and never handles credentials or starts a login flow itself.
 Every CLI provider is configured under `Agents:Profiles`. Codex is one provider and one operational agent. Its `Classes` map chooses invocation arguments, model ID, and reasoning effort immediately before each run:
 
 | Coding class | Issue label | Codex model | Effort |
 | --- | --- | --- | --- |
-| quick | `coding:quick` or no class label | `gpt-5.6-luna` | `max` |
-| deep | `coding:deep` | `gpt-5.6-sol` | `medium` |
+| quick | `coding:quick` or no class label | `gpt-6-luna` | `max` |
+| deep | `coding:deep` | `gpt-6-sol` | `medium` |
 
 The issue label expresses work intent, not a provider or model. The existing `codex:luna` and `codex:sol` labels remain accepted as compatibility aliases for quick and deep. Conflicting classes stop the task before invocation. Tasks already stored with `Codex-Luna` or `Codex-Sol` preferences are migrated to provider `Codex` with the matching class; historical invocation rows retain their original agent, model, and effort. Changing a model release only requires changing that class's configuration. Model and effort are checked against the installed subscription-backed CLI with live invocations rather than inferred from API availability.
 
@@ -74,7 +76,7 @@ A task's shown agent reflects the provider actually invoking it, then its last i
 
 Pi's quota response has not yet been observed in the factory's service environment. Its profile intentionally has no guessed quota signatures or reset pattern, so configure those only after capturing representative Pi output; until then, a quota error follows the normal failed-invocation path instead of being mislabeled as a quota event.
 
-The Overview page's "Dispatch running"/"Dispatch paused" panel, and a Pause/Resume control on each agent row in the agent status table, let the operator reserve capacity for interactive use. A global pause (`POST /api/control/pause`, optionally with a `reason`) stops the orchestrator from claiming any new task — a task already claimed and executing always finishes — while a per-agent pause (`POST /api/agents/{agent}/pause`) excludes just that agent from selection, exactly like being at quota, so `AgentSelector` falls back to another configured agent instead. Neither ever touches publication: pushing and opening a pull request for already-validated work consumes no agent's subscription, so `PublicationWorker` runs regardless of pause state, and the Overview panel says so explicitly. Pause state is durable (`factory.dispatch_pause`, survives a restart) and never bypasses quota: resuming a paused agent only makes a `WaitingForQuota` task eligible again if that agent is also not currently at quota. Pause is a distinct action from cancellation — pausing never stops or cancels work already in progress, only new dispatch.
+The navbar's global dispatch control, and a Pause/Resume control on each agent row in the agent status table, let the operator reserve capacity for interactive use. A global pause (`POST /api/control/pause`, with no reason body) stops the orchestrator from claiming any new task — a task already claimed and executing always finishes — while a per-agent pause (`POST /api/agents/{agent}/pause`) excludes just that agent from selection, exactly like being at quota, so `AgentSelector` falls back to another configured agent instead. Neither ever touches publication: pushing and opening a pull request for already-validated work consumes no agent's subscription, so `PublicationWorker` runs regardless of pause state, and the dispatch control explains that explicitly. Pause state is durable (`factory.dispatch_pause`, survives a restart) and never bypasses quota: resuming a paused agent only makes a `WaitingForQuota` task eligible again if that agent is also not currently at quota. Pause is a distinct action from cancellation — pausing never stops or cancels work already in progress, only new dispatch.
 
 Each task has an explicit `priority` (integer, default 0, higher runs first) and can declare zero or more prerequisite tasks it depends on (`factory.task_dependency`), editable from the Task Details "Priority & dependencies" panel or `POST /api/tasks/{id}/priority` / `POST /api/tasks/{id}/dependencies` / `DELETE /api/tasks/{id}/dependencies/{dependsOnId}`. `ClaimNextAsync` orders eligible work `priority DESC, created_at` and additionally never claims a `Pending` task while any of its prerequisites has not reached `Completed` — the same status GitHub sync only sets once it observes the prerequisite's pull request actually merged, so "task B cannot run from a base missing task A" is enforced through that existing, reliable merge signal rather than new git-ancestry verification. Adding a dependency that would create a cycle, or that names a nonexistent task, or a self-dependency, is rejected explicitly (`AddDependencyOutcome`) rather than silently accepted. If a prerequisite ever ends at `Rejected`, `Cancelled`, or `Failed` instead of merging, its dependent is moved from `Pending` to `NeedsHuman` (with the specific blocking prerequisite and status recorded) rather than staying queued forever or being silently released to run without it — the same "needs operator" surfacing the Overview panel already uses. Dependencies may freely cross repositories; the factory still runs one coding execution at a time regardless.
 
@@ -150,6 +152,30 @@ A repository can optionally opt into local browser smoke tests (SF-703) with a `
 `startCommand` starts the application (same array/string/`{"shell":...}` forms as `buildCommands`/`testCommands`); `healthCheckUrl` is polled every second until it responds successfully or `startupTimeoutSeconds` elapses; each of `checkPaths` (default `["/"]`, resolved against `healthCheckUrl`'s origin) is then visited once in a headless Chromium browser via [Playwright](https://playwright.dev/dotnet/), capped at `checkTimeoutSeconds`. A screenshot is always saved next to the step's log (pass or fail), so a failure has concrete evidence, not just an error message. The application is always stopped afterward, success or failure — its process is killed the same way a build/test command's timeout kills one. Requires Chromium to already be installed locally (`playwright install chromium`, run once per machine); if it is not, every check fails with a clear message rather than the step silently doing nothing. This never deploys or reaches a public URL — everything runs against `localhost`.
 
 `installCommand` (optional, absent by default) runs once, before `startCommand`. A task's Git worktree only ever contains tracked files, so a `startCommand` that depends on gitignored, installable dependencies (e.g. a Node app's `node_modules`) never finds them in a freshly created worktree without this — the fix for a real per-task run's `startCommand` structurally failing every time (SF-712). It fails the step (same repairable failure as a failed check) if it exits non-zero, and its own output is logged next to `startCommand`'s.
+
+Deployment targets are provisioned explicitly from Repository Details (`POST /api/repositories/{id}/deployments/provision`), never from the task pipeline. A repository declares target metadata and the *names* of host environment variables in `.factory/config.json`; secret values remain in the API host environment and are sent to provider CLIs through stdin or the child-process environment, never written to the deployment registry or logs:
+
+```json
+{
+  "deployments": {
+    "vercel": {
+      "projectName": "acme-web",
+      "environmentVariables": ["DATABASE_URL", "API_KEY"],
+      "environment": "production"
+    },
+    "supabase": {
+      "projectName": "acme-db",
+      "organizationId": "org-id",
+      "region": "eu-central-1",
+      "dbPasswordEnvironmentVariable": "ACME_DB_PASSWORD"
+    }
+  }
+}
+```
+
+For an existing Supabase project, set `projectRef` instead of `organizationId`; provisioning links it and runs `supabase db push`. Vercel provisioning runs `vercel link`, adds the configured environment variables, and runs `vercel git connect`, so future default-branch merges deploy through Vercel's own Git integration. Successful links are upserted into `factory.deployment` with provider, external project ID, project URL, and non-secret linkage metadata.
+
+Railway was evaluated against its current CLI documentation but is not included in this change. Its CLI now supports project creation/linking, GitHub-backed services (`railway add --repo` and `railway service source connect`), and variables. Unlike the repository-level Vercel link, those operations require explicit project/environment/service lifecycle choices and may create staged configuration changes, so Railway provisioning should be a focused follow-up rather than silently choosing that policy here. See the official [Railway CLI command list](https://docs.railway.com/cli), [`railway add` reference](https://docs.railway.com/cli/add), and [`railway service` reference](https://docs.railway.com/cli/service).
 
 A quota-interrupted invocation never got a real chance to implement anything, so it does not count toward `maxImplementationAttempts`, and the "previous attempt" context above always reflects the last invocation that actually tried, never a quota blip. Excluding quota interruptions from that budget is bounded separately by `maxQuotaInterruptions`: once a task has accumulated that many quota-interrupted invocations without a successful attempt, it moves to `NeedsHuman` instead of waiting again, so a persistently blocked provider cannot make a task wait forever.
 

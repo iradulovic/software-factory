@@ -45,6 +45,27 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         Review findings:
         """;
 
+    private const string MergeConflictPrompt = """
+        Fix the merge conflict for the task described in .factory/task.md. Read and obey AGENTS.md.
+        You are working in the original task's existing factory branch, which already has a pull request under review.
+        This action explicitly requires reconciling that branch with the latest base branch: fetch origin, then merge
+        the task's base branch from .factory/task.md (origin/main for this task) into the current branch. Resolve every
+        conflict while preserving both the task branch's intent and the base branch's intent. This is the requested
+        merge into the task branch; do not merge the pull request, create a branch or worktree, push, or create a pull request.
+        Run the relevant build and test commands after resolving the conflict. Commit every intended change on this same
+        branch before finishing. When complete, write .factory/result.json matching the contract in .factory/task.md.
+        """;
+
+    private const string BaseBranchConflictPrompt = """
+        Resolve the in-progress base-branch merge for the task described in .factory/task.md. Read and obey AGENTS.md.
+        The orchestrator has already fetched the task's base branch and started `git merge`; the worktree is in the
+        middle of that merge, with conflicts in the index. Do not fetch, start another merge, abort the merge, switch
+        branches, create a worktree, push, or create a pull request. Inspect the conflicted files and preserve both
+        the task branch's intent and the fetched base branch's intent. Resolve every conflict, stage the resolved files,
+        and commit to finish the existing merge. This is one bounded resolution attempt. When complete, write
+        .factory/result.json matching the contract in .factory/task.md.
+        """;
+
     public string Name => profile.Name;
     public string Provider => profile.EffectiveProvider;
     public string? Model => profile.Model;
@@ -60,6 +81,8 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         {
             AgentRunPurpose.Review => ReviewPrompt,
             AgentRunPurpose.Fix => $"{FixPrompt}\n{FormatFindings(request.ReviewFindings ?? [])}",
+            AgentRunPurpose.MergeConflict => MergeConflictPrompt,
+            AgentRunPurpose.BaseBranchConflict => BaseBranchConflictPrompt,
             _ => Prompt
         };
         var taskClass = request.TaskClass ?? "quick";
