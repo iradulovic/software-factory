@@ -1,18 +1,15 @@
 {
   "status": "completed",
-  "summary": "Implemented cached, non-mutating CLI authentication preflight for every configured coding-agent profile, with selector fallback, structured logging, dashboard status, operator nudges, and coverage for the required failure modes.",
+  "summary": "Added bounded, cached CLI authentication preflight for each configured agent profile, with dispatch fallback, structured failure logging, dashboard status, operator nudges, and coverage. The task-focused tests pass; unrelated full-suite and environment-dependent validation failures are listed below.",
   "testsRun": [
-    "dotnet build SoftwareFactory.slnx --no-restore",
-    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-build --filter FullyQualifiedName~InfrastructureTests (19 passed)",
-    "dotnet test tests/Factory.Orchestrator.Tests/Factory.Orchestrator.Tests.csproj --no-build (110 passed)",
-    "dotnet test tests/Factory.Api.Tests/Factory.Api.Tests.csproj --no-build (82 passed)",
-    "dotnet test tests/Factory.IntegrationTests/Factory.IntegrationTests.csproj --no-build (59 passed)",
-    "dotnet test tests/Factory.Core.Tests/Factory.Core.Tests.csproj --no-build --filter FullyQualifiedName!~RepositoryBootstrapTests (222 passed)",
-    "dotnet test SoftwareFactory.slnx --no-build (unfiltered; seven unrelated baseline failures)",
-    "npx eslint components/ui.tsx",
-    "npm run type-check",
-    "npm test",
-    "npm run build"
+    "dotnet build (passed; 0 warnings, 0 errors)",
+    "dotnet test (restore failed because the sandbox could not read the user-level NuGet.Config)",
+    "dotnet test --no-restore (627 passed; 7 failed: six ProcessRunnerTests require POSIX sh, and RepositoryBootstrapTests expects CRLF instead of LF)",
+    "dotnet test tests/Factory.Infrastructure.Tests/Factory.Infrastructure.Tests.csproj --no-build --no-restore --filter FullyQualifiedName~Availability_checker (14 passed)",
+    "node.exe ./node_modules/eslint/bin/eslint.js components/ui.tsx (passed)",
+    "npm.cmd run type-check (passed)",
+    "npm.cmd test (passed)",
+    "npm.cmd run build (failed because Next.js could not fetch Geist Mono from Google Fonts)"
   ],
   "testsPassed": false,
   "filesChanged": [
@@ -39,8 +36,9 @@
     "web/Factory.Web/components/ui.tsx"
   ],
   "risks": [
-    "The unfiltered dotnet test command still has seven pre-existing Windows-worktree failures: six ProcessRunnerTests invoke the POSIX-only sh executable, and RepositoryBootstrapTests expects CRLF while the renderer emits LF. All task-focused suites and the other assemblies pass.",
-    "The repository-wide npm run lint scan was stopped after it hung in the shared workspace; targeted eslint for the changed frontend file passed. Authentication checks use configured provider status commands and never start login or refresh credentials."
+    "The unfiltered .NET test run has seven unrelated platform/baseline failures: six tests invoke POSIX-only sh on Windows, and one test compares CRLF against LF output.",
+    "The frontend production build could not fetch Geist Mono from Google Fonts in this network-restricted environment.",
+    "Codex CLI is not installed on this host; codex login status was verified in official Codex documentation. Claude and Pi commands were checked against their installed CLI help."
   ],
   "needsHuman": false,
   "humanReason": null
