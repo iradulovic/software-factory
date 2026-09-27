@@ -37,6 +37,7 @@ public sealed class PipelineContext(FactoryTask task, Guid runId)
     public WorktreeLocation? Worktree { get; set; }
     public RepositoryConfiguration? Configuration { get; set; }
     public AgentResult? AgentResult { get; set; }
+    public (Guid AgentRunId, AgentHumanRequest Request, string? Branch, string? Head)? PendingHumanRequest { get; set; }
     public AgentRunPurpose AgentPurpose { get; set; } = AgentRunPurpose.Implement;
     public string? ImplementingAgent { get; set; }
     public string? ImplementationSessionId { get; set; }

@@ -8,7 +8,8 @@ namespace Factory.Orchestrator;
 /// <summary>Selects which configured agent runs this attempt, invokes it, records the invocation, and interprets
 /// its result contract. Agent selection (see <see cref="AgentSelector"/>) is the only agent-specific branching
 /// here: everything else is written against the agent-agnostic <see cref="AgentRunResult"/> contract.</summary>
-public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOptions<FactoryOptions> options, ILogger<RunAgentStep> logger) : IPipelineStep
+public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOptions<FactoryOptions> options,
+    IWorktreeInspector inspector, ILogger<RunAgentStep> logger) : IPipelineStep
 {
     public async Task<PipelineStepResult> ExecuteAsync(PipelineContext context, CancellationToken cancellationToken)
     {
@@ -126,6 +127,14 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
         }
         if (agentResult.Status is "blocked" or "needs-human" || agentResult.NeedsHuman)
         {
+            context.AgentResult = agentResult;
+            if (agentResult.HumanRequest is { } request)
+            {
+                var snapshot = request.Kind == "verification"
+                    ? await inspector.SummarizeAsync(context.Worktree!.Path, context.BaseRef, cancellationToken)
+                    : null;
+                context.PendingHumanRequest = (agentRunId, request, snapshot?.CurrentBranch, snapshot?.HeadCommit);
+            }
             await tasks.CompleteStepAsync(stepId, ExecutionStatus.Succeeded, null, agentResult.Summary, cancellationToken);
             var reason = agentResult.HumanReason ?? agentResult.Summary;
             return PipelineStepResult.NeedsHuman(agentResult.Status == "blocked" ? $"Agent blocked: {reason}" : reason);

@@ -215,7 +215,8 @@ public sealed class TaskContextWriter : ITaskContextWriter
         | `filesChanged` | string[] | yes (may be empty) | Files intentionally changed. |
         | `risks` | string[] | yes (may be empty) | Anything a human reviewer should double-check. |
         | `needsHuman` | bool | yes | `true` forces human review regardless of `status`. |
-        | `humanReason` | string or null | only when `needsHuman` is `true`, or `status` is `"blocked"`/`"needs-human"` | Why a human is needed. |
+        | `humanReason` | string or null | only when `needsHuman` is `true`, or `status` is `"blocked"`/`"needs-human"` | Fallback explanation when no structured `humanRequest` is supplied. |
+        | `humanRequest` | object or null | no | When human input is needed, use `{ "kind": "decision", "prompt": "clear question", "choices": ["option"], "checks": [], "context": "reasoning" }` or `{ "kind": "verification", "prompt": "what to verify", "choices": [], "checks": ["specific check"], "context": "what could not be verified" }`. Verification requires `status: "completed"` and committed work. |
 
         - `"completed"`: the task was implemented and its changes committed on this branch; independent build/test validation runs next.
         - `"failed"`: the agent could not complete the task.

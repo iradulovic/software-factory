@@ -1,4 +1,5 @@
 using Factory.Core;
+using System.Text.Json;
 
 namespace Factory.Infrastructure.Tests;
 
@@ -6,6 +7,30 @@ namespace Factory.Infrastructure.Tests;
 /// "accepts a valid result" and "rejects an unknown status" happy/sad paths already live in InfrastructureTests.</summary>
 public sealed class AgentResultReaderTests
 {
+    [Theory]
+    [InlineData("decision", "blocked", "[]", true)]
+    [InlineData("verification", "completed", "[\"Open the dashboard\"]", true)]
+    [InlineData("verification", "blocked", "[\"Open the dashboard\"]", false)]
+    [InlineData("verification", "completed", "[]", false)]
+    public async Task Structured_human_requests_are_validated(string kind, string status, string checks, bool valid)
+    {
+        var root = Directory.CreateTempSubdirectory("factory-result-");
+        try
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(root.FullName, ".factory"));
+            await File.WriteAllTextAsync(Path.Combine(directory.FullName, "result.json"), JsonSerializer.Serialize(new
+            {
+                status, summary = "Done", testsRun = Array.Empty<string>(), testsPassed = true,
+                filesChanged = Array.Empty<string>(), risks = Array.Empty<string>(), needsHuman = true,
+                humanRequest = new { kind, prompt = "What next?", choices = new[] { "yes" },
+                    checks = JsonSerializer.Deserialize<string[]>(checks), context = "Reason" }
+            }));
+            var (result, error) = await new AgentResultReader().ReadAsync(root.FullName, CancellationToken.None);
+            Assert.Equal(valid, result is not null);
+            Assert.Equal(valid, error is null);
+        }
+        finally { root.Delete(true); }
+    }
     [Theory]
     [InlineData("completed")]
     [InlineData("failed")]

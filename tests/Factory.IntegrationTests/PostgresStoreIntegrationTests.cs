@@ -8,6 +8,74 @@ namespace Factory.IntegrationTests;
 
 public sealed class PostgresStoreIntegrationTests
 {
+    [Theory]
+    [InlineData("decision", "answer")]
+    [InlineData("verification", "passed")]
+    public async Task Human_request_resolution_is_atomic_idempotent_and_survives_reclaim(string kind, string resolution)
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var ct = CancellationToken.None;
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "worker", ct);
+            var stepId = await fixture.Tasks.StartStepAsync(runId, "AgentImplementation", 1, ct);
+            var agentRunId = Guid.NewGuid();
+            var result = new AgentResult("completed", "Done", [], true, ["file"], [], true, "Please check");
+            await fixture.Tasks.SaveAgentRunAsync(new AgentRunRecord(agentRunId, fixture.TaskId, runId, stepId, "Codex",
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1, 0, "Succeeded", "", "", false, null, 1, true, result), ct);
+            var branch = "factory/verification-test";
+            var head = new string('a', 40);
+            await fixture.Connection.ExecuteAsync("UPDATE factory.task SET status='Implementing',branch_name=@branch,worktree_path='test' WHERE id=@TaskId",
+                new { fixture.TaskId, branch });
+            await fixture.Tasks.PauseForAgentHumanRequestAsync(fixture.TaskId, runId, agentRunId,
+                new AgentHumanRequest(kind, "Choose", ["yes"], ["Inspect page"], null), "Human input needed", branch, head, ct);
+            var request = Assert.Single(await fixture.Tasks.GetAgentHumanRequestsAsync(fixture.TaskId, ct));
+            var restarted = new PostgresTaskStore(Options.Create(new FactoryOptions
+                { ConnectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING")! }), new TestClock());
+            Assert.True(await restarted.ResolveAgentHumanRequestAsync(fixture.TaskId, request.Id, resolution, "Checked", branch, head, ct));
+            Assert.False(await restarted.ResolveAgentHumanRequestAsync(fixture.TaskId, request.Id, resolution, "Duplicate", branch, head, ct));
+            Assert.Equal(resolution, Assert.Single(await fixture.Tasks.GetAgentHumanRequestsAsync(fixture.TaskId, ct)).Resolution);
+            Assert.Equal(resolution == "passed" ? 0 : 1, (await fixture.Tasks.GetFeedbackAsync(fixture.TaskId, ct)).Count);
+            var claimed = await restarted.ClaimNextAsync("worker-restarted", TimeSpan.FromMinutes(1), ct);
+            Assert.Equal(fixture.TaskId, claimed?.Id);
+            Assert.Equal(resolution == "passed" ? request.Id : (Guid?)null, claimed?.PostImplementationRequestId);
+            if (resolution == "passed")
+            {
+                await fixture.Connection.ExecuteAsync("UPDATE factory.task SET status='Validating' WHERE id=@TaskId", new { fixture.TaskId });
+                await restarted.AdvancePostImplementationHeadAsync(fixture.TaskId, new string('c', 40), ct);
+                var advanced = Assert.Single(await restarted.GetAgentHumanRequestsAsync(fixture.TaskId, ct));
+                Assert.Equal(head, advanced.HeadCommit);
+                Assert.Equal(new string('c', 40), advanced.ContinuationHeadCommit);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Legacy_verification_requires_latest_completed_human_result_and_exact_commit()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var ct = CancellationToken.None;
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "worker", ct);
+            var stepId = await fixture.Tasks.StartStepAsync(runId, "AgentImplementation", 1, ct);
+            await fixture.Tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), fixture.TaskId, runId, stepId, "Codex",
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1, 0, "Succeeded", "", "", false, null, 1, true,
+                new AgentResult("completed", "Done", [], true, ["file"], [], true, "Inspect UI")), ct);
+            await fixture.Connection.ExecuteAsync("UPDATE factory.task SET status='NeedsHuman',branch_name='factory/165' WHERE id=@TaskId",
+                new { fixture.TaskId });
+            var head = new string('b', 40);
+            Assert.False(await fixture.Tasks.ClassifyLegacyVerificationAsync(fixture.TaskId, "", "factory/165", head, ct));
+            Assert.True(await fixture.Tasks.ClassifyLegacyVerificationAsync(fixture.TaskId, "Opened Tasks page", "factory/165", head, ct));
+            Assert.False(await fixture.Tasks.ClassifyLegacyVerificationAsync(fixture.TaskId, "Duplicate", "factory/165", head, ct));
+            var request = Assert.Single(await fixture.Tasks.GetAgentHumanRequestsAsync(fixture.TaskId, ct));
+            Assert.Equal("passed", request.Resolution);
+            Assert.Equal(head, request.HeadCommit);
+        }
+    }
+
     [Fact]
     public async Task Repair_pause_is_durable_and_prevents_claim_until_operator_resumes()
     {
@@ -2624,6 +2692,8 @@ public sealed class PostgresStoreIntegrationTests
         public async ValueTask DisposeAsync()
         {
             await Connection.ExecuteAsync("""
+                UPDATE factory.task SET post_implementation_request_id=NULL WHERE id=@TaskId;
+                DELETE FROM factory.agent_human_request WHERE task_id=@TaskId;
                 DELETE FROM factory.task_feedback WHERE task_id=@TaskId;
                 DELETE FROM factory.publication WHERE task_id=@TaskId;
                 DELETE FROM factory.agent_run WHERE task_id=@TaskId;

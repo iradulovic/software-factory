@@ -11,6 +11,81 @@ namespace Factory.Orchestrator.Tests;
 public sealed class TaskExecutorTests
 {
     [Fact]
+    public async Task Verified_continuation_skips_implementation_and_runs_the_normal_gates()
+    {
+        var harness = new Harness { ResumeRequestId = Guid.NewGuid() };
+        Directory.CreateDirectory(harness.WorktreePath);
+        try
+        {
+            harness.Store.HumanRequests.Add(new(harness.ResumeRequestId.Value, harness.ClaimedTask.Id, Guid.NewGuid(),
+                "verification", "Check dashboard", [], ["Open dashboard"], null, harness.ClaimedTask.BranchName,
+                "head-sha", DateTimeOffset.UtcNow, "passed", "Opened dashboard", DateTimeOffset.UtcNow,
+                AgentResult: Harness.Agent("completed", "Done").Result));
+            await harness.ExecuteAsync();
+            Assert.Equal(0, harness.AgentInvocations);
+            Assert.DoesNotContain("CreateWorktree", harness.Store.StepOrder);
+            Assert.DoesNotContain("WriteContext", harness.Store.StepOrder);
+            Assert.Contains("CollectDiff", harness.Store.StepOrder);
+            Assert.Contains("Build", harness.Store.StepOrder);
+            Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+        }
+        finally { Directory.Delete(harness.WorktreePath, true); }
+    }
+
+    [Fact]
+    public async Task Changed_verified_commit_fails_before_validation_or_publication()
+    {
+        var harness = new Harness { ResumeRequestId = Guid.NewGuid() };
+        Directory.CreateDirectory(harness.WorktreePath);
+        try
+        {
+            harness.Store.HumanRequests.Add(new(harness.ResumeRequestId.Value, harness.ClaimedTask.Id, Guid.NewGuid(),
+                "verification", "Check dashboard", [], ["Open dashboard"], null, harness.ClaimedTask.BranchName,
+                "different-head", DateTimeOffset.UtcNow, "passed", "Opened dashboard", DateTimeOffset.UtcNow));
+            await harness.ExecuteAsync();
+            Assert.Equal(0, harness.AgentInvocations);
+            Assert.DoesNotContain("CollectDiff", harness.Store.StepOrder);
+            Assert.Equal(FactoryTaskStatus.Failed, harness.Store.Status);
+            Assert.Empty(harness.Store.PublicationRequests);
+        }
+        finally { Directory.Delete(harness.WorktreePath, true); }
+    }
+
+    [Fact]
+    public async Task Restart_uses_the_orchestrator_recorded_post_sync_head_without_another_agent_run()
+    {
+        var harness = new Harness { ResumeRequestId = Guid.NewGuid() };
+        Directory.CreateDirectory(harness.WorktreePath);
+        try
+        {
+            harness.Store.HumanRequests.Add(new(harness.ResumeRequestId.Value, harness.ClaimedTask.Id, Guid.NewGuid(),
+                "verification", "Check dashboard", [], ["Open dashboard"], null, harness.ClaimedTask.BranchName,
+                "verified-before-sync", DateTimeOffset.UtcNow, "passed", "Opened dashboard", DateTimeOffset.UtcNow,
+                ContinuationHeadCommit: "head-sha"));
+            await harness.ExecuteAsync();
+            Assert.Equal(0, harness.AgentInvocations);
+            Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
+        }
+        finally { Directory.Delete(harness.WorktreePath, true); }
+    }
+
+    [Fact]
+    public async Task Completed_agent_verification_request_pauses_before_diff_collection_with_its_head()
+    {
+        var agent = Harness.Agent("completed", "Implemented", "Check dashboard", needsHuman: true);
+        var harness = new Harness { AgentResult = agent with { Result = agent.Result! with
+        {
+            HumanRequest = new AgentHumanRequest("verification", "Does the table render?", [], ["Open Tasks page"], "No browser available")
+        } } };
+        await harness.ExecuteAsync();
+        var request = Assert.Single(harness.Store.HumanRequests);
+        Assert.Equal("verification", request.Kind);
+        Assert.Equal("head-sha", request.HeadCommit);
+        Assert.Equal(FactoryTaskStatus.NeedsHuman, harness.Store.Status);
+        Assert.DoesNotContain("CollectDiff", harness.Store.StepOrder);
+    }
+
+    [Fact]
     public async Task A_resumable_session_for_the_selected_agent_is_offered_back_to_it()
     {
         var harness = new Harness { ResumableSessionAgent = "Codex", ResumableSessionId = "11111111-1111-1111-1111-111111111111" };
@@ -873,7 +948,8 @@ public sealed class TaskExecutorTests
         public TaskCompletionSource AgentStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ValidationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string? ConfigurationBaseRef { get; private set; }
-        public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", "issue-42");
+        public string WorktreePath { get; } = Path.Combine(Path.GetTempPath(), "factory-executor-tests", Guid.NewGuid().ToString("N"));
+        public Guid? ResumeRequestId { get; init; }
         public string? PreferredAgent { get; init; }
         public string ReviewPreferredAgent { get; init; } = "Codex";
         public string? ResumableSessionAgent { get; init; }
@@ -883,8 +959,9 @@ public sealed class TaskExecutorTests
         public IReadOnlyList<string> IssueLabels { get; init; } = [];
         private FactoryTask? _claimedTask;
         public FactoryTask ClaimedTask => _claimedTask ??= new(Guid.NewGuid(), 1, 2, 42, "Add invoice export", "", "GitHubIssue", 0,
-            FactoryTaskStatus.Claimed, PreferredAgent, "main", null, null, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null,
-            ResumableSessionId, ResumableSessionAgent);
+            FactoryTaskStatus.Claimed, PreferredAgent, "main", ResumeRequestId is null ? null : "factory/42-add-invoice-export",
+            ResumeRequestId is null ? null : WorktreePath, "worker", null, null, DateTimeOffset.UtcNow, null, null, null, null,
+            ResumableSessionId, ResumableSessionAgent, PostImplementationRequestId: ResumeRequestId);
         public List<(string Owner, string Name, int IssueNumber, string Body)> Comments { get; } = [];
         public List<string> Labels { get; } = [];
         public AttemptContext? WrittenAttempt { get; set; }
@@ -914,7 +991,7 @@ public sealed class TaskExecutorTests
                 new PrepareRepositoryStep(Store, new FakeGitHubStore(this)),
                 new CreateWorktreeStep(Store, new FakeWorktrees(this)),
                 new WriteContextStep(Store, new FakeContextWriter(this), new FakeConfigurationReader(this)),
-                new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), NullLogger<RunAgentStep>.Instance),
+                new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), new FakeInspector(this), NullLogger<RunAgentStep>.Instance),
                 new CollectDiffStep(Store, new FakeInspector(this)),
                 new ValidateStep(Store, new FakeProcessRunner(this), Options.Create(new FactoryOptions())),
                 new SmokeTestStep(Store, new FakeProcessRunner(this), new SuccessfulBrowserSmokeTestRunner(), new SuccessfulHttpClientFactory(), Options.Create(new FactoryOptions())),
@@ -923,6 +1000,7 @@ public sealed class TaskExecutorTests
                 new PreparePublicationStep(Store, new FakeInspector(this)),
                 new ReviewStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions { ReviewPreferredAgent = ReviewPreferredAgent }), NullLogger<ReviewStep>.Instance),
                 new TaskGitHubNotifier(Store, new FakeGitHubPublisher(this), Options.Create(new FactoryOptions()), NullLogger<TaskGitHubNotifier>.Instance),
+                new FakeInspector(this), new FakeConfigurationReader(this),
                 NullLogger<TaskExecutor>.Instance);
             await executor.ExecuteAsync(ClaimedTask, runId, cancellationToken);
             return runId;

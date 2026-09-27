@@ -53,7 +53,8 @@ public sealed record TaskRow(
     string? AgentReasoningEffort,
     string? AgentSelectionReason,
     string? AgentRoutingError,
-    string? TaskClass)
+    string? TaskClass,
+    string BaseBranch = "main")
 {
     private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     private static DateTimeOffset? Offset(DateTime? value) => value is null ? null : Offset(value.Value);

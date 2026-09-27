@@ -6,6 +6,7 @@ import { z } from "zod";
 import { Badge, Duration, Empty, StepLog } from "@/components/ui";
 import { MergePolicyBadge } from "@/components/merge-policy-badge";
 import { MergeabilityPanel } from "@/components/mergeability-panel";
+import { HumanActionPanel } from "./human-action-panel";
 import { apiBase, getJson, taskDependencySchema, taskSchema } from "@/lib/api";
 
 const step=z.object({id:z.string(),runId:z.string(),stepType:z.string(),status:z.string(),startedAt:z.string(),completedAt:z.string().nullable(),durationMs:z.number().nullable(),attempt:z.number(),error:z.string().nullable(),output:z.string().nullable(),hasLog:z.boolean(),outputTruncated:z.boolean()});
@@ -32,12 +33,15 @@ const mergeStatus=z.object({taskId:z.string(),status:z.string(),headSha:z.string
 const attempts=z.object({repairPaused:z.boolean(),implementation:z.number(),quotaInterruptions:z.number(),ciRepairs:z.number(),maxImplementation:z.number().nullable(),maxQuotaInterruptions:z.number().nullable(),maxCiRepairs:z.number(),latestRetryReason:z.string().nullable()});
 const mergeRequest=z.object({id:z.string(),requestedBy:z.string(),requestedAt:z.string(),completedAt:z.string().nullable(),status:z.string(),headSha:z.string().nullable(),error:z.string().nullable()});
 const taskEvent=z.object({id:z.number(),fromStatus:z.string().nullable(),toStatus:z.string(),reason:z.string().nullable(),actor:z.string(),occurredAt:z.string()});
+const humanRequest=z.object({id:z.string(),agentRunId:z.string(),kind:z.string(),prompt:z.string(),choices:z.array(z.string()),checks:z.array(z.string()),context:z.string().nullable(),branchName:z.string().nullable(),headCommit:z.string().nullable(),createdAt:z.string(),resolution:z.string().nullable(),answer:z.string().nullable(),resolvedAt:z.string().nullable()});
+const workspace=z.object({isClean:z.boolean(),currentBranch:z.string(),headCommit:z.string()});
 const details=z.object({
   task:taskSchema,
   issue:z.object({issueNumber:z.number(),title:z.string(),body:z.string(),state:z.string(),author:z.string(),createdAt:z.string(),labels:z.array(z.string()).nullable()}).nullable(),
   comments:z.array(comment),runs:z.array(run),steps:z.array(step),agentRuns:z.array(agentRun),publications:z.array(publication),
   dependencies:z.array(taskDependencySchema),feedback:z.array(feedback),ciStatus:ciStatus.nullable(),mergeStatus:mergeStatus.nullable(),attempts,
-  mergeRequests:z.array(mergeRequest),taskEvents:z.array(taskEvent),validatedHeadCommit:z.string().nullable(),reviewFindings:z.array(reviewFinding)
+  mergeRequests:z.array(mergeRequest),taskEvents:z.array(taskEvent),validatedHeadCommit:z.string().nullable(),reviewFindings:z.array(reviewFinding),
+  humanRequests:z.array(humanRequest),verificationWorkspace:workspace.nullable()
 });
 const retryable=new Set(["Failed","WaitingForQuota","NeedsHuman","Rejected"]);
 const cancellable=new Set(["Pending","Claimed","Preparing","Planning","Implementing","Validating","Reviewing","ReadyForPublish","WaitingForQuota","NeedsHuman","Failed"]);
@@ -87,6 +91,7 @@ async function continueWithFeedback(id:string,feedback:string) {
   return "Task continued with feedback.";
 }
 
+
 async function setReviewMinutes(id:string,minutes:number) {
   const response=await fetch(`${apiBase}/api/tasks/${id}/review-time`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({minutes})});
   if(!response.ok)throw new Error(`Factory API returned ${response.status}`);
@@ -135,7 +140,7 @@ export default function TaskDetails({params}:{params:Promise<{id:string}>}) {
   if(error)return <Empty>Unable to load this task</Empty>;
   if(!data)return <Empty>Loading task…</Empty>;
   const {task,issue}=data;
-  const canRetry=retryable.has(task.status); const canCancel=cancellable.has(task.status); const canContinue=continuable.has(task.status); const canLogReviewTime=reviewable.has(task.status);
+  const canRetry=retryable.has(task.status)&&!data.humanRequests.some(request=>request.resolution===null); const canCancel=cancellable.has(task.status); const canContinue=continuable.has(task.status); const canLogReviewTime=reviewable.has(task.status);
   const latestSummary=data.runs.find(r=>r.headCommit);
   const latestPublication=data.publications[0];
   const publicationInFlight=latestPublication&&["Requested","Publishing"].includes(latestPublication.status);
@@ -161,6 +166,7 @@ export default function TaskDetails({params}:{params:Promise<{id:string}>}) {
     <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="eyebrow">Task · {task.repository} {task.issueNumber&&`#${task.issueNumber}`}</p><h1 className="mt-1 text-2xl font-semibold">{task.title}</h1><p className="mt-1 text-sm text-muted-foreground">Created {new Date(task.createdAt).toLocaleString()}</p></div><div className="flex items-center gap-2">{canPublish&&<button className="tone-green flex items-center gap-2 rounded border px-3 py-2 text-xs disabled:opacity-40" disabled={action.isPending} onClick={()=>action.mutate("publish")}><GitPullRequest className="size-3.5"/>Publish</button>}{canRetry&&<button className="flex items-center gap-2 rounded border border-[var(--border)] px-3 py-2 text-xs disabled:opacity-40" disabled={action.isPending} onClick={()=>action.mutate("retry")}><RotateCcw className="size-3.5"/>Retry</button>}{canCancel&&<button className="tone-red flex items-center gap-2 rounded border px-3 py-2 text-xs disabled:opacity-40" disabled={action.isPending} onClick={()=>action.mutate("cancel")}><Square className="size-3.5"/>Cancel</button>}<MergePolicyBadge requireHumanMerge={task.requireHumanMerge}/><Badge value={task.status}/></div></div>
     {task.status==="Stopping"&&<div role="status" className="tone-amber rounded border px-4 py-3 text-sm">Stop requested. The worker is terminating the active process and will mark the task Cancelled after cleanup.</div>}
     {outcome&&<div role="status" className={`${outcome.tone==="success"?"tone-green":"tone-red"} rounded border px-4 py-3 text-sm`}>{outcome.message}</div>}
+    <HumanActionPanel id={id} data={data}/>
     <section className="panel flex flex-wrap items-center justify-between gap-3 p-4"><div><p className="text-sm font-semibold">Pull request merge</p><p className="mt-1 text-xs text-muted-foreground">{mergeReason??"Ready for an operator merge. GitHub and CI are checked again when clicked."}</p>{latestMergeRequest?.status==="Failed"&&<p role="alert" className="mt-2 text-xs text-[var(--badge-red-fg)]">Last merge failed: {latestMergeRequest.error}</p>}</div><button className="tone-green rounded border px-3 py-2 text-xs disabled:opacity-40" disabled={!!mergeReason||action.isPending} onClick={()=>action.mutate("merge")}>Merge pull request</button></section>
     {!!data.mergeRequests.length&&<section className="panel p-4"><p className="text-sm font-semibold">Merge request history</p><ul className="mt-2 space-y-2 text-xs">{data.mergeRequests.map(request=><li className="rounded border border-[var(--border)] p-2" key={request.id}>{request.status} · {request.requestedBy} · {new Date(request.requestedAt).toLocaleString()}{request.headSha&&` · ${request.headSha.slice(0,7)}`}{request.error&&<p className="mt-1 text-[var(--badge-red-fg)]">{request.error}</p>}</li>)}</ul></section>}
     {!!data.taskEvents.length&&<section className="panel p-4"><p className="text-sm font-semibold">Task audit history</p><ul className="mt-2 space-y-2 text-xs">{data.taskEvents.map(event=><li className="rounded border border-[var(--border)] p-2" key={event.id}><span className="font-medium">{event.fromStatus?`${event.fromStatus} → `:""}{event.toStatus}</span> · {event.actor} · {new Date(event.occurredAt).toLocaleString()}{event.reason&&<p className="mt-1 text-muted-foreground">{event.reason}</p>}</li>)}</ul></section>}

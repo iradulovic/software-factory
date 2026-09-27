@@ -1,5 +1,12 @@
 using System.Text.Json;
 
+public sealed class VerificationWorkspaceRow
+{
+    public string? BranchName { get; init; }
+    public string? WorktreePath { get; init; }
+    public string BaseBranch { get; init; } = "main";
+}
+
 public sealed class AgentRunDetailsRow
 {
     public Guid Id { get; init; }
