@@ -83,7 +83,7 @@ public sealed class CliAgentAvailabilityChecker(AgentProfile profile, IProcessRu
         }
 
         if (authentication.TimedOut)
-            return new AgentAvailability(Agent, false, version.StandardOutput.Trim(), "Authentication check timed out; re-authenticate the CLI.");
+            return new AgentAvailability(Agent, false, version.StandardOutput.Trim(), "Authentication check timed out");
         if (authentication.Cancelled)
             return new AgentAvailability(Agent, false, version.StandardOutput.Trim(), "Authentication check cancelled");
         if (!authentication.Succeeded)

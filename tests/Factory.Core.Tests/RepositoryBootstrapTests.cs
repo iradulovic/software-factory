@@ -17,7 +17,7 @@ public sealed class RepositoryBootstrapTests
 
         var body = BootstrapIssueBody.Render(brief);
 
-        Assert.Equal("""
+        var expected = """
             Read AGENTS.md and NEW_APP.md. Derive this application from the recorded base release. Use the both shell. Implement the first journey described in the product brief. Keep authentication and authorization separate and connect the selected backend through its OpenAPI contract. Begin in local mock mode if backend/provider details are not yet available; report what remains necessary for production.
 
             ## Product brief
@@ -31,6 +31,8 @@ public sealed class RepositoryBootstrapTests
             ## First journey
 
             A signed-in researcher creates a note and sees it in the dashboard.
-            """, body);
+            """;
+
+        Assert.Equal(expected.ReplaceLineEndings("\n"), body.ReplaceLineEndings("\n"));
     }
 }
