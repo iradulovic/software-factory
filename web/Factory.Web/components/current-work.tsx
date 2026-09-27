@@ -7,6 +7,7 @@ import { ArrowDown, ExternalLink, Radio } from "lucide-react";
 import { apiBase, currentExecutionSchema, getJson, runDetailsSchema, type CurrentExecution, type FactoryRunStep } from "@/lib/api";
 import { Badge, Duration } from "@/components/ui";
 import { emptyRunHistory, preserveRunHistory } from "@/lib/run-history";
+import { isNearBottom } from "@/lib/event-history-follow";
 
 const tailBytes = 64 * 1024;
 const ansi = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])/g;
@@ -141,6 +142,8 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
   const currentTaskId = execution?.taskId ?? null;
   const receivedSteps = useMemo(() => runDetails.data?.steps.filter(step => step.status !== "Pending") ?? null, [runDetails.data?.steps]);
   const history = preserveRunHistory(rememberedHistory, currentTaskId, runId, runDetails.data?.run.id ?? null, receivedSteps);
+  const [eventFollow, setEventFollow] = useState<{ runId: string | null; following: boolean }>({ runId: null, following: true });
+  const followEvents = eventFollow.runId !== history.runId || eventFollow.following;
   if (history !== rememberedHistory) setRememberedHistory(history);
 
   useEffect(() => {
@@ -149,8 +152,8 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
   }, []);
 
   useEffect(() => {
-    if (eventHistory.current) eventHistory.current.scrollTop = 0;
-  }, [history.runId]);
+    if (followEvents && eventHistory.current) eventHistory.current.scrollTop = eventHistory.current.scrollHeight;
+  }, [followEvents, history.runId, history.steps, execution?.status, execution?.implementationAttempt, runDetails.error, runDetails.isPending, quotaAgents]);
 
   useEffect(() => {
     if (lastStep.current === stepId) return;
@@ -173,6 +176,10 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
   const output = stepId && !log.error && !log.isPending ? readableOutput(log.data ?? "") : "";
   const isAgent = execution?.stepType === "AgentImplementation";
   const isTailLimited = log.data ? new TextEncoder().encode(log.data).length >= tailBytes : false;
+  const stepLabel = execution?.stepType?.replace(/([a-z])([A-Z])/g, "$1 $2") ?? "Current step";
+  const outputDescription = stepId
+    ? `Output for ${stepLabel} · ${lastOutputAt ? `new output ${age(new Date(lastOutputAt).toISOString(), now)}` : "output timestamp unavailable"}`
+    : execution ? statusMessage(execution) : "No active process output.";
   const steps = history.steps;
 
   return <section className="panel min-w-0 overflow-hidden" aria-label="Current work">
@@ -197,9 +204,13 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
       <div><p className="eyebrow">Timing</p><p className="mt-1 text-sm">Run started {execution.runId ? formatTime(execution.runStartedAt) : "not started"}</p><p className="text-xs text-muted-foreground">Current step started {execution.stepId ? formatTime(execution.stepStartedAt) : "—"}</p><p className="text-xs text-muted-foreground">Last progress {age(execution.lastProgressAt, now)}</p></div>
       <div className="flex flex-wrap gap-3 sm:col-span-2 xl:col-span-4"><Link className="text-sm font-medium text-emerald-400 hover:underline" href={`/tasks/${execution.taskId}`}>Open task →</Link>{execution.runId && <Link className="text-sm font-medium text-emerald-400 hover:underline" href={`/runs/${execution.runId}`}>Open run →</Link>}</div>
     </div>}
-    {execution?.taskId && <div className="grid min-w-0 gap-0 lg:grid-cols-[minmax(13rem,1fr)_minmax(0,2fr)]">
-      <div className="min-w-0 border-b border-[var(--border)] p-4 sm:p-5 lg:border-b-0 lg:border-r">
-        <p className="eyebrow">System events</p>
+    {execution?.taskId && <div className="grid min-w-0 gap-0 lg:h-[clamp(22rem,56vh,40rem)] lg:grid-cols-[minmax(13rem,1fr)_minmax(0,2fr)]">
+      <section className="flex min-w-0 flex-col overflow-hidden border-b border-[var(--border)] p-4 sm:p-5 lg:h-full lg:min-h-0 lg:border-b-0 lg:border-r" aria-label="System events">
+        <header className="shrink-0">
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <p className="eyebrow">System events</p>
+            {!followEvents && <button type="button" className="flex shrink-0 items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-xs text-emerald-400 hover:bg-muted/30" onClick={() => { setEventFollow({ runId: history.runId, following: true }); if (eventHistory.current) eventHistory.current.scrollTop = eventHistory.current.scrollHeight; }}><ArrowDown className="size-3.5"/>Jump to latest</button>}
+          </div>
         {execution?.taskId ? <>
           <div className={`mt-3 rounded border-l-2 px-3 py-2 text-xs ${stateAccent(execution.status, !!snapshot.error)}`} aria-label="Current execution state">
             <p className="eyebrow">{snapshot.error ? "Last known state · stale" : "Current state"}</p>
@@ -207,7 +218,9 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
             <p className="mt-1 text-muted-foreground">Last progress {execution.lastProgressAt ? formatTime(execution.lastProgressAt) : "time unknown"}</p>
           </div>
           {snapshot.error && <p role="alert" className="mt-2 text-xs text-amber-300">Execution refresh failed. Current state and event history below are the last known data, not confirmed live.</p>}
-          <div ref={eventHistory} className="mt-3 max-h-[min(28rem,60vh)] space-y-3 overflow-y-auto overscroll-contain pr-2 text-xs" aria-label="System event history">
+        </> : <p className="mt-3 text-xs text-muted-foreground">{snapshot.error ? "Execution events unavailable while the API is offline." : "No active execution events."}</p>}
+        </header>
+        {execution?.taskId && <div ref={eventHistory} onScroll={event => { const node = event.currentTarget; setEventFollow({ runId: history.runId, following: isNearBottom(node.scrollHeight, node.scrollTop, node.clientHeight) }); }} className="mt-3 h-[min(32vh,20rem)] min-h-[8rem] min-w-0 space-y-3 overflow-y-auto pr-2 text-xs lg:h-auto lg:flex-1" aria-label="System event history" role="log" aria-live="off">
             {execution.implementationAttempt != null && execution.implementationAttempt > 1 && <p className="border-l-2 border-amber-500 pl-3">Retry attempt {execution.implementationAttempt} of {execution.maxImplementationAttempts ?? "?"}</p>}
             {execution.stepType?.includes("Validat") && <p className="border-l-2 border-blue-500 pl-3">Independent validation is in progress.</p>}
             {quotaAgents.length > 0 && <p className="border-l-2 border-amber-500 pl-3">Quota blocked: {quotaAgents.join(", ")}</p>}
@@ -221,23 +234,24 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
               <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{step.stepType.replace(/([a-z])([A-Z])/g, "$1 $2")}</span><span className="flex items-center gap-2"><Badge value={step.status}/><Duration seconds={stepDurationSeconds(step, now)}/></span></div>
               <span className="mt-1 block text-muted-foreground">Attempt {step.attempt} · Started {formatTime(step.startedAt)}{step.completedAt ? ` · Completed ${formatTime(step.completedAt)}` : step.status === "Running" ? " · In progress" : " · Completion time unavailable"}</span>
             </div>)}
-          </div>
-        </> : <p className="mt-3 text-xs text-muted-foreground">{snapshot.error ? "Execution events unavailable while the API is offline." : "No active execution events."}</p>}
-      </div>
-      <div className="min-w-0 p-4 sm:p-5">
-        <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="eyebrow">Process output</p><p className="mt-1 text-xs text-muted-foreground">{lastOutputAt ? `New output seen ${age(new Date(lastOutputAt).toISOString(), now)}` : "Output timestamp unavailable · progress time shown above"}</p></div><div className="flex items-center gap-3">{stepId && <a className="text-xs text-emerald-400 hover:underline" href={`${apiBase}/api/steps/${stepId}/log`} target="_blank" rel="noreferrer">Full log ↗</a>}<button className="flex items-center gap-1 text-xs text-emerald-400 disabled:text-muted-foreground" disabled={!stepId || followTail} onClick={() => setFollowTail(true)}><ArrowDown className="size-3.5"/>Follow tail {followTail ? "on" : "off"}</button></div></div>
-        <div ref={transcript} onScroll={event => { const node = event.currentTarget; if (node.scrollHeight - node.scrollTop - node.clientHeight > 32) setFollowTail(false); }} className="console mt-3 h-64 min-w-0 overflow-auto rounded p-3 sm:h-80" role="log" aria-label="Current process output" aria-live="off">
+          </div>}
+      </section>
+      <section className="flex min-w-0 flex-col overflow-hidden border-b border-[var(--border)] p-4 sm:p-5 lg:h-full lg:min-h-0 lg:border-b-0" aria-label="Process output">
+        <header className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0"><p className="eyebrow">Process output</p><p className="mt-1 break-words text-xs text-muted-foreground">{outputDescription}</p></div>
+          <div className="flex shrink-0 items-center gap-3">{stepId && <a className="text-xs text-emerald-400 hover:underline" href={`${apiBase}/api/steps/${stepId}/log`} target="_blank" rel="noreferrer">Full log ↗</a>}<button type="button" className="flex items-center gap-1 text-xs text-emerald-400 disabled:text-muted-foreground" disabled={!stepId || followTail} onClick={() => setFollowTail(true)}><ArrowDown className="size-3.5"/>Follow tail {followTail ? "on" : "off"}</button></div>
+        </header>
+        <div ref={transcript} onScroll={event => { const node = event.currentTarget; if (node.scrollHeight - node.scrollTop - node.clientHeight > 32) setFollowTail(false); }} className="console mt-3 h-[min(26vh,16rem)] min-h-[7rem] min-w-0 overflow-auto rounded p-3 lg:h-auto lg:flex-1" role="log" aria-label="Current process output" aria-live="off">
           {snapshot.error ? <p className="text-xs text-amber-300">Live output unavailable while the API is offline.</p>
             : !execution?.taskId ? <p className="text-xs text-muted-foreground">No process is running.</p>
-            : !stepId ? <p className="text-xs text-muted-foreground">{statusMessage(execution)}</p>
+            : !stepId ? <div className="flex min-h-full items-center justify-center p-4 text-center"><p className="text-xs text-muted-foreground">No active step. {statusMessage(execution)}</p></div>
             : log.error ? <p className="text-xs text-amber-300">Log unavailable or not written yet. Retrying on the next refresh.</p>
             : log.isPending ? <p className="text-xs text-muted-foreground">Loading current step output…</p>
-            : !output ? <p className="text-xs text-muted-foreground">The current step has not produced output yet.</p>
+            : !output ? <div className="flex min-h-full items-center justify-center p-4 text-center"><p className="max-w-sm text-sm text-muted-foreground">{execution.status === "Running" || execution.status === "Stopping" ? `${stepLabel} is ${execution.status === "Stopping" ? "stopping" : "running"}; no output yet.` : "The current step has not produced output yet."}</p></div>
             : <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-5">{output}</pre>}
         </div>
-        {isTailLimited && <p className="mt-2 text-xs text-amber-300">Showing the latest 64 KiB only. Earlier output may be truncated; open the full log for all output.</p>}
-        {stepId && !isAgent && <p className="mt-2 text-xs text-muted-foreground">Output belongs to the current {execution?.stepType?.replace(/([a-z])([A-Z])/g, "$1 $2")} step.</p>}
-      </div>
+        {(isTailLimited || (stepId && !isAgent)) && <footer className="shrink-0 pt-2">{isTailLimited && <p className="text-xs text-amber-300">Showing the latest 64 KiB only. Earlier output may be truncated; open the full log for all output.</p>}{stepId && !isAgent && <p className="text-xs text-muted-foreground">Output belongs to the current {stepLabel} step.</p>}</footer>}
+      </section>
     </div>}
   </section>;
 }
