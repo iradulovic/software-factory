@@ -1,7 +1,50 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { FactoryRunStep } from "@/lib/api";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { CurrentExecution, FactoryRunStep } from "@/lib/api";
+import { CurrentAgentInvocation } from "@/components/current-work";
 import { emptyRunHistory, preserveRunHistory } from "@/lib/run-history";
+
+function makeExecution(overrides: Partial<CurrentExecution> = {}): CurrentExecution {
+  return {
+    status: "Running", taskStatus: "Implementing", taskId: "task-1", taskTitle: "Current task",
+    taskUrl: "/tasks/task-1", repository: "acme/repo", issueNumber: 209, issueUrl: null,
+    agent: "Codex", agentRunId: "agent-run-1", agentModel: "gpt-6-sol", agentReasoningEffort: "medium",
+    agentPurpose: "Implement", agentInvocationContext: "Active", runId: "run-1", runStartedAt: null,
+    stepId: "step-1", stepType: "AgentImplementation", stepStartedAt: null, implementationAttempt: 1,
+    maxImplementationAttempts: 3, startedAt: null, lastProgressAt: null, elapsedSeconds: null,
+    lastProgressAgeSeconds: null, ...overrides
+  };
+}
+
+test("active current invocation renders recorded model and reasoning effort", () => {
+  const html = renderToStaticMarkup(<CurrentAgentInvocation execution={makeExecution()}/>);
+
+  assert.match(html, /Actual agent/);
+  assert.match(html, /Codex · gpt-6-sol · medium/);
+  assert.match(html, /aria-label="Actual agent: Codex · gpt-6-sol · medium"/);
+});
+
+test("active invocation without a run record shows metadata pending instead of older values", () => {
+  const html = renderToStaticMarkup(<CurrentAgentInvocation execution={makeExecution({
+    agent: "Claude", agentRunId: null, agentModel: null, agentReasoningEffort: null,
+    agentPurpose: null, agentInvocationContext: "Pending"
+  })}/>);
+
+  assert.match(html, /Claude · Invocation metadata pending/);
+  assert.doesNotMatch(html, /gpt-6-sol|medium/);
+});
+
+test("last invocation during validation identifies the prior invocation and explains missing fields", () => {
+  const html = renderToStaticMarkup(<CurrentAgentInvocation execution={makeExecution({
+    status: "Running", taskStatus: "Validating", stepType: "Build", agentPurpose: "Fix",
+    agentInvocationContext: "Last", agentModel: null, agentReasoningEffort: null
+  })}/>);
+
+  assert.match(html, /Last agent invocation · fix/);
+  assert.match(html, /Codex · Model not recorded · Reasoning effort not recorded/);
+  assert.match(html, /title="Last agent invocation · fix: Codex · Model not recorded · Reasoning effort not recorded"/);
+});
 
 function makeStep(id: string, status: string, startedAt: string): FactoryRunStep {
   return {

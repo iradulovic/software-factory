@@ -67,6 +67,26 @@ function stepAccent(status: string) {
   }
 }
 
+export function CurrentAgentInvocation({ execution }: { execution: CurrentExecution }) {
+  const isLastInvocation = execution.agentInvocationContext === "Last";
+  const label = isLastInvocation ? "Last agent invocation" : "Actual agent";
+  const purpose = isLastInvocation && execution.agentPurpose
+    ? ` · ${execution.agentPurpose.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()}`
+    : "";
+  const agent = execution.agent ?? "Selecting agent";
+  const value = execution.agentInvocationContext === "Pending"
+    ? `${agent} · Invocation metadata pending`
+    : execution.agentInvocationContext === "None"
+      ? agent
+      : `${agent} · ${execution.agentModel ?? "Model not recorded"} · ${execution.agentReasoningEffort ?? "Reasoning effort not recorded"}`;
+  const fullValue = `${label}${purpose}: ${value}`;
+
+  return <div className="min-w-0">
+    <p className="eyebrow">{label}{purpose}</p>
+    <p className="mt-1 break-words text-sm" title={fullValue} aria-label={fullValue}>{value}</p>
+  </div>;
+}
+
 export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(() => Date.now());
@@ -172,7 +192,7 @@ export function CurrentWork({ quotaAgents = [] }: { quotaAgents?: string[] }) {
     {pauseRepairs.isError && pauseRepairs.variables === execution?.taskId && <p role="alert" className="border-b border-[var(--border)] px-4 py-2 text-xs text-red-400">{pauseRepairs.error.message}</p>}
     {execution?.taskId && <div className="grid gap-4 border-b border-[var(--border)] p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-[1.3fr_1fr_1fr_1fr]">
       <div className="min-w-0"><p className="eyebrow">Issue / repository</p><p className="mt-1 break-words text-sm">{execution.issueUrl && execution.issueNumber ? <a className="text-emerald-400 hover:underline" href={execution.issueUrl} target="_blank" rel="noreferrer">#{execution.issueNumber} <ExternalLink className="inline size-3"/></a> : "Local task"} · {execution.repository}</p></div>
-      <div><p className="eyebrow">Actual agent</p><p className="mt-1 text-sm">{execution.agent ?? "Selecting agent"}</p></div>
+      <CurrentAgentInvocation execution={execution}/>
       <div><p className="eyebrow">Current step</p><p className="mt-1 text-sm">{execution.stepType?.replace(/([a-z])([A-Z])/g, "$1 $2") ?? "Between steps"}{execution.implementationAttempt != null && ` · attempt ${execution.implementationAttempt}/${execution.maxImplementationAttempts ?? "?"}`}</p></div>
       <div><p className="eyebrow">Timing</p><p className="mt-1 text-sm">Run started {execution.runId ? formatTime(execution.runStartedAt) : "not started"}</p><p className="text-xs text-muted-foreground">Current step started {execution.stepId ? formatTime(execution.stepStartedAt) : "—"}</p><p className="text-xs text-muted-foreground">Last progress {age(execution.lastProgressAt, now)}</p></div>
       <div className="flex flex-wrap gap-3 sm:col-span-2 xl:col-span-4"><Link className="text-sm font-medium text-emerald-400 hover:underline" href={`/tasks/${execution.taskId}`}>Open task →</Link>{execution.runId && <Link className="text-sm font-medium text-emerald-400 hover:underline" href={`/runs/${execution.runId}`}>Open run →</Link>}</div>
