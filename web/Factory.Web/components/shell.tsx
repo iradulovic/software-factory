@@ -8,6 +8,7 @@ import { z } from "zod";
 import { Activity, Bell, Boxes, CircleGauge, Database, ListTodo, LoaderCircle, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, globalPauseScope, githubStatusSchema, pauseStateSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
+import { AssistantDrawer } from "@/components/assistant-drawer";
 import { AgentUsageDetails } from "@/components/agent-usage";
 import { buildServiceHealthIndicators, ServiceHealthIndicators } from "@/components/service-health-indicators";
 import { NudgeCard, useFixNudgeConflict, useMarkNudgeRead, useNudges } from "@/components/nudge-inbox";
@@ -100,6 +101,7 @@ export function Shell({ children, defaultSidebarOpen }: { children: React.ReactN
         </header>
         <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">{children}</div>
       </SidebarInset>
+      <AssistantDrawer pathname={pathname} />
     </SidebarProvider>
   );
 }

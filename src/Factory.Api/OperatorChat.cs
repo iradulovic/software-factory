@@ -8,12 +8,16 @@ using Npgsql;
 namespace Factory.Api;
 
 public sealed record OperatorConversationMessage(string Role, string Content);
-public sealed record OperatorQuestion(string Text, IReadOnlyList<OperatorConversationMessage>? History = null);
+public sealed record OperatorQuestion(string Text, IReadOnlyList<OperatorConversationMessage>? History = null,
+    OperatorPageContext? Context = null);
 public sealed record OperatorEvidence(string Label, string Detail, string Href);
 public sealed record OperatorAction(string Label, string Path, string OutcomePath, bool? ExpectedPaused = null);
+public sealed record OperatorContextDetails(string Status, string? Kind, string? Label, string? Href,
+    DateTimeOffset? ViewedAt = null, DateTimeOffset? ObservedAt = null);
 public sealed record OperatorReply(string Observed, string? Explanation, string? Suggestion,
     IReadOnlyList<OperatorEvidence> Evidence, OperatorAction? Action, DateTimeOffset AsOf,
-    string Route = "deterministic", string? Agent = null);
+    string Route = "deterministic", string? Agent = null, bool LiveStateUsed = false,
+    OperatorContextDetails? Context = null);
 
 public static partial class OperatorQuestionParser
 {
@@ -38,6 +42,13 @@ public static partial class OperatorQuestionParser
             : q.Contains("next") ? "next"
             : null;
         return (intent, ids.Length == 1 ? ids[0] : null, ids.Length > 1);
+    }
+
+    public static (Guid? TaskId, bool Ambiguous) ResolveTaskTarget(Guid? questionTaskId, bool questionAmbiguous, Guid? pageTaskId)
+    {
+        if (questionAmbiguous || questionTaskId is not null && pageTaskId is not null && questionTaskId != pageTaskId)
+            return (null, true);
+        return (questionTaskId ?? pageTaskId, false);
     }
 }
 
@@ -70,19 +81,33 @@ public static class OperatorMergeEligibility
 public interface IOperatorStateResponder
 {
     Task<OperatorReply> AnswerAsync(string question, CancellationToken ct);
+
+    Task<OperatorReply> AnswerAsync(string question, ResolvedOperatorContext? pageContext, CancellationToken ct) =>
+        AnswerAsync(question, ct);
 }
 
 public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, IOptions<GitHubSyncOptions> githubOptions,
     IOptions<FactoryOptions> factoryOptions)
     : IOperatorStateResponder
 {
-    public async Task<OperatorReply> AnswerAsync(string question, CancellationToken ct)
+    public Task<OperatorReply> AnswerAsync(string question, CancellationToken ct) => AnswerAsync(question, null, ct);
+
+    public async Task<OperatorReply> AnswerAsync(string question, ResolvedOperatorContext? pageContext, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
         var (intent, taskId, ambiguous) = OperatorQuestionParser.Parse(question);
         if (intent is null) throw new InvalidOperationException("The deterministic operator responder received an unmatched question.");
         if (ambiguous) return Reply("The request names more than one task.", "I cannot choose which task to change.",
             "Ask again with exactly one task ID.", now);
+        if (intent is "cancel" or "stop-repairs" or "merge" or "retry")
+        {
+            var target = OperatorQuestionParser.ResolveTaskTarget(taskId, false, pageContext?.TaskId);
+            if (target.Ambiguous)
+                return Reply("The question names a different task from the page you are viewing.",
+                    "I cannot choose between the task in the question and the task in the page context.",
+                    "Open the task you mean or ask again with its full task ID.", now);
+            taskId = target.TaskId;
+        }
         await using var db = await dataSource.OpenConnectionAsync(ct);
         if (intent is "pause" or "resume")
         {
@@ -99,7 +124,7 @@ public sealed class OperatorChat(NpgsqlDataSource dataSource, ITaskStore tasks, 
         if (intent is "cancel" or "stop-repairs" or "merge" or "retry")
         {
             if (taskId is null) return Reply("No single task was identified.", null,
-                "Open a task and ask again with its full task ID.", now);
+                "Open a task page or ask again with its full task ID.", now);
             var task = await db.QuerySingleOrDefaultAsync<OperatorTaskRow>(new CommandDefinition("""
                 SELECT t.id,t.title,t.status,t.repair_paused AS "RepairPaused",
                   gr.owner AS "RepositoryOwner",gr.name AS "RepositoryName",i.issue_number AS "IssueNumber",
