@@ -1,11 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
 import {
   buildServiceHealthIndicators,
-  ServiceHealthIndicators,
-  summarizeServiceHealth
+  ServiceHealthIndicators
 } from "../components/service-health-indicators";
+
+type TriggerProps = {
+  className: string;
+  onPointerEnter: (event: { pointerType: string; currentTarget: HTMLButtonElement }) => void;
+  onPointerLeave: (event: { pointerType: string }) => void;
+  onClick: (event: { detail: number; currentTarget: HTMLButtonElement; preventDefault: () => void }) => void;
+};
+
+function trigger(indicators: ReturnType<typeof buildServiceHealthIndicators>, options: { popoverOpen?: boolean; openedByHover?: boolean } = {}) {
+  return ServiceHealthIndicators({
+    indicators,
+    popoverOpen: options.popoverOpen ?? false,
+    openedByHover: options.openedByHover ?? false,
+    onActivate: () => {},
+    onPointerEnter: () => {},
+    onPointerLeave: () => {}
+  }) as unknown as ReactElement<TriggerProps>;
+}
 
 test("keeps mixed GitHub and agent states independent in the responsive header indicators", () => {
   const indicators = buildServiceHealthIndicators({
@@ -22,19 +40,16 @@ test("keeps mixed GitHub and agent states independent in the responsive header i
     ["Codex", "healthy"],
     ["Claude", "unavailable"]
   ]);
-  assert.equal(summarizeServiceHealth(indicators), "2 ready · 1 unavailable");
-
-  const html = renderToStaticMarkup(<ServiceHealthIndicators indicators={indicators} popoverOpen={false} onActivate={() => {}} />);
-  assert.match(html, /aria-label="GitHub: Available\. Open service health details\."/);
-  assert.match(html, /aria-label="Codex: Verified\. Open service health details\."/);
-  assert.match(html, /aria-label="Claude: Unavailable\. Open service health details\."/);
+  const html = renderToStaticMarkup(trigger(indicators));
+  assert.equal((html.match(/<button/g) ?? []).length, 1, "all services must share one trigger");
+  assert.match(html, /aria-label="View service health\. GitHub: Available; Codex: Verified; Claude: Unavailable\."/);
   assert.match(html, /aria-haspopup="dialog"/);
   assert.match(html, /aria-expanded="false"/);
   assert.match(html, /aria-controls="service-health-popover"/);
-  assert.match(html, /data-health-state="unavailable"/);
-  assert.match(html, /hidden min-w-0 max-w-\[min\(45vw,38rem\)\].*lg:flex/);
-  assert.match(html, /class="lg:hidden"/);
-  assert.match(html, /View service health\. GitHub: Available; Codex: Verified; Claude: Unavailable\./);
+  assert.deepEqual([...html.matchAll(/data-health-state="([^"]+)"/g)].map(match => match[1]), ["healthy", "healthy", "unavailable"]);
+  assert.match(html, /max-w-\[min\(36vw,12rem\)\]/);
+  assert.match(html, /overflow-x-auto/);
+  assert.doesNotMatch(html, />(?:GitHub|Codex|Claude)</, "service names must stay out of the visible navbar label");
 });
 
 test("maps busy, paused, quota, unavailable, unknown, and loading into distinct state cues", () => {
@@ -54,13 +69,13 @@ test("maps busy, paused, quota, unavailable, unknown, and loading into distinct 
   });
 
   assert.deepEqual(indicators.map(({ kind }) => kind), ["loading", "busy", "paused", "quotaBlocked", "unavailable", "unknown", "unknown"]);
-  const html = renderToStaticMarkup(<ServiceHealthIndicators indicators={indicators} popoverOpen={false} onActivate={() => {}} />);
+  const html = renderToStaticMarkup(trigger(indicators));
   for (const state of ["loading", "busy", "paused", "quotaBlocked", "unavailable", "unknown"]) {
     assert.match(html, new RegExp(`data-health-state="${state}"`));
   }
-  assert.match(html, /aria-label="Paused Agent: Paused\. Open service health details\."/);
-  assert.match(html, /aria-label="Quota Agent: Quota Blocked\. Open service health details\."/);
-  assert.match(html, /aria-label="Offline Agent: Unavailable\. Open service health details\."/);
+  assert.match(html, /Paused Agent: Paused/);
+  assert.match(html, /Quota Agent: Quota Blocked/);
+  assert.match(html, /Offline Agent: Unavailable/);
 });
 
 test("reports status API failures and an empty configured agent set explicitly", () => {
@@ -85,5 +100,46 @@ test("reports status API failures and an empty configured agent set explicitly",
   });
   assert.equal(noAgents[1].label, "No agents configured");
   assert.equal(noAgents[1].kind, "unknown");
-  assert.match(renderToStaticMarkup(<ServiceHealthIndicators indicators={noAgents} popoverOpen={false} onActivate={() => {}} />), /No agents configured/);
+  assert.match(renderToStaticMarkup(trigger(noAgents)), /No agents configured/);
+});
+
+test("forwards mouse hover entry and exit to the shared popover", () => {
+  const indicators = buildServiceHealthIndicators({ github: { state: "Available" }, githubLoading: false, githubUnavailable: false, agents: [], agentsLoading: false, agentsUnavailable: false });
+  const calls: string[] = [];
+  const button = ServiceHealthIndicators({
+    indicators,
+    popoverOpen: false,
+    openedByHover: false,
+    onActivate: () => calls.push("activate"),
+    onPointerEnter: () => calls.push("open"),
+    onPointerLeave: () => calls.push("schedule-close")
+  }) as unknown as ReactElement<TriggerProps>;
+
+  button.props.onPointerEnter({ pointerType: "mouse", currentTarget: {} as HTMLButtonElement });
+  button.props.onPointerLeave({ pointerType: "mouse" });
+  assert.deepEqual(calls, ["open", "schedule-close"]);
+  assert.match((button.props.className as string), /rounded-md/);
+});
+
+test("uses click for touch and keyboard activation without dismissing a hover-open panel", () => {
+  const indicators = buildServiceHealthIndicators({ github: { state: "Available" }, githubLoading: false, githubUnavailable: false, agents: [], agentsLoading: false, agentsUnavailable: false });
+  const activations: boolean[] = [];
+  let prevented = false;
+  const makeButton = (popoverOpen: boolean, openedByHover: boolean) => ServiceHealthIndicators({
+    indicators,
+    popoverOpen,
+    openedByHover,
+    onActivate: keyboard => activations.push(keyboard),
+    onPointerEnter: () => activations.push(false),
+    onPointerLeave: () => {}
+  }) as unknown as ReactElement<TriggerProps>;
+  const touchButton = makeButton(false, false);
+  touchButton.props.onPointerEnter({ pointerType: "touch", currentTarget: {} as HTMLButtonElement });
+  touchButton.props.onClick({ detail: 1, currentTarget: {} as HTMLButtonElement, preventDefault: () => { prevented = true; } });
+  makeButton(false, false).props.onClick({ detail: 0, currentTarget: {} as HTMLButtonElement, preventDefault: () => { prevented = true; } });
+  makeButton(true, true).props.onClick({ detail: 1, currentTarget: {} as HTMLButtonElement, preventDefault: () => { prevented = true; } });
+  makeButton(true, true).props.onClick({ detail: 0, currentTarget: {} as HTMLButtonElement, preventDefault: () => { prevented = true; } });
+
+  assert.deepEqual(activations, [false, true, true], "keyboard activation of a hover-open trigger must still enter the panel");
+  assert.equal(prevented, true, "the first click after hover must not toggle the open panel closed");
 });

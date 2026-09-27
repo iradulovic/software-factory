@@ -2,7 +2,6 @@
 
 import { Activity, CircleCheck, CircleHelp, CirclePause, CircleSlash, CircleX, LoaderCircle } from "lucide-react";
 import type { AgentStatus, GitHubStatus } from "@/lib/api";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 export type ServiceHealthKind = "healthy" | "busy" | "paused" | "quotaBlocked" | "unavailable" | "unknown" | "loading";
 
@@ -73,16 +72,6 @@ export function buildServiceHealthIndicators(input: ServiceHealthInput): Service
   return [github, ...agents];
 }
 
-export function summarizeServiceHealth(indicators: ServiceHealthIndicator[]) {
-  const counts = new Map<string, number>();
-  for (const item of indicators) {
-    const group = item.state === "NoneConfigured" ? "No agents configured" : item.kind === "healthy" ? "ready" : item.kind === "quotaBlocked" ? "quota blocked" : item.kind === "unavailable" ? "unavailable" : item.kind;
-    counts.set(group, (counts.get(group) ?? 0) + 1);
-  }
-
-  return [...counts].map(([label, count]) => label === "No agents configured" ? label : `${count} ${label}`).join(" · ");
-}
-
 const stateIcon = {
   healthy: CircleCheck,
   busy: Activity,
@@ -111,61 +100,42 @@ function StateSymbol({ kind }: { kind: ServiceHealthKind }) {
 export function ServiceHealthIndicators({
   indicators,
   popoverOpen,
-  onActivate
+  openedByHover,
+  onActivate,
+  onPointerEnter,
+  onPointerLeave
 }: {
   indicators: ServiceHealthIndicator[];
   popoverOpen: boolean;
+  openedByHover: boolean;
   onActivate: (keyboardActivation: boolean, trigger: HTMLButtonElement) => void;
+  onPointerEnter: (trigger: HTMLButtonElement) => void;
+  onPointerLeave: () => void;
 }) {
-  const summary = summarizeServiceHealth(indicators);
   const accessibleSummary = `View service health. ${indicators.map(item => `${item.name}: ${item.label}`).join("; ")}.`;
 
-  return <TooltipProvider delayDuration={250}>
-    <div className="hidden min-w-0 max-w-[min(45vw,38rem)] items-center gap-1 overflow-x-auto lg:flex" aria-label="Individual service health indicators" role="group">
-      <Activity className="mx-1 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      {indicators.map(item => <Tooltip key={item.name}>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="flex h-8 max-w-28 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-            aria-label={`${item.name}: ${item.label}. Open service health details.`}
-            aria-haspopup="dialog"
-            aria-expanded={popoverOpen}
-            aria-controls="service-health-popover"
-            data-health-state={item.kind}
-            onClick={event => onActivate(event.detail === 0, event.currentTarget)}
-          >
-            <StateSymbol kind={item.kind} />
-            <span className="truncate">{item.name}</span>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-64">
-          <p>{item.name}: {item.label}</p>
-          <p className="mt-0.5 text-[11px] opacity-80">Activate for full service details.</p>
-        </TooltipContent>
-      </Tooltip>)}
-    </div>
-    <div className="lg:hidden">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="flex h-8 max-w-36 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-            aria-label={accessibleSummary}
-            aria-haspopup="dialog"
-            aria-expanded={popoverOpen}
-            aria-controls="service-health-popover"
-            onClick={event => onActivate(event.detail === 0, event.currentTarget)}
-          >
-            <Activity className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="truncate text-[11px]" aria-hidden="true">{summary}</span>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-72">
-          <p className="font-medium">Service health</p>
-          <p className="mt-0.5">{indicators.map(item => `${item.name}: ${item.label}`).join(" · ")}</p>
-        </TooltipContent>
-      </Tooltip>
-    </div>
-  </TooltipProvider>;
+  return <button
+    type="button"
+    className="flex h-8 min-w-8 max-w-[min(36vw,12rem)] shrink-0 items-center gap-1.5 overflow-hidden rounded-md px-2 text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+    aria-label={accessibleSummary}
+    aria-haspopup="dialog"
+    aria-expanded={popoverOpen}
+    aria-controls="service-health-popover"
+    onPointerEnter={event => { if (event.pointerType === "mouse") onPointerEnter(event.currentTarget); }}
+    onPointerLeave={event => { if (event.pointerType === "mouse") onPointerLeave(); }}
+    onClick={event => {
+      if (openedByHover && popoverOpen && event.detail !== 0) {
+        event.preventDefault();
+        return;
+      }
+      onActivate(event.detail === 0, event.currentTarget);
+    }}
+  >
+    <Activity className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+    <span className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]" aria-hidden="true">
+      {indicators.map(item => <span key={item.name} className="flex size-5 shrink-0 items-center justify-center" data-health-state={item.kind}>
+        <StateSymbol kind={item.kind} />
+      </span>)}
+    </span>
+  </button>;
 }
