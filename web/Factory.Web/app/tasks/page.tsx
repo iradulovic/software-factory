@@ -15,9 +15,8 @@ const agentsSchema = z.array(z.object({agent:z.string()}));
 const column = createColumnHelper<FactoryTask>();
 function AgentCell({task}:{task:FactoryTask}) {
   const codingClass=task.taskClass??"Legacy / unrecorded";
-  const effort=task.agentReasoningEffort??"Not recorded";
-  const metadata=`Coding class: ${codingClass} · effort: ${effort}${task.agentModel?` · model: ${task.agentModel}`:""}`;
-  return <div className="min-w-0 max-w-56"><div>{task.agent}</div><div className="truncate text-xs text-muted-foreground" title={metadata}>{metadata}</div></div>;
+  const modelEffort=`${task.agentModel??"Not recorded"}${task.agentReasoningEffort?` · ${task.agentReasoningEffort}`:""}`;
+  return <div className="w-48 min-w-0"><div>{task.agent}</div><dl className="mt-0.5 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-1 text-xs text-muted-foreground"><dt>Coding class:</dt><dd className="min-w-0 break-words">{codingClass}</dd><dt>Model / effort:</dt><dd className="min-w-0 break-words">{modelEffort}</dd></dl></div>;
 }
 const columns = [
   column.accessor("title",{header:"Task",cell:i=><Link className="font-medium hover:text-emerald-400" href={`/tasks/${i.row.original.id}`}>{i.getValue()}</Link>}),
