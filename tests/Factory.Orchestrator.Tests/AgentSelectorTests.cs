@@ -44,6 +44,36 @@ public sealed class AgentSelectorTests
     }
 
     [Fact]
+    public async Task Falls_back_to_the_next_available_agent_when_the_preferred_one_is_unauthenticated()
+    {
+        var store = new FakeTaskStore();
+        var codex = new StubAgent("Codex");
+        var claude = new StubAgent("Claude");
+        var selector = new AgentSelector([codex, claude], store,
+        [
+            new StubAvailabilityChecker("Codex", "Codex", new AgentAvailability("Codex", false, "codex 1.2.3", "Authentication check failed")),
+            new StubAvailabilityChecker("Claude", "Claude", new AgentAvailability("Claude", true, "claude 2.1.283", null))
+        ]);
+
+        var selected = await selector.SelectAsync("Codex", CancellationToken.None);
+
+        Assert.Same(claude, selected);
+    }
+
+    [Fact]
+    public async Task Returns_null_when_every_configured_agent_fails_authentication()
+    {
+        var store = new FakeTaskStore();
+        var selector = new AgentSelector([new StubAgent("Codex"), new StubAgent("Claude")], store,
+        [
+            new StubAvailabilityChecker("Codex", "Codex", new AgentAvailability("Codex", false, null, "Authentication check timed out")),
+            new StubAvailabilityChecker("Claude", "Claude", new AgentAvailability("Claude", false, null, "Executable not found"))
+        ]);
+
+        Assert.Null(await selector.SelectAsync("Codex", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Pi_is_available_as_a_fallback_when_Codex_is_paused_and_Claude_is_at_quota()
     {
         var store = new FakeTaskStore();
@@ -162,5 +192,12 @@ public sealed class AgentSelectorTests
         public bool AllowAutomaticFallback { get; } = allowAutomaticFallback;
         public bool SupportsTaskClass(string taskClass) => supportedClasses is null || supportedClasses.Contains(taskClass);
         public Task<AgentRunResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class StubAvailabilityChecker(string agent, string provider, AgentAvailability result) : IAgentAvailabilityChecker
+    {
+        public string Agent { get; } = agent;
+        public string Provider { get; } = provider;
+        public Task<AgentAvailability> CheckAsync(CancellationToken cancellationToken) => Task.FromResult(result);
     }
 }
