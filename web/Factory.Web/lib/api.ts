@@ -11,7 +11,10 @@ export type FactoryTask = z.infer<typeof taskSchema>;
 export const currentExecutionSchema = z.object({
   status: z.string(), taskStatus: z.string().nullable(), taskId: z.string().nullable(), taskTitle: z.string().nullable(),
   taskUrl: z.string().nullable(), repository: z.string().nullable(), issueNumber: z.number().nullable(), issueUrl: z.string().nullable(),
-  agent: z.string().nullable(), runId: z.string().nullable(), runStartedAt: z.string().nullable(),
+  agent: z.string().nullable(), agentRunId: z.string().nullable(), agentModel: z.string().nullable(),
+  agentReasoningEffort: z.string().nullable(), agentPurpose: z.string().nullable(),
+  agentInvocationContext: z.enum(["Active", "Last", "Pending", "None"]),
+  runId: z.string().nullable(), runStartedAt: z.string().nullable(),
   stepId: z.string().nullable(), stepType: z.string().nullable(), stepStartedAt: z.string().nullable(),
   implementationAttempt: z.number().nullable(), maxImplementationAttempts: z.number().nullable(),
   startedAt: z.string().nullable(), lastProgressAt: z.string().nullable(),

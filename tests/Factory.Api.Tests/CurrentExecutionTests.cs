@@ -24,6 +24,10 @@ public sealed class CurrentExecutionProjectionTests
         Assert.Null(snapshot.StepId);
         Assert.Null(snapshot.StepType);
         Assert.Null(snapshot.Agent);
+        Assert.Null(snapshot.AgentRunId);
+        Assert.Null(snapshot.AgentModel);
+        Assert.Null(snapshot.AgentReasoningEffort);
+        Assert.Equal("None", snapshot.AgentInvocationContext);
         Assert.Null(snapshot.LastProgressAt);
     }
 
@@ -40,6 +44,7 @@ public sealed class CurrentExecutionProjectionTests
         Assert.Equal("Starting", snapshot.Status);
         Assert.Null(snapshot.RunId);
         Assert.Null(snapshot.Agent);
+        Assert.Equal("None", snapshot.AgentInvocationContext);
     }
 
     [Fact]
@@ -55,7 +60,11 @@ public sealed class CurrentExecutionProjectionTests
             RepositoryOwner = "acme",
             RepositoryName = "factory",
             CurrentAgent = "Claude",
-            LastAgent = "Codex-Sol",
+            AgentRunId = Guid.NewGuid(),
+            AgentRunAgent = "Claude",
+            AgentRunModel = "claude-opus-4",
+            AgentRunReasoningEffort = "high",
+            AgentRunPurpose = "Implement",
             RunId = Guid.NewGuid(),
             RunStartedAt = now.AddMinutes(-1),
             StepId = Guid.NewGuid(),
@@ -68,6 +77,10 @@ public sealed class CurrentExecutionProjectionTests
         Assert.Equal("Stopping", snapshot.Status);
         Assert.Equal("Stopping", snapshot.TaskStatus);
         Assert.Equal("Claude", snapshot.Agent);
+        Assert.Equal("Active", snapshot.AgentInvocationContext);
+        Assert.Equal("claude-opus-4", snapshot.AgentModel);
+        Assert.Equal("high", snapshot.AgentReasoningEffort);
+        Assert.Equal("Implement", snapshot.AgentPurpose);
         Assert.Equal(2, snapshot.ImplementationAttempt);
         Assert.Equal(4, snapshot.MaxImplementationAttempts);
         Assert.Equal(stepStartedAt, snapshot.StartedAt);
@@ -81,11 +94,29 @@ public sealed class CurrentExecutionProjectionTests
         var snapshot = CurrentExecutionProjection.Create(new CurrentExecutionRow
         {
             TaskId = Guid.NewGuid(), TaskTitle = "Legacy Codex task", TaskStatus = "Implementing",
-            RepositoryOwner = "acme", RepositoryName = "factory", LastAgent = "Codex-Sol",
+            RepositoryOwner = "acme", RepositoryName = "factory", AgentRunId = Guid.NewGuid(), AgentRunAgent = "Codex-Sol",
             RunId = Guid.NewGuid(), RunStartedAt = DateTimeOffset.UtcNow
         }, "http://localhost:3000", DateTimeOffset.UtcNow);
 
         Assert.Equal("Codex", snapshot.Agent);
+        Assert.Equal("Last", snapshot.AgentInvocationContext);
+    }
+
+    [Fact]
+    public void Active_agent_without_a_matching_invocation_record_does_not_reuse_older_metadata()
+    {
+        var snapshot = CurrentExecutionProjection.Create(new CurrentExecutionRow
+        {
+            TaskId = Guid.NewGuid(), TaskStatus = "Reviewing", CurrentAgent = "Codex-Sol",
+            AgentRunAgent = "Claude", AgentRunModel = "older-model",
+            AgentRunReasoningEffort = "low", RunId = Guid.NewGuid(), StepId = Guid.NewGuid(), StepType = "AgentReviewFix"
+        }, "http://localhost:3000", DateTimeOffset.UtcNow);
+
+        Assert.Equal("Codex", snapshot.Agent);
+        Assert.Equal("Pending", snapshot.AgentInvocationContext);
+        Assert.Null(snapshot.AgentRunId);
+        Assert.Null(snapshot.AgentModel);
+        Assert.Null(snapshot.AgentReasoningEffort);
     }
 }
 
@@ -151,6 +182,9 @@ public sealed class CurrentExecutionEndpointTests : IClassFixture<RootEndpointTe
         Assert.Equal(expectedRepository, running.Document.RootElement.GetProperty("repository").GetString());
         Assert.Equal(expectedIssueUrl, running.Document.RootElement.GetProperty("issueUrl").GetString());
         Assert.Equal("Claude", running.Document.RootElement.GetProperty("agent").GetString());
+        Assert.Equal("Pending", running.Document.RootElement.GetProperty("agentInvocationContext").GetString());
+        Assert.Equal(JsonValueKind.Null, running.Document.RootElement.GetProperty("agentModel").ValueKind);
+        Assert.Equal(JsonValueKind.Null, running.Document.RootElement.GetProperty("agentReasoningEffort").ValueKind);
         Assert.Equal(runId!.Value, running.Document.RootElement.GetProperty("runId").GetGuid());
         Assert.Equal(currentStepId!.Value, running.Document.RootElement.GetProperty("stepId").GetGuid());
         Assert.Equal("AgentImplementation", running.Document.RootElement.GetProperty("stepType").GetString());
@@ -162,26 +196,84 @@ public sealed class CurrentExecutionEndpointTests : IClassFixture<RootEndpointTe
         Assert.False(running.Document.RootElement.TryGetProperty("logPath", out _));
         running.Document.Dispose();
 
+        var completedAt = DateTimeOffset.UtcNow.AddMinutes(4).AddSeconds(3);
         await using (var c = await dataSource!.OpenConnectionAsync())
         {
-            var completedAt = DateTimeOffset.UtcNow.AddMinutes(4).AddSeconds(3);
             await c.ExecuteAsync("UPDATE factory.step SET status='Succeeded',completed_at=@completedAt,duration_ms=100 WHERE id=@stepId", new { stepId = currentStepId, completedAt });
             await c.ExecuteAsync("UPDATE factory.task SET current_agent=NULL WHERE id=@taskId", new { taskId });
             currentAgentRunId = Guid.NewGuid();
             await c.ExecuteAsync("""
-                INSERT INTO factory.agent_run(id,task_id,run_id,step_id,agent,started_at,completed_at,status,attempt_number,purpose)
-                VALUES(@id,@taskId,@runId,@stepId,'Claude',@startedAt,@completedAt,'Succeeded',2,'Implement')
+                INSERT INTO factory.agent_run(id,task_id,run_id,step_id,agent,started_at,completed_at,status,attempt_number,purpose,model,reasoning_effort)
+                VALUES(@id,@taskId,@runId,@stepId,'Claude',@startedAt,@completedAt,'Succeeded',2,'Implement','claude-opus-4','high')
                 """, new { id = currentAgentRunId, taskId, runId, stepId = currentStepId, startedAt = completedAt.AddSeconds(-1), completedAt });
         }
 
         var betweenSteps = await ReadSnapshotAsync();
         Assert.Equal("BetweenSteps", betweenSteps.Document.RootElement.GetProperty("status").GetString());
         Assert.Equal("Claude", betweenSteps.Document.RootElement.GetProperty("agent").GetString());
+        Assert.Equal("Last", betweenSteps.Document.RootElement.GetProperty("agentInvocationContext").GetString());
+        Assert.Equal("claude-opus-4", betweenSteps.Document.RootElement.GetProperty("agentModel").GetString());
+        Assert.Equal("high", betweenSteps.Document.RootElement.GetProperty("agentReasoningEffort").GetString());
+        Assert.Equal("Implement", betweenSteps.Document.RootElement.GetProperty("agentPurpose").GetString());
         Assert.Equal(JsonValueKind.Null, betweenSteps.Document.RootElement.GetProperty("stepId").ValueKind);
         Assert.Equal(JsonValueKind.Null, betweenSteps.Document.RootElement.GetProperty("stepType").ValueKind);
         Assert.Equal(JsonValueKind.Null, betweenSteps.Document.RootElement.GetProperty("stepStartedAt").ValueKind);
         Assert.False(betweenSteps.Document.RootElement.TryGetProperty("logPath", out _));
         betweenSteps.Document.Dispose();
+
+        Guid reviewStepId = Guid.NewGuid();
+        await using (var c = await dataSource!.OpenConnectionAsync())
+        {
+            await c.ExecuteAsync("UPDATE factory.step SET status='Succeeded',completed_at=@completedAt,duration_ms=100 WHERE id=@stepId", new { stepId = currentStepId, completedAt = completedAt.AddSeconds(1) });
+            await c.ExecuteAsync("""
+                INSERT INTO factory.step(id,run_id,step_type,status,started_at,attempt)
+                VALUES(@stepId,@runId,'AgentReviewFix','Running',@startedAt,1)
+                """, new { stepId = reviewStepId, runId, startedAt = completedAt.AddSeconds(2) });
+            await c.ExecuteAsync("UPDATE factory.task SET current_agent='Codex-Sol',status='Reviewing' WHERE id=@taskId", new { taskId });
+        }
+
+        var reviewPending = await ReadSnapshotAsync();
+        Assert.Equal("Pending", reviewPending.Document.RootElement.GetProperty("agentInvocationContext").GetString());
+        Assert.Equal("Codex", reviewPending.Document.RootElement.GetProperty("agent").GetString());
+        Assert.Equal(JsonValueKind.Null, reviewPending.Document.RootElement.GetProperty("agentModel").ValueKind);
+        reviewPending.Document.Dispose();
+
+        await using (var c = await dataSource!.OpenConnectionAsync())
+        {
+            var reviewAgentRunId = Guid.NewGuid();
+            await c.ExecuteAsync("""
+                INSERT INTO factory.agent_run(id,task_id,run_id,step_id,agent,started_at,completed_at,status,attempt_number,purpose,model,reasoning_effort)
+                VALUES(@id,@taskId,@runId,@stepId,'Codex-Sol',@startedAt,@completedAt,'Succeeded',1,'Fix','gpt-6-sol','medium')
+                """, new { id = reviewAgentRunId, taskId, runId, stepId = reviewStepId, startedAt = completedAt.AddSeconds(2), completedAt = completedAt.AddSeconds(3) });
+        }
+
+        var review = await ReadSnapshotAsync();
+        Assert.Equal("Active", review.Document.RootElement.GetProperty("agentInvocationContext").GetString());
+        Assert.Equal("Codex", review.Document.RootElement.GetProperty("agent").GetString());
+        Assert.Equal("gpt-6-sol", review.Document.RootElement.GetProperty("agentModel").GetString());
+        Assert.Equal("medium", review.Document.RootElement.GetProperty("agentReasoningEffort").GetString());
+        Assert.Equal("Fix", review.Document.RootElement.GetProperty("agentPurpose").GetString());
+        review.Document.Dispose();
+
+        Guid buildStepId = Guid.NewGuid();
+        await using (var c = await dataSource!.OpenConnectionAsync())
+        {
+            await c.ExecuteAsync("UPDATE factory.step SET status='Succeeded',completed_at=@completedAt,duration_ms=100 WHERE id=@stepId", new { stepId = reviewStepId, completedAt = completedAt.AddSeconds(4) });
+            await c.ExecuteAsync("""
+                INSERT INTO factory.step(id,run_id,step_type,status,started_at,attempt)
+                VALUES(@stepId,@runId,'Build','Running',@startedAt,1)
+                """, new { stepId = buildStepId, runId, startedAt = completedAt.AddSeconds(5) });
+            await c.ExecuteAsync("UPDATE factory.task SET current_agent=NULL,status='Validating' WHERE id=@taskId", new { taskId });
+        }
+
+        var build = await ReadSnapshotAsync();
+        Assert.Equal("Build", build.Document.RootElement.GetProperty("stepType").GetString());
+        Assert.Equal("Last", build.Document.RootElement.GetProperty("agentInvocationContext").GetString());
+        Assert.Equal("Codex", build.Document.RootElement.GetProperty("agent").GetString());
+        Assert.Equal("gpt-6-sol", build.Document.RootElement.GetProperty("agentModel").GetString());
+        Assert.Equal("medium", build.Document.RootElement.GetProperty("agentReasoningEffort").GetString());
+        Assert.Equal("Fix", build.Document.RootElement.GetProperty("agentPurpose").GetString());
+        build.Document.Dispose();
 
         await using (var c = await dataSource!.OpenConnectionAsync())
         {
@@ -193,6 +285,9 @@ public sealed class CurrentExecutionEndpointTests : IClassFixture<RootEndpointTe
         Assert.Equal("Starting", starting.Document.RootElement.GetProperty("status").GetString());
         Assert.Equal(JsonValueKind.Null, starting.Document.RootElement.GetProperty("runId").ValueKind);
         Assert.Equal(JsonValueKind.Null, starting.Document.RootElement.GetProperty("stepId").ValueKind);
+        Assert.Equal("None", starting.Document.RootElement.GetProperty("agentInvocationContext").GetString());
+        Assert.Equal(JsonValueKind.Null, starting.Document.RootElement.GetProperty("agentModel").ValueKind);
+        Assert.Equal(JsonValueKind.Null, starting.Document.RootElement.GetProperty("agentReasoningEffort").ValueKind);
         starting.Document.Dispose();
     }
 
@@ -270,8 +365,8 @@ public sealed class CurrentExecutionEndpointTests : IClassFixture<RootEndpointTe
             VALUES(@stepId,@runId,'AgentImplementation','Failed',@startedAt,@completedAt,1)
             """, new { stepId = previousStepId, runId = previousRunId, startedAt = now.AddHours(-1), completedAt = now.AddMinutes(-59) });
         await c.ExecuteAsync("""
-            INSERT INTO factory.agent_run(id,task_id,run_id,step_id,agent,started_at,completed_at,status,attempt_number,purpose)
-            VALUES(@id,@taskId,@runId,@stepId,'Codex-Sol',@startedAt,@completedAt,'Failed',1,'Implement')
+            INSERT INTO factory.agent_run(id,task_id,run_id,step_id,agent,started_at,completed_at,status,attempt_number,purpose,model,reasoning_effort)
+            VALUES(@id,@taskId,@runId,@stepId,'Codex-Sol',@startedAt,@completedAt,'Failed',1,'Implement','older-model','low')
             """, new { id = previousAgentRunId, taskId, runId = previousRunId, stepId = previousStepId, startedAt = now.AddHours(-1), completedAt = now.AddMinutes(-59) });
 
         runId = Guid.NewGuid();
