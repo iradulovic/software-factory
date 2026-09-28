@@ -122,9 +122,10 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         var tokenUsage = AgentTokenUsageParser.Read(profile.EffectiveProvider, process.StandardOutput);
         var quota = QuotaClassifier.Classify(profile, process, clock.UtcNow);
         var sessionId = ProviderSessionExtractor.TryExtract(profile, process.StandardOutput);
-        // Structured CLI output may be much larger than the ordinary preview. Usage is parsed above, then only
-        // the same bounded preview used before this change is returned for persistence and task detail responses.
-        process = process with { StandardOutput = ProcessRunner.BoundPreview(process.StandardOutput) };
+        // Usage and session metadata come from the structured stream. Present a readable assistant response in the
+        // dashboard's stdout preview, then apply the same bound used before structured usage capture was added.
+        process = process with { StandardOutput = ProcessRunner.BoundPreview(
+            AgentOutputFormatter.ForDisplay(profile.EffectiveProvider, process.StandardOutput)) };
 
         if (reviewing)
         {

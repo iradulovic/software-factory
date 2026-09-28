@@ -23,7 +23,44 @@ public sealed class CliAgentRunnerTests
         Assert.Equal(120, result.TokenUsage?.InputTokens);
         Assert.Equal(90, result.TokenUsage?.CachedInputTokens);
         Assert.Equal(12, result.TokenUsage?.OutputTokens);
-        Assert.Equal(output, result.Process.StandardOutput);
+        Assert.Contains("\n", result.Process.StandardOutput);
+        Assert.Contains("\"type\": \"turn.completed\"", result.Process.StandardOutput);
+        Assert.DoesNotContain("{\"type\"", result.Process.StandardOutput);
+    }
+
+    [Fact]
+    public async Task Codex_stdout_preview_shows_agent_messages_as_plain_text_and_keeps_usage()
+    {
+        const string output = """
+            {"type":"item.completed","item":{"type":"agent_message","text":"Updated the implementation.\n\nAll focused tests pass."}}
+            {"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":90,"output_tokens":12}}
+            """;
+        var runner = new RecordingRunner(new ProcessResult("codex", [], ".", Now, Now, 0, output, "", false, false));
+        var agent = new CliAgentRunner(Codex(), runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Equal("Updated the implementation.\n\nAll focused tests pass.", result.Process.StandardOutput);
+        Assert.Equal(120, result.TokenUsage?.InputTokens);
+        Assert.DoesNotContain("\"type\"", result.Process.StandardOutput);
+    }
+
+    [Fact]
+    public async Task Claude_stdout_preview_shows_final_result_with_real_line_breaks_and_keeps_usage()
+    {
+        const string output = """{"type":"result","subtype":"success","result":"Updated the implementation.\n\nAll focused tests pass.","usage":{"input_tokens":120,"cache_read_input_tokens":90,"output_tokens":12}}""";
+        var runner = new RecordingRunner(new ProcessResult("claude", [], ".", Now, Now, 0, output, "", false, false));
+        var profile = new AgentProfile("Claude", "claude", ["--print", "--output-format", "json"], "argument", 90,
+            ["rate limited"], ["--version"], 5, 5, Provider: "Claude");
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1), CancellationToken.None);
+
+        Assert.Equal("Updated the implementation.\n\nAll focused tests pass.", result.Process.StandardOutput);
+        Assert.Equal(120, result.TokenUsage?.InputTokens);
+        Assert.Equal(90, result.TokenUsage?.CachedInputTokens);
+        Assert.DoesNotContain("\\n", result.Process.StandardOutput);
+        Assert.DoesNotContain("\"type\"", result.Process.StandardOutput);
     }
 
     [Fact]
