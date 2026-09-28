@@ -167,6 +167,10 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
         return await connection.ExecuteAsync(new CommandDefinition("""
             UPDATE factory.release SET status='Pending',last_error=NULL,
               integration_branch=COALESCE(NULLIF(@integrationBranch,''),integration_branch),
+              target_commit=CASE
+                WHEN NULLIF(@targetBranch,'') IS NOT NULL AND NULLIF(@targetBranch,'') IS DISTINCT FROM target_branch THEN NULL
+                ELSE target_commit
+              END,
               target_branch=COALESCE(NULLIF(@targetBranch,''),target_branch),updated_at=now()
             WHERE id=@id AND status='Failed'
             """, new { id, integrationBranch = integrationBranch?.Trim(), targetBranch = targetBranch?.Trim() },

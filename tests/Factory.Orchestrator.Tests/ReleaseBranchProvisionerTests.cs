@@ -7,6 +7,7 @@ namespace Factory.Orchestrator.Tests;
 public sealed class ReleaseBranchProvisionerTests
 {
     private const string TargetCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string NewTargetCommit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     [Fact]
     public async Task Creates_the_selected_branch_from_a_recorded_target_commit()
@@ -50,6 +51,54 @@ public sealed class ReleaseBranchProvisionerTests
 
         Assert.Equal(FactoryReleaseStatus.Active, store.Status);
         Assert.Equal(TargetCommit, store.TargetCommit);
+        Assert.DoesNotContain(runner.Requests, request => Argument(request) == "push");
+    }
+
+    [Fact]
+    public async Task Retry_with_a_new_target_branch_uses_its_resolved_commit()
+    {
+        var order = new List<string>();
+        var store = new ReleaseStore(order);
+        var runner = new GitRunner(order, request => Argument(request) switch
+        {
+            "rev-parse" => Success(NewTargetCommit + "\n"),
+            "ls-remote" => Success(),
+            "push" => Success(),
+            _ => Success()
+        });
+        var provisioner = Create(store, runner);
+
+        await provisioner.ProvisionAsync(WorkItem("release/2.4-settings-retry", targetBranch: "develop"),
+            Repository(), CancellationToken.None);
+
+        Assert.Equal(NewTargetCommit, store.TargetCommit);
+        var targetLookup = Assert.Single(runner.Requests, request => Argument(request) == "rev-parse");
+        Assert.Contains("refs/remotes/origin/develop", targetLookup.Arguments[^1]);
+        var push = Assert.Single(runner.Requests, request => Argument(request) == "push");
+        Assert.Equal($"{NewTargetCommit}:refs/heads/release/2.4-settings-retry", push.Arguments[^1]);
+    }
+
+    [Fact]
+    public async Task Retry_changing_both_branches_reports_an_existing_integration_branch_conflict()
+    {
+        var order = new List<string>();
+        var store = new ReleaseStore(order);
+        var existingCommit = new string('c', 40);
+        var runner = new GitRunner(order, request => Argument(request) switch
+        {
+            "rev-parse" => Success(NewTargetCommit + "\n"),
+            "ls-remote" => Success($"{existingCommit}\trefs/heads/release/2.4-settings-retry\n"),
+            _ => Success()
+        });
+        var provisioner = Create(store, runner);
+
+        await provisioner.ProvisionAsync(WorkItem("release/2.4-settings-retry", targetBranch: "develop"),
+            Repository(), CancellationToken.None);
+
+        Assert.Equal(FactoryReleaseStatus.Failed, store.Status);
+        Assert.Contains(existingCommit, store.Error);
+        Assert.Contains(NewTargetCommit, store.Error);
+        Assert.Contains("left untouched", store.Error);
         Assert.DoesNotContain(runner.Requests, request => Argument(request) == "push");
     }
 
@@ -104,8 +153,9 @@ public sealed class ReleaseBranchProvisionerTests
     private static ReleaseBranchProvisioner Create(ReleaseStore store, GitRunner runner) =>
         new(store, new RepositoryCacheStub(), runner, NullLogger<ReleaseBranchProvisioner>.Instance);
 
-    private static FactoryReleaseWorkItem WorkItem(string? branch = null, string? commit = null) =>
-        new(Guid.NewGuid(), 12, "2.4", "Account settings", "main", branch, commit);
+    private static FactoryReleaseWorkItem WorkItem(string? branch = null, string? commit = null,
+        string targetBranch = "main") =>
+        new(Guid.NewGuid(), 12, "2.4", "Account settings", targetBranch, branch, commit);
 
     private static GitHubRepository Repository() =>
         new(12, "acme", "settings", "https://example.invalid/acme/settings.git", "main", true);
