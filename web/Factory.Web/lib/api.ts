@@ -46,7 +46,7 @@ export const runAgentSchema = z.object({
 export const runDetailsSchema = z.object({run:runSchema,steps:z.array(runStepSchema),agentRuns:z.array(runAgentSchema)});
 export const repositorySchema = z.object({
   id:z.number(),owner:z.string(),name:z.string(),cloneUrl:z.string(),defaultBranch:z.string(),isEnabled:z.boolean(),lastSyncedAt:z.string().nullable(),
-  latestSyncFailure:z.string().nullable(),latestSyncFailureAt:z.string().nullable()
+  latestPublishedVersion:z.string().nullable().optional(),latestSyncFailure:z.string().nullable(),latestSyncFailureAt:z.string().nullable()
 });
 export type Repository = z.infer<typeof repositorySchema>;
 export const repositoryDetailSchema = repositorySchema.extend({
@@ -67,6 +67,10 @@ export const agentStatusSchema = z.object({
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 export const githubStatusSchema = z.object({ state:z.string(), error:z.string().nullable() });
 export type GitHubStatus = z.infer<typeof githubStatusSchema>;
+export const factoryBuildInfoSchema = z.object({
+  productVersion:z.string(),sourceCommit:z.string().nullable(),buildTimeUtc:z.string().nullable(),state:z.enum(["development","release","unknown"])
+});
+export type FactoryBuildInfo = z.infer<typeof factoryBuildInfoSchema>;
 export const pauseStateSchema = z.object({
   scope:z.string(),paused:z.boolean(),pausedAt:z.string().nullable(),pausedBy:z.string().nullable()
 });

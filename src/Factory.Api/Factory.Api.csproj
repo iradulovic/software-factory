@@ -4,11 +4,31 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <FactoryProductVersion Condition="'$(FactoryProductVersion)' == ''">$(FACTORY_PRODUCT_VERSION)</FactoryProductVersion>
+    <FactoryProductVersion Condition="'$(FactoryProductVersion)' == ''">Development</FactoryProductVersion>
+    <FactorySourceCommit Condition="'$(FactorySourceCommit)' == ''">$(FACTORY_SOURCE_COMMIT)</FactorySourceCommit>
+    <FactorySourceCommit Condition="'$(FactorySourceCommit)' == ''">unknown</FactorySourceCommit>
+    <FactoryBuildTimeUtc Condition="'$(FactoryBuildTimeUtc)' == ''">$(FACTORY_BUILD_TIME_UTC)</FactoryBuildTimeUtc>
+    <FactoryBuildState Condition="'$(FactoryBuildState)' == ''">$(FACTORY_BUILD_STATE)</FactoryBuildState>
+    <FactoryBuildState Condition="'$(FactoryBuildState)' == ''">development</FactoryBuildState>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- Factory:RootDirectory (factory-data/) holds git caches and worktrees checked out at run time, nested
          under this project directory; without excluding it, the SDK's default compile glob sweeps a worktree's
          own .cs files (e.g. a full repo checkout of this very solution) into this project's build. -->
     <DefaultItemExcludes>$(DefaultItemExcludes);factory-data/**</DefaultItemExcludes>
   </PropertyGroup>
+  <Target Name="StampFactoryBuildIdentity" BeforeTargets="GetAssemblyAttributes">
+    <PropertyGroup>
+      <FactorySourceCommit Condition="'$(FactorySourceCommit)' == 'unknown' and '$(SourceRevisionId)' != ''">$(SourceRevisionId)</FactorySourceCommit>
+      <InformationalVersion>$(FactoryProductVersion)+$(FactorySourceCommit)</InformationalVersion>
+    </PropertyGroup>
+    <ItemGroup>
+      <AssemblyMetadata Include="Factory.ProductVersion" Value="$(FactoryProductVersion)" />
+      <AssemblyMetadata Include="Factory.SourceCommit" Value="$(FactorySourceCommit)" />
+      <AssemblyMetadata Include="Factory.BuildTimeUtc" Value="$(FactoryBuildTimeUtc)" />
+      <AssemblyMetadata Include="Factory.BuildState" Value="$(FactoryBuildState)" />
+    </ItemGroup>
+  </Target>
   <ItemGroup>
     <ProjectReference Include="..\Factory.Core\Factory.Core.csproj" />
     <ProjectReference Include="..\Factory.Infrastructure\Factory.Infrastructure.csproj" />
