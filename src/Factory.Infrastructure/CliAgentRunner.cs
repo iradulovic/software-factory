@@ -24,8 +24,16 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
         Review the changes already committed on this branch for the task described in .factory/task.md. Read and obey AGENTS.md.
         This is a read-only review pass, not an implementation attempt: do not modify, stage, or commit any file.
         Focus on correctness bugs, missed edge cases, and mismatches between the change and the task's stated scope.
+        Use this rubric: high means a correctness or serious regression finding and always requires a fix; medium means a
+        meaningful issue and must declare mediumImpact as "acceptance-criterion", "user-workflow", or "advisory" plus a
+        short rationale; acceptance-criterion and user-workflow require a fix, while advisory does not. Low findings are
+        advisory. Never downgrade a high finding. An optional score from 1 to 5 with a short scoreRationale summarizes
+        overall review quality for the operator and must not replace or change finding classifications.
         When complete, write .factory/review.json as a JSON object: {"status":"completed"|"blocked"|"needs-human","summary":"...",
-        "findings":[{"severity":"low"|"medium"|"high","file":"path or null","line":123,"description":"..."}],"needsHuman":false,"humanReason":null}.
+        "findings":[{"severity":"low"|"medium"|"high","file":"path or null","line":123,"description":"...",
+        "mediumImpact":"acceptance-criterion"|"user-workflow"|"advisory","rationale":"..."}],"needsHuman":false,"humanReason":null,
+        "score":4,"scoreRationale":"..."}. The mediumImpact and rationale fields are required only for medium findings;
+        score and scoreRationale are optional but must be supplied together.
         An empty "findings" array is a valid, useful result meaning nothing worth flagging was found.
         """;
 

@@ -433,6 +433,7 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
         attemptRow.ciRepairs, attemptRow.maxImplementation, attemptRow.maxQuotaInterruptions,
         maxCiRepairs = githubOptions.Value.MaxCiRepairAttempts, attemptRow.latestRetryReason };
     var reviewFindings = await tasks.GetReviewFindingsAsync(id, ct);
+    var agentReviews = (await tasks.GetAgentReviewsAsync(id, ct)).Select(TaskAgentReviewDetailsMapper.Map).ToList();
     var humanRequests = await tasks.GetAgentHumanRequestsAsync(id, ct);
     ChangeSummary? verificationWorkspace = null;
     if (taskRow.Status == "NeedsHuman" && !string.IsNullOrWhiteSpace(taskRow.WorktreePath) && Directory.Exists(taskRow.WorktreePath))
@@ -442,7 +443,7 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
     }
     var dependencyDtos = dependencies.Select(d => new { d.TaskId, d.DependsOnTaskId, d.DependsOnTitle, DependsOnStatus = d.DependsOnStatus.ToString(), d.Source });
     return Results.Ok(new { task, issue, comments, runs, steps, agentRuns, publications, dependencies = dependencyDtos, feedback, ciStatus, mergeStatus, mergeRequests, taskEvents,
-        validatedHeadCommit = attemptRow.validatedHeadCommit, attempts, reviewFindings, humanRequests, verificationWorkspace });
+        validatedHeadCommit = attemptRow.validatedHeadCommit, attempts, reviewFindings, agentReviews, humanRequests, verificationWorkspace });
 });
 
 app.MapPost("/api/tasks/{id:guid}/stop-repairs", async (Guid id, ITaskStore tasks, CancellationToken ct) =>

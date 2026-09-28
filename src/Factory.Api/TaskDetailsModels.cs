@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Factory.Core;
 
 public sealed class VerificationWorkspaceRow
 {
@@ -57,4 +58,20 @@ public static class AgentRunDetailsMapper
 
     private static IReadOnlyList<string> ParseList(string? json) =>
         string.IsNullOrWhiteSpace(json) ? [] : JsonSerializer.Deserialize<string[]>(json) ?? [];
+}
+
+public sealed record TaskReviewFindingDetails(Guid Id, Guid TaskId, Guid RunId, string Agent, string Severity,
+    string? File, int? Line, string Description, DateTimeOffset CreatedAt, string? MediumImpact, string? Rationale);
+
+public sealed record TaskAgentReviewDetails(Guid Id, Guid TaskId, Guid RunId, string Agent, string Status, string Summary,
+    bool NeedsHuman, string? HumanReason, int? Score, string? ScoreRationale, string Disposition, string PolicyReason,
+    DateTimeOffset CreatedAt, IReadOnlyList<TaskReviewFindingDetails> Findings);
+
+public static class TaskAgentReviewDetailsMapper
+{
+    public static TaskAgentReviewDetails Map(PersistedAgentReview review) => new(review.Id, review.TaskId, review.RunId,
+        review.Agent, review.Status, review.Summary, review.NeedsHuman, review.HumanReason, review.Score,
+        review.ScoreRationale, review.Disposition, review.PolicyReason, review.CreatedAt,
+        review.Findings.Select(f => new TaskReviewFindingDetails(f.Id, f.TaskId, f.RunId, f.Agent, f.Severity,
+            f.File, f.Line, f.Description, f.CreatedAt, f.MediumImpact, f.Rationale)).ToList());
 }

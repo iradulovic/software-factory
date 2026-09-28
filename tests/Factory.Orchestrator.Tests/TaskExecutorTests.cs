@@ -848,7 +848,7 @@ public sealed class TaskExecutorTests
         var harness = new Harness
         {
             IssueBody = "request review please",
-            ReviewAgentResult = new("completed", "One nit", [new ReviewFinding("low", "src/Export.cs", 5, "Consider a comment")], false, null)
+            ReviewAgentResult = new("completed", "One nit", [new ReviewFinding("low", "src/Export.cs", 5, "Consider a comment")], false, null, 4, "One small issue")
         };
 
         await harness.ExecuteAsync();
@@ -856,6 +856,11 @@ public sealed class TaskExecutorTests
         var saved = Assert.Single(harness.Store.SavedReviewFindings);
         Assert.Equal(harness.ClaimedTask.Id, saved.TaskId);
         Assert.Single(saved.Findings);
+        var review = Assert.Single(harness.Store.SavedAgentReviews);
+        Assert.Equal(4, review.Review.Score);
+        Assert.Equal("One small issue", review.Review.ScoreRationale);
+        Assert.Equal(ReviewPolicy.AdvisoryFindings, review.Disposition);
+        Assert.Equal(FactoryTaskStatus.ReadyForPublish, harness.Store.Status);
     }
 
     [Fact]
@@ -883,8 +888,8 @@ public sealed class TaskExecutorTests
             ReviewPreferredAgent = "Claude",
             ConfiguredAgents = ["Codex", "Claude"]
         };
-        harness.ReviewAgentResults.Enqueue(new AgentReviewResult("blocked", "Found a bug",
-            [new ReviewFinding("high", "src/Export.cs", 5, "Handle empty exports")], false, null));
+        harness.ReviewAgentResults.Enqueue(new AgentReviewResult("completed", "Found a correctness bug",
+            [new ReviewFinding("high", "src/Export.cs", 5, "Handle empty exports")], false, null, 5, "Mostly correct implementation"));
         harness.ReviewAgentResults.Enqueue(new AgentReviewResult("completed", "Fixed", [], false, null));
 
         await harness.ExecuteAsync();
@@ -894,6 +899,42 @@ public sealed class TaskExecutorTests
         Assert.Equal(2, harness.Store.StepOrder.Count(step => step == "Build"));
         Assert.Equal(2, harness.Store.StepOrder.Count(step => step == "Test"));
         Assert.Equal(2, harness.Store.ValidatedHeadCommits.Count);
+        var stepOrder = harness.Store.StepOrder;
+        var fixIndex = stepOrder.IndexOf("AgentReviewFix");
+        var reReviewIndex = stepOrder.FindLastIndex(step => step == "AgentReview");
+        var finalBuildIndex = stepOrder.FindLastIndex(step => step == "Build");
+        Assert.True(fixIndex >= 0 && fixIndex < stepOrder.IndexOf("Build", fixIndex));
+        Assert.True(stepOrder.IndexOf("AgentReview") < fixIndex);
+        Assert.True(finalBuildIndex > fixIndex && finalBuildIndex < reReviewIndex);
+        Assert.Contains(harness.Store.Steps.Values, step => step.StepType == "AgentReview" &&
+            (step.Output?.Contains("Disposition: FixRequired", StringComparison.Ordinal) ?? false) &&
+            (step.Output?.Contains("Score: 5/5", StringComparison.Ordinal) ?? false));
+        Assert.Contains(harness.Store.Steps.Values, step => step.StepType == "AgentReviewFix" && step.Status == ExecutionStatus.Succeeded);
+        Assert.Contains(harness.Store.Steps.Values, step => step.StepType == "AgentReview" && step.Output?.Contains("Disposition: Approved", StringComparison.Ordinal) == true);
+    }
+
+    [Fact]
+    public async Task Required_findings_still_present_after_the_fix_bound_leave_task_needs_human_without_publication()
+    {
+        var harness = new Harness
+        {
+            IssueBody = "request review please",
+            Configuration = new("main", [new ValidationCommand("custom-build", [])], [new ValidationCommand("custom-test", [])],
+                2, 1, true, MaxReviewFixAttempts: 1),
+            ConfiguredAgents = ["Codex"]
+        };
+        var finding = new ReviewFinding("high", "src/Export.cs", 5, "The total is still incorrect");
+        harness.ReviewAgentResults.Enqueue(new AgentReviewResult("completed", "Incorrect total", [finding], false, null));
+        harness.ReviewAgentResults.Enqueue(new AgentReviewResult("completed", "Still incorrect", [finding], false, null));
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal(FactoryTaskStatus.NeedsHuman, harness.Store.Status);
+        AssertLastTransition(harness.Store, FactoryTaskStatus.Reviewing, FactoryTaskStatus.NeedsHuman,
+            harness.Store.Transitions[^1].Reason!);
+        Assert.Contains("maximum of 1 review fix attempt", harness.Store.Transitions[^1].Reason);
+        Assert.Empty(harness.Store.PublicationRequests);
+        Assert.Equal(ReviewPolicy.FixLimitReached, harness.Store.SavedAgentReviews[^1].Disposition);
     }
 
     [Fact]

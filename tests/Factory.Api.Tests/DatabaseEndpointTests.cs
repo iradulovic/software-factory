@@ -1,8 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Dapper;
+using Factory.Core;
 using Factory.Infrastructure;
 using Microsoft.Extensions.Options;
+using Npgsql;
 
 namespace Factory.Api.Tests;
 
@@ -37,6 +40,56 @@ public sealed class DatabaseEndpointTests : IClassFixture<RootEndpointTests.Fact
         Assert.Contains(tables, t => t.GetProperty("schema").GetString() == "factory" && t.GetProperty("table").GetString() == "task");
         var taskTable = tables.First(t => t.GetProperty("schema").GetString() == "factory" && t.GetProperty("table").GetString() == "task");
         Assert.Contains(taskTable.GetProperty("columns").EnumerateArray(), c => c.GetProperty("name").GetString() == "status");
+    }
+
+    [Fact]
+    public async Task Task_details_exposes_review_score_policy_and_nested_findings()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING") ?? new FactoryOptions().ConnectionString;
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var suffix = Guid.NewGuid().ToString("N");
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('api-review-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        await connection.ExecuteAsync("""
+            INSERT INTO factory.task(id,repository_id,title,status,base_branch)
+            VALUES(@taskId,@repositoryId,'Review API contract','Pending','main')
+            """, new { taskId, repositoryId });
+        try
+        {
+            var store = new PostgresTaskStore(Options.Create(new FactoryOptions { ConnectionString = connectionString }), new SystemClock());
+            var runId = await store.StartRunAsync(taskId, "api-review-test", CancellationToken.None);
+            await store.SaveAgentReviewAsync(taskId, runId, "Claude",
+                new AgentReviewResult("completed", "One workflow finding",
+                    [new ReviewFinding("medium", "src/Export.cs", 8, "Locale changes output", "user-workflow", "A real user receives different output")],
+                    false, null, 4, "A single meaningful defect"), "FixRequired", "The finding affects a user workflow.", CancellationToken.None);
+
+            var response = await client.GetAsync($"/api/tasks/{taskId}");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var review = Assert.Single(document.RootElement.GetProperty("agentReviews").EnumerateArray());
+            Assert.Equal(4, review.GetProperty("score").GetInt32());
+            Assert.Equal("A single meaningful defect", review.GetProperty("scoreRationale").GetString());
+            Assert.Equal("FixRequired", review.GetProperty("disposition").GetString());
+            var finding = Assert.Single(review.GetProperty("findings").EnumerateArray());
+            Assert.Equal("user-workflow", finding.GetProperty("mediumImpact").GetString());
+            Assert.Equal("A real user receives different output", finding.GetProperty("rationale").GetString());
+        }
+        finally
+        {
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.review_finding WHERE task_id=@taskId;
+                DELETE FROM factory.agent_review WHERE task_id=@taskId;
+                DELETE FROM factory.agent_run WHERE task_id=@taskId;
+                DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id=@taskId);
+                DELETE FROM factory.run WHERE task_id=@taskId;
+                DELETE FROM factory.task WHERE id=@taskId;
+                DELETE FROM github.repository WHERE id=@repositoryId;
+                """, new { taskId, repositoryId });
+        }
     }
 
     [Fact]

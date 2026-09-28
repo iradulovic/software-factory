@@ -143,6 +143,14 @@ public interface ITaskStore
     /// <c>factory.step</c> row).</summary>
     Task SaveReviewFindingsAsync(Guid taskId, Guid runId, string agent, IReadOnlyList<ReviewFinding> findings, CancellationToken cancellationToken);
 
+    /// <summary>Persists one validated review verdict, the orchestrator's policy disposition, its optional score,
+    /// and its findings as one review record. Clean reviews are recorded too.</summary>
+    Task SaveAgentReviewAsync(Guid taskId, Guid runId, string agent, AgentReviewResult review, string disposition,
+        string policyReason, CancellationToken cancellationToken);
+
+    /// <summary>Returns each validated review invocation with its structured findings, oldest first.</summary>
+    Task<IReadOnlyList<PersistedAgentReview>> GetAgentReviewsAsync(Guid taskId, CancellationToken cancellationToken);
+
     /// <summary>Every finding recorded for a task across every review invocation, oldest first — the actionable,
     /// structured record SF-702 requires, rather than findings only ever visible as raw agent stdout.</summary>
     Task<IReadOnlyList<PersistedReviewFinding>> GetReviewFindingsAsync(Guid taskId, CancellationToken cancellationToken);

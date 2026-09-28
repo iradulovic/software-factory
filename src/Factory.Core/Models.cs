@@ -245,24 +245,32 @@ public static class AgentResultContract
 
 /// <summary>One issue a review invocation (SF-702) flagged about already-committed work. <see cref="File"/>/<see cref="Line"/>
 /// are optional — a finding about overall approach rather than one specific location has neither.</summary>
-public sealed record ReviewFinding(string Severity, string? File, int? Line, string Description);
+public sealed record ReviewFinding(string Severity, string? File, int? Line, string Description,
+    string? MediumImpact = null, string? Rationale = null);
 
 /// <summary>The shape a review invocation must write to <c>.factory/review.json</c> (SF-702) — separate from
 /// <see cref="AgentResult"/>/<c>.factory/result.json</c> because a review reports findings about work already
 /// done, not new work of its own. An empty <see cref="Findings"/> list is a valid, useful outcome: it means the
 /// review ran and found nothing worth flagging, not that no review happened.</summary>
-public sealed record AgentReviewResult(string Status, string Summary, IReadOnlyList<ReviewFinding> Findings, bool NeedsHuman, string? HumanReason);
+public sealed record AgentReviewResult(string Status, string Summary, IReadOnlyList<ReviewFinding> Findings, bool NeedsHuman, string? HumanReason,
+    int? Score = null, string? ScoreRationale = null);
 
 /// <summary>The single source of truth for <c>.factory/review.json</c>'s accepted <see cref="AgentReviewResult.Status"/>
 /// values (SF-702), mirroring <see cref="AgentResultContract"/>.</summary>
 public static class AgentReviewResultContract
 {
     public static readonly IReadOnlyList<string> Statuses = ["completed", "failed", "blocked", "needs-human"];
+    public static readonly IReadOnlyList<string> MediumImpacts = ["acceptance-criterion", "user-workflow", "advisory"];
 }
 
 /// <summary>One review finding as persisted (SF-702): <see cref="ReviewFinding"/> plus the provenance an operator
 /// needs to act on it — which task and run produced it, which agent, and when.</summary>
-public sealed record PersistedReviewFinding(Guid Id, Guid TaskId, Guid RunId, string Agent, string Severity, string? File, int? Line, string Description, DateTimeOffset CreatedAt);
+public sealed record PersistedReviewFinding(Guid Id, Guid TaskId, Guid RunId, string Agent, string Severity, string? File, int? Line,
+    string Description, DateTimeOffset CreatedAt, string? MediumImpact = null, string? Rationale = null);
+
+public sealed record PersistedAgentReview(Guid Id, Guid TaskId, Guid RunId, string Agent, string Status, string Summary,
+    bool NeedsHuman, string? HumanReason, int? Score, string? ScoreRationale, string Disposition, string PolicyReason,
+    DateTimeOffset CreatedAt, IReadOnlyList<PersistedReviewFinding> Findings);
 
 /// <summary>An executable and its already-split arguments, never a shell command line. This is the only shape
 /// validation steps ever invoke: ".factory/config.json" build/test commands opt into a literal shell explicitly
