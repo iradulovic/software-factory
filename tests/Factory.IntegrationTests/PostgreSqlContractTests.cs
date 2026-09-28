@@ -79,6 +79,19 @@ public sealed class PostgreSqlContractTests
     }
 
     [Fact]
+    public void Repository_release_version_migration_keeps_policy_history_and_planned_reason_separate()
+    {
+        var sql = File.ReadAllText(Path.Combine(Root(), "database", "migrations", "042_repository_release_versions.sql"));
+        Assert.Contains("CREATE TABLE factory.repository_version_policy", sql);
+        Assert.Contains("CREATE TABLE factory.repository_published_version", sql);
+        Assert.Contains("CREATE TABLE factory.repository_version_reconciliation", sql);
+        Assert.Contains("version_reason", sql);
+        Assert.Contains("version_override_reason", sql);
+        Assert.Contains("MAJOR.MINOR.PATCH", sql);
+        Assert.Contains("tag_prefix text NOT NULL DEFAULT 'v'", sql);
+    }
+
+    [Fact]
     public void Review_policy_migration_persists_verdict_score_disposition_and_medium_impact()
     {
         var sql = File.ReadAllText(Path.Combine(Root(), "database", "migrations", "040_review_policy.sql"));

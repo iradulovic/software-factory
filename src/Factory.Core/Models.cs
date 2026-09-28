@@ -10,16 +10,72 @@ public enum FactoryTaskStatus
 
 public enum FactoryReleaseStatus { Pending, Creating, Active, Failed, Cancelled, Archived }
 
+public enum ReleaseVersionChange { BugFixes, NewFeatures, BreakingChanges }
+
+/// <summary>A stable MAJOR.MINOR.PATCH version accepted for a planned or published release.</summary>
+public readonly record struct SemanticReleaseVersion(int Major, int Minor, int Patch) : IComparable<SemanticReleaseVersion>
+{
+    public static bool TryParse(string? value, out SemanticReleaseVersion version)
+    {
+        version = default;
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var parts = value.Split('.');
+        if (parts.Length != 3 || parts.Any(part => part.Length == 0 || part.Length > 1 && part[0] == '0')) return false;
+        if (!int.TryParse(parts[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var major) ||
+            !int.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var minor) ||
+            !int.TryParse(parts[2], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var patch)) return false;
+        version = new SemanticReleaseVersion(major, minor, patch);
+        return true;
+    }
+
+    public SemanticReleaseVersion Next(ReleaseVersionChange change) => change switch
+    {
+        ReleaseVersionChange.BugFixes => this with { Patch = checked(Patch + 1) },
+        ReleaseVersionChange.NewFeatures => new SemanticReleaseVersion(Major, checked(Minor + 1), 0),
+        ReleaseVersionChange.BreakingChanges => new SemanticReleaseVersion(checked(Major + 1), 0, 0),
+        _ => throw new ArgumentOutOfRangeException(nameof(change))
+    };
+
+    public int CompareTo(SemanticReleaseVersion other)
+    {
+        var major = Major.CompareTo(other.Major);
+        if (major != 0) return major;
+        var minor = Minor.CompareTo(other.Minor);
+        return minor != 0 ? minor : Patch.CompareTo(other.Patch);
+    }
+
+    public override string ToString() => $"{Major}.{Minor}.{Patch}";
+
+    public static bool TryParseTag(string? tag, string prefix, out SemanticReleaseVersion version)
+    {
+        version = default;
+        return tag is not null && tag.StartsWith(prefix, StringComparison.Ordinal) && TryParse(tag[prefix.Length..], out version);
+    }
+}
+
+public sealed record PublishedGitHubRelease(string TagName, DateTimeOffset? PublishedAt);
+public sealed record RepositoryReleaseVersionHistory(IReadOnlyList<string> VersionLikeTags,
+    IReadOnlyList<PublishedGitHubRelease> PublishedReleases);
+
+public sealed record RepositoryVersionReconciliation(IReadOnlyList<string> ObservedTags,
+    IReadOnlyList<string> ObservedReleaseTags, IReadOnlyList<string> AcceptedVersions, string Reason,
+    DateTimeOffset ReconciledAt);
+
+public sealed record RepositoryReleaseVersionState(string VersionFormat, string TagPrefix, string BreakingChangeDefinition,
+    IReadOnlyList<string> PublishedVersions, RepositoryVersionReconciliation? LastReconciliation,
+    IReadOnlyList<string> PlannedReleaseNumbers);
+
 public sealed record FactoryReleaseIssue(long GitHubIssueId, int IssueNumber, string Title, string State,
     bool Eligible, string? TaskStatus, Guid? TaskId = null, string? TaskBaseBranch = null, Guid? TaskReleaseId = null);
 
 public sealed record FactoryRelease(Guid Id, long RepositoryId, string Repository, string Name, string ReleaseNumber,
     string? IntegrationBranch, string TargetBranch, string? TargetCommit, FactoryReleaseStatus Status,
     DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, DateTimeOffset? BranchCreatedAt,
-    long? GitHubMilestoneId, string? LastError, IReadOnlyList<FactoryReleaseIssue> Issues);
+    long? GitHubMilestoneId, string? LastError, IReadOnlyList<FactoryReleaseIssue> Issues,
+    string? VersionReason = null, string? VersionOverrideReason = null);
 
 public sealed record FactoryReleaseDraft(long RepositoryId, string Name, string ReleaseNumber, string TargetBranch,
-    long? GitHubMilestoneId = null);
+    long? GitHubMilestoneId = null, string? VersionReason = null, string? VersionOverrideReason = null);
 
 /// <summary>The small queue record claimed by the orchestrator when it creates a release integration branch.</summary>
 public sealed record FactoryReleaseWorkItem(Guid Id, long RepositoryId, string ReleaseNumber, string Name,

@@ -6,9 +6,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { z } from "zod";
 import { ArrowRight, GitBranch, LoaderCircle } from "lucide-react";
-import { apiBase, factoryReleaseSchema, getJson, issueSchema, repositorySchema, type FactoryRelease } from "@/lib/api";
+import { apiBase, factoryReleaseSchema, getJson, issueSchema, repositoryReleaseVersionPlanSchema, repositorySchema, type FactoryRelease } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ReleaseVersionSelector } from "@/components/release-version-selector";
 
 const factoryReleasesSchema = z.array(factoryReleaseSchema);
 const repositoriesSchema = z.array(repositorySchema);
@@ -25,6 +26,17 @@ async function postFactoryRelease(path: string, body?: unknown): Promise<Factory
     throw new Error(result?.error ?? `Factory API returned ${response.status}`);
   }
   return factoryReleaseSchema.parse(await response.json());
+}
+
+async function postVersionHistory(path: string, body: unknown) {
+  const response = await fetch(`${apiBase}${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(result?.error ?? `Factory API returned ${response.status}`);
+  }
+  return repositoryReleaseVersionPlanSchema.parse(await response.json());
 }
 
 function errorText(error: unknown) {
@@ -56,18 +68,37 @@ function statusTone(status: string) {
   return "";
 }
 
+function versionReasonLabel(reason: string | null | undefined) {
+  switch (reason) {
+    case "bug-fixes": return "Bug fixes · patch version";
+    case "new-features": return "New features · minor version";
+    case "breaking-changes": return "Breaking changes · major version";
+    case "initial-version": return "Initial version";
+    default: return "Legacy planned version · original identifier preserved";
+  }
+}
+
 export function FactoryReleasesView() {
   const router = useRouter();
   const client = useQueryClient();
   const [repositoryChoice, setRepositoryChoice] = useState("");
   const [name, setName] = useState("");
   const [releaseNumber, setReleaseNumber] = useState("");
+  const [versionReason, setVersionReason] = useState("");
+  const [versionOverrideReason, setVersionOverrideReason] = useState("");
   const [targetBranch, setTargetBranch] = useState("");
   const [selectedIssueIds, setSelectedIssueIds] = useState<number[]>([]);
+  const [reconciliationSelection, setReconciliationSelection] = useState<string[] | null>(null);
+  const [reconciliationReason, setReconciliationReason] = useState("");
   const repositories = useQuery({ queryKey: ["repositories"], queryFn: () => getJson("/api/repositories", repositoriesSchema) });
   const enabledRepositories = repositories.data?.filter(repository => repository.isEnabled) ?? [];
   const repositoryId = repositoryChoice || String(enabledRepositories[0]?.id ?? "");
   const repository = enabledRepositories.find(item => String(item.id) === repositoryId);
+  const versionPlan = useQuery({
+    queryKey: ["release-version-plan", repositoryId],
+    queryFn: () => getJson(`/api/repositories/${repositoryId}/release-version-plan`, repositoryReleaseVersionPlanSchema),
+    enabled: repository !== undefined
+  });
   const issues = useQuery({
     queryKey: ["integration-release-issues", repositoryId],
     queryFn: () => getJson(`/api/issues?repository=${encodeURIComponent(`${repository!.owner}/${repository!.name}`)}&state=OPEN`, issuesSchema),
@@ -77,21 +108,43 @@ export function FactoryReleasesView() {
     queryKey: ["integration-releases"], queryFn: () => getJson("/api/integration-releases", factoryReleasesSchema),
     refetchInterval: 15000, refetchIntervalInBackground: false
   });
+  const detectedVersions = [...new Set([
+    ...(versionPlan.data?.observedVersions.map(item => item.version) ?? []),
+    ...(versionPlan.data?.confirmedVersions ?? [])
+  ])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const selectedVersions = reconciliationSelection ?? detectedVersions;
+  const selectedSuggestion = versionPlan.data?.suggestions.find(item => item.reason === versionReason);
+  const versionIsOverride = selectedSuggestion !== undefined && releaseNumber.trim() !== selectedSuggestion.version;
   const create = useMutation({
     mutationFn: () => postFactoryRelease("/api/integration-releases", {
       repositoryId: Number(repositoryId), name: name.trim(), releaseNumber: releaseNumber.trim(),
-      targetBranch: targetBranch.trim() || repository?.defaultBranch, githubIssueIds: selectedIssueIds
+      targetBranch: targetBranch.trim() || repository?.defaultBranch, githubIssueIds: selectedIssueIds,
+      versionReason: versionPlan.data?.requiresInitialVersion ? "initial-version" : versionReason,
+      versionOverrideReason: versionIsOverride ? versionOverrideReason.trim() : undefined
     }),
     onSuccess: async release => {
       setName(""); setReleaseNumber(""); setTargetBranch(""); setSelectedIssueIds([]);
-      await client.invalidateQueries({ queryKey: ["integration-releases"] });
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["integration-releases"] }),
+        client.invalidateQueries({ queryKey: ["release-version-plan", repositoryId] })
+      ]);
       router.push(`/integration-releases/${release.id}`);
+    }
+  });
+  const reconcile = useMutation({
+    mutationFn: () => postVersionHistory(`/api/repositories/${repositoryId}/release-version-plan/reconcile`, {
+      publishedVersions: selectedVersions, reason: reconciliationReason.trim()
+    }),
+    onSuccess: async plan => {
+      client.setQueryData(["release-version-plan", repositoryId], plan);
+      setReconciliationSelection(null); setReconciliationReason("");
+      await client.invalidateQueries({ queryKey: ["release-version-plan", repositoryId] });
     }
   });
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (repository && name.trim() && releaseNumber.trim()) create.mutate();
+    if (repository && name.trim() && releaseNumber.trim() && versionPlan.data?.historyStatus === "Ready") create.mutate();
   }
 
   function toggleIssue(id: number) {
@@ -102,7 +155,7 @@ export function FactoryReleasesView() {
     <header>
       <p className="text-xs font-semibold uppercase tracking-[.16em] text-muted-foreground">Factory-managed releases</p>
       <h1 className="mt-1 text-2xl font-semibold">Integration releases</h1>
-      <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Create a release branch from a repository target and associate synchronized issues before dispatch.</p>
+      <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Plan a repository-scoped version, create a release branch from a repository target, and associate synchronized issues before dispatch.</p>
       <Link href="/releases" className="mt-2 inline-flex items-center gap-1 text-xs text-emerald-700 underline decoration-dotted underline-offset-2 dark:text-emerald-300">
         Open release planning <ArrowRight className="size-3" />
       </Link>
@@ -115,20 +168,64 @@ export function FactoryReleasesView() {
         <form className="mt-4 space-y-4" onSubmit={submit}>
           <label className="block space-y-1.5 text-sm font-medium">Repository
             <select className="h-10 w-full rounded-md border border-[var(--border)] bg-background px-3 text-sm" value={repositoryId}
-              onChange={event => { setRepositoryChoice(event.target.value); setSelectedIssueIds([]); }} disabled={enabledRepositories.length === 0}>
+              onChange={event => {
+                setRepositoryChoice(event.target.value); setSelectedIssueIds([]); setVersionReason(""); setReleaseNumber("");
+                setReconciliationSelection(null); setReconciliationReason("");
+              }} disabled={enabledRepositories.length === 0}>
               {enabledRepositories.length === 0 ? <option value="">No enabled repositories</option> : enabledRepositories.map(item =>
                 <option key={item.id} value={item.id}>{item.owner}/{item.name}</option>)}
             </select>
           </label>
+          {versionPlan.isLoading ? <p className="text-xs text-muted-foreground">Checking this repository’s published versions…</p> : null}
+          {versionPlan.error ? <p role="alert" className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-700 dark:text-red-300">{errorText(versionPlan.error)}</p> : null}
+          {versionPlan.data?.historyStatus === "DecisionRequired" ? <section className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3" aria-label="Published version history needs review">
+            <div><h3 className="text-sm font-semibold text-amber-900 dark:text-amber-200">Review published version history</h3>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">{versionPlan.data.historyMessage}</p>
+              <p className="mt-1 text-xs text-muted-foreground">Version suggestions stay paused until you confirm which versions have already been published.</p></div>
+            {detectedVersions.length > 0 ? <fieldset className="space-y-1.5">
+              <legend className="text-xs font-semibold">Published versions to keep in the repository history</legend>
+              {detectedVersions.map(version => {
+                const observed = versionPlan.data!.observedVersions.find(item => item.version === version);
+                const alreadyConfirmed = versionPlan.data!.confirmedVersions.includes(version);
+                return <label key={version} className="flex items-start gap-2 rounded-md px-1 py-1 text-xs">
+                  <input type="checkbox" checked={selectedVersions.includes(version)} disabled={alreadyConfirmed}
+                    onChange={() => setReconciliationSelection(current => {
+                      const selected = current ?? detectedVersions;
+                      return selected.includes(version) ? selected.filter(item => item !== version) : [...selected, version];
+                    })} className="mt-0.5 accent-emerald-500" />
+                  <span className="font-mono font-semibold">{version}</span>
+                  <span className="text-muted-foreground">{[
+                    observed?.gitTagObserved ? "Git tag" : null,
+                    observed?.gitHubReleaseObserved ? "GitHub Release" : null,
+                    alreadyConfirmed ? "already confirmed" : null
+                  ].filter(Boolean).join(" · ")}</span>
+                </label>;
+              })}
+            </fieldset> : <p className="text-xs text-muted-foreground">No valid published versions were detected. You can confirm that the version-like entries below do not represent a usable release version.</p>}
+            {versionPlan.data.unrecognizedVersionTags.length + versionPlan.data.unrecognizedReleaseTags.length > 0 ? <details className="text-xs">
+              <summary className="cursor-pointer font-medium">Technical history details</summary>
+              {versionPlan.data.unrecognizedVersionTags.length > 0 ? <p className="mt-2 break-all text-muted-foreground">Unrecognized version-like tags: {versionPlan.data.unrecognizedVersionTags.join(", ")}</p> : null}
+              {versionPlan.data.unrecognizedReleaseTags.length > 0 ? <p className="mt-1 break-all text-muted-foreground">Unrecognized published Release tags: {versionPlan.data.unrecognizedReleaseTags.join(", ")}</p> : null}
+              {versionPlan.data.missingReleaseTags.length > 0 ? <p className="mt-1 break-all text-muted-foreground">Release tags not present in the tag list: {versionPlan.data.missingReleaseTags.join(", ")}</p> : null}
+            </details> : null}
+            <label className="block space-y-1.5 text-xs font-medium">Why is this the correct published history?
+              <textarea className="min-h-16 w-full rounded-md border border-[var(--border)] bg-background px-3 py-2 text-sm font-normal" maxLength={500}
+                value={reconciliationReason} onChange={event => setReconciliationReason(event.target.value)} placeholder="For example, these are the releases already supported by this repository." />
+            </label>
+            <Button type="button" variant="outline" disabled={reconcile.isPending || reconciliationReason.trim().length < 10}
+              onClick={() => reconcile.mutate()} className="w-full">
+              {reconcile.isPending ? "Recording history decision…" : "Confirm published history"}
+            </Button>
+            {reconcile.error ? <p role="alert" className="text-xs text-red-500">{errorText(reconcile.error)}</p> : null}
+          </section> : null}
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block space-y-1.5 text-sm font-medium">Release name
               <input className="h-10 w-full rounded-md border border-[var(--border)] bg-background px-3 text-sm font-normal" maxLength={120} value={name}
                 onChange={event => setName(event.target.value)} placeholder="Account settings" />
             </label>
-            <label className="block space-y-1.5 text-sm font-medium">Release number
-              <input className="h-10 w-full rounded-md border border-[var(--border)] bg-background px-3 text-sm font-normal" maxLength={80} value={releaseNumber}
-                onChange={event => setReleaseNumber(event.target.value)} placeholder="2.4" />
-            </label>
+            <ReleaseVersionSelector plan={versionPlan.data} releaseNumber={releaseNumber} onReleaseNumberChange={setReleaseNumber}
+              reason={versionReason} onReasonChange={(reason, suggested) => { setVersionReason(reason); setReleaseNumber(suggested); setVersionOverrideReason(""); }}
+              overrideReason={versionOverrideReason} onOverrideReasonChange={setVersionOverrideReason} />
           </div>
           <label className="block space-y-1.5 text-sm font-medium">Target branch
             <input className="h-10 w-full rounded-md border border-[var(--border)] bg-background px-3 text-sm font-normal" maxLength={240} value={targetBranch}
@@ -149,7 +246,7 @@ export function FactoryReleasesView() {
               </label>)}
             </div>
           </fieldset>
-          <Button type="submit" disabled={create.isPending || !repository || !name.trim() || !releaseNumber.trim()} className="w-full">
+          <Button type="submit" disabled={create.isPending || !repository || !name.trim() || !releaseNumber.trim() || versionPlan.data?.historyStatus !== "Ready" || (versionPlan.data?.requiresInitialVersion !== true && !versionReason) || (versionIsOverride && versionOverrideReason.trim().length < 10)} className="w-full">
             {create.isPending ? <><LoaderCircle className="mr-2 size-4 animate-spin" />Creating release…</> : "Create release"}
           </Button>
           {create.error ? <p role="alert" className="text-sm text-red-500">{errorText(create.error)}</p> : null}
@@ -171,6 +268,7 @@ export function FactoryReleasesView() {
               <Badge variant="outline" className={statusTone(release.status)}>{release.status}</Badge>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{release.repository} · {release.issues.length} associated issue{release.issues.length === 1 ? "" : "s"}</p>
+            <p className="mt-1 text-xs text-muted-foreground">Planned version reason: {versionReasonLabel(release.versionReason)}</p>
             <p className="mt-1 text-xs text-muted-foreground">PR destination: <span className="font-mono text-foreground">{release.integrationBranch ?? "Pending branch setup"}</span></p>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">{progress(release)}</p>
           </Link>)}
@@ -204,8 +302,11 @@ export function FactoryReleaseDetails({ id }: { id: string }) {
   return <main className="mx-auto w-full max-w-5xl space-y-5">
     <div><Link href="/integration-releases" className="text-xs text-emerald-700 underline decoration-dotted underline-offset-2 dark:text-emerald-300">Integration releases</Link>
       <header className="mt-3 flex flex-wrap items-start justify-between gap-3">
-        <div><p className="text-xs font-semibold uppercase tracking-[.16em] text-muted-foreground">{release.repository} · release {release.releaseNumber}</p>
-          <h1 className="mt-1 text-2xl font-semibold">{release.name}</h1></div>
+        <div><p className="text-xs font-semibold uppercase tracking-[.16em] text-muted-foreground">{release.repository} · planned version {release.releaseNumber}</p>
+          <h1 className="mt-1 text-2xl font-semibold">{release.name}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{versionReasonLabel(release.versionReason)}</p>
+          {release.versionOverrideReason ? <p className="mt-1 text-xs text-muted-foreground">Version choice: {release.versionOverrideReason}</p> : null}
+        </div>
         <Badge variant="outline" className="text-sm">{release.status}</Badge>
       </header>
     </div>
@@ -259,6 +360,10 @@ export function FactoryReleaseDetails({ id }: { id: string }) {
     <details className="rounded-xl border border-[var(--border)] bg-card p-4">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold"><GitBranch className="size-4" /> Technical details</summary>
       <dl className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
+        <div><dt className="text-muted-foreground">Planned version</dt><dd className="mt-1 font-mono">{release.releaseNumber}</dd></div>
+        {/^\d+\.\d+\.\d+$/.test(release.releaseNumber) ? <div><dt className="text-muted-foreground">Git tag when published</dt><dd className="mt-1 font-mono">v{release.releaseNumber}</dd></div> : null}
+        <div><dt className="text-muted-foreground">Version reason</dt><dd className="mt-1">{versionReasonLabel(release.versionReason)}</dd></div>
+        {release.versionOverrideReason ? <div><dt className="text-muted-foreground">Version override explanation</dt><dd className="mt-1">{release.versionOverrideReason}</dd></div> : null}
         <div><dt className="text-muted-foreground">Integration branch</dt><dd className="mt-1 break-all font-mono">{release.integrationBranch ?? "Not selected yet"}</dd></div>
         <div><dt className="text-muted-foreground">Target branch</dt><dd className="mt-1 break-all font-mono">{release.targetBranch}</dd></div>
         <div><dt className="text-muted-foreground">Recorded target commit</dt><dd className="mt-1 break-all font-mono">{release.targetCommit ?? "Not recorded yet"}</dd></div>

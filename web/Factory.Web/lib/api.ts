@@ -153,9 +153,24 @@ export const factoryReleaseSchema = z.object({
   id: z.string(), repositoryId: z.number(), repository: z.string(), name: z.string(), releaseNumber: z.string(),
   integrationBranch: z.string().nullable(), targetBranch: z.string(), targetCommit: z.string().nullable(), status: z.string(),
   createdAt: z.string(), updatedAt: z.string(), branchCreatedAt: z.string().nullable(), githubMilestoneId: z.number().nullable(),
-  lastError: z.string().nullable(), issues: z.array(factoryReleaseIssueSchema)
+  lastError: z.string().nullable(), issues: z.array(factoryReleaseIssueSchema),
+  versionReason: z.string().nullable().optional(), versionOverrideReason: z.string().nullable().optional()
 });
 export type FactoryRelease = z.infer<typeof factoryReleaseSchema>;
+
+export const releaseVersionSuggestionSchema = z.object({ reason: z.string(), label: z.string(), version: z.string() });
+export const observedReleaseVersionSchema = z.object({
+  version: z.string(), gitTagObserved: z.boolean(), gitHubReleaseObserved: z.boolean(), publishedAt: z.string().nullable()
+});
+export const repositoryReleaseVersionPlanSchema = z.object({
+  repositoryId: z.number(), versionFormat: z.string(), tagPrefix: z.string(), breakingChangeDefinition: z.string(),
+  historyStatus: z.string(), historyMessage: z.string().nullable(), latestPublishedVersion: z.string().nullable(),
+  requiresInitialVersion: z.boolean(), suggestions: z.array(releaseVersionSuggestionSchema),
+  observedVersions: z.array(observedReleaseVersionSchema), confirmedVersions: z.array(z.string()),
+  existingPlannedVersions: z.array(z.string()), legacyPlannedVersions: z.array(z.string()),
+  unrecognizedVersionTags: z.array(z.string()), unrecognizedReleaseTags: z.array(z.string()), missingReleaseTags: z.array(z.string())
+});
+export type RepositoryReleaseVersionPlan = z.infer<typeof repositoryReleaseVersionPlanSchema>;
 
 export const databaseColumnSchema = z.object({ name: z.string(), type: z.string() });
 export const databaseTableSchema = z.object({ schema: z.string(), table: z.string(), columns: z.array(databaseColumnSchema) });
