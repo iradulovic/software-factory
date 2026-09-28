@@ -216,5 +216,6 @@ public sealed class ReleaseBranchProvisionerTests
         public Task<bool> CancelAsync(Guid id, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<bool> ArchiveAsync(Guid id, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task SavePromotionAsync(Guid id, FactoryReleasePromotion promotion, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task SaveVersionPublicationAsync(Guid id, FactoryReleaseVersionPublication publication, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

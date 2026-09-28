@@ -105,6 +105,27 @@ public sealed class FactoryReleaseIntegrationTests
             Assert.Equal(new string('b', 40), persistedPromotion?.FrozenHeadCommit);
             Assert.Equal([issueId], persistedPromotion?.MembershipIssueIds);
             Assert.Equal(checkedAt.ToUnixTimeMilliseconds(), persistedPromotion?.LastCheckedAt?.ToUnixTimeMilliseconds());
+
+            var publishedAt = checkedAt.AddMinutes(1);
+            await restarted.SaveVersionPublicationAsync(releaseId, new FactoryReleaseVersionPublication(
+                "Published", repositoryId, $"factory-release-tests/{suffix}", "2.4.0", "v2.4.0",
+                new string('d', 40), 456, $"https://github.com/factory-release-tests/{suffix}/releases/tag/v2.4.0",
+                checkedAt, publishedAt, checkedAt, publishedAt, publishedAt, 2, null), CancellationToken.None);
+            var persistedPublication = (await new PostgresFactoryReleaseStore(options).GetAsync(releaseId, CancellationToken.None))?.Promotion?.VersionPublication;
+            Assert.Equal("Published", persistedPublication?.Status);
+            Assert.Equal(repositoryId, persistedPublication?.RepositoryId);
+            Assert.Equal($"factory-release-tests/{suffix}", persistedPublication?.Repository);
+            Assert.Equal("v2.4.0", persistedPublication?.TagName);
+            Assert.Equal(new string('d', 40), persistedPublication?.TargetBranchCommit);
+            Assert.Equal(456, persistedPublication?.GitHubReleaseId);
+            Assert.Equal(2, persistedPublication?.AttemptCount);
+            Assert.Equal(publishedAt.ToUnixTimeMilliseconds(), persistedPublication?.PublishedAt?.ToUnixTimeMilliseconds());
+
+            await restarted.RecordFactoryPublishedVersionAsync(repositoryId, "2.4.0", "v2.4.0", CancellationToken.None);
+            var versionState = await new PostgresFactoryReleaseStore(options).GetVersionStateAsync(repositoryId, CancellationToken.None);
+            Assert.Contains("2.4.0", versionState.PublishedVersions);
+            Assert.Contains("v2.4.0", versionState.LastReconciliation!.ObservedTags);
+            Assert.Contains("v2.4.0", versionState.LastReconciliation.ObservedReleaseTags);
         }
         finally
         {

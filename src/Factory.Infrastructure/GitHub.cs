@@ -131,18 +131,24 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
 
     public async Task<PullRequestState?> GetPullRequestStateAsync(string owner, string name, int number, CancellationToken cancellationToken)
     {
-        // `gh pr view --json` no longer accepts a separate "merged" boolean field (confirmed against gh 2.98.0:
-        // requesting it fails outright with "Unknown JSON field: merged") — "state" alone is authoritative and
-        // already distinguishes MERGED from CLOSED (closed without merge) from OPEN.
+        // State distinguishes MERGED from CLOSED (without merge) and OPEN. The merge commit is the exact commit
+        // GitHub placed on the target branch; it may differ from the reviewed head for squash or merge commits.
         var result = await runner.RunAsync(new ProcessRequest("gh",
-            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "state"],
+            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "state,mergeCommit,headRefOid,baseRefName,mergedAt"],
             Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
         if (!result.Succeeded) return null;
         using var document = JsonDocument.Parse(result.StandardOutput);
-        var state = document.RootElement.GetProperty("state").GetString() ?? "";
+        var pr = document.RootElement;
+        var state = pr.GetProperty("state").GetString() ?? "";
+        static string? StringField(JsonElement value, string property) =>
+            value.TryGetProperty(property, out var field) && field.ValueKind == JsonValueKind.String ? field.GetString() : null;
+        var mergeCommit = pr.TryGetProperty("mergeCommit", out var merge) && merge.ValueKind == JsonValueKind.Object
+            ? StringField(merge, "oid") : null;
+        var mergedAt = DateTimeOffset.TryParse(StringField(pr, "mergedAt"), out var parsedMergedAt) ? parsedMergedAt : (DateTimeOffset?)null;
         return new PullRequestState(
             string.Equals(state, "MERGED", StringComparison.OrdinalIgnoreCase),
-            string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase));
+            string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase), mergeCommit,
+            StringField(pr, "headRefOid"), StringField(pr, "baseRefName"), mergedAt);
     }
 
     public async Task<PullRequestMergeResult> GetPullRequestMergeabilityAsync(string owner, string name, int number, CancellationToken cancellationToken)

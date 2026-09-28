@@ -62,6 +62,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IFactoryReleaseStore, PostgresFactoryReleaseStore>();
         services.AddSingleton<IFactoryReleaseVersionStore>(sp => (IFactoryReleaseVersionStore)sp.GetRequiredService<IFactoryReleaseStore>());
         services.AddSingleton<IRepositoryReleaseVersionHistoryReader, GhCliRepositoryReleaseVersionHistoryReader>();
+        services.AddSingleton<IRepositoryVersionPublisher, GhCliRepositoryVersionPublisher>();
         services.AddSingleton<ITaskContextWriter, TaskContextWriter>();
         services.AddSingleton<IGitHubClient, GhCliClient>();
         services.AddSingleton<IGitHubPublisher, GhCliPublisher>();

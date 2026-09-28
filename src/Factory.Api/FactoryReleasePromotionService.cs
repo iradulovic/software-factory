@@ -10,7 +10,8 @@ namespace Factory.Api;
 /// <summary>Checks persisted release membership against the exact GitHub refs, then opens and tracks one
 /// integration-branch-to-target pull request. This workflow deliberately never merges or deletes branches.</summary>
 public sealed class FactoryReleasePromotionService(NpgsqlDataSource dataSource, IFactoryReleaseStore releases,
-    IGitHubStore github, IGitHubClient githubClient, IGitHubPublisher publisher, IClock clock)
+    IGitHubStore github, IGitHubClient githubClient, IGitHubPublisher publisher,
+    FactoryReleaseVersionPublicationService versionPublication, IClock clock)
 {
     private const string NotChecked = "NotChecked";
 
@@ -19,6 +20,22 @@ public sealed class FactoryReleasePromotionService(NpgsqlDataSource dataSource, 
 
     public Task<FactoryRelease> PromoteAsync(Guid id, CancellationToken cancellationToken) =>
         WithPromotionLockAsync(id, () => PromoteLockedAsync(id, cancellationToken), cancellationToken);
+
+    public Task<FactoryRelease> RetryVersionPublicationAsync(Guid id, CancellationToken cancellationToken) =>
+        WithPromotionLockAsync(id, async () =>
+        {
+            var release = await RequireReleaseAsync(id, cancellationToken);
+            var publicationStatus = release.Promotion?.VersionPublication?.Status;
+            if (release.Promotion?.Status != "Merged")
+                throw new FactoryReleaseApiException("A version can only be published after the promotion pull request has merged.", StatusCodes.Status409Conflict);
+            if (publicationStatus == "Published")
+                return release;
+            if (publicationStatus == "Conflict")
+                throw new FactoryReleaseApiException("A version tag or GitHub Release conflicts with this promotion. Review the remote object in GitHub before taking another action.", StatusCodes.Status409Conflict);
+            return release.Promotion.PullRequestNumber is null
+                ? throw new FactoryReleaseApiException("The merged promotion pull request identity is missing.", StatusCodes.Status409Conflict)
+                : await RefreshPullRequestAsync(release, release.Promotion, cancellationToken);
+        }, cancellationToken);
 
     private async Task<FactoryRelease> CheckLockedAsync(Guid id, CancellationToken cancellationToken)
     {
@@ -218,7 +235,7 @@ public sealed class FactoryReleasePromotionService(NpgsqlDataSource dataSource, 
                 !string.Equals(mergeability.BaseBranch, release.TargetBranch, StringComparison.Ordinal))
                 blockers.Add("The pull request head or target branch does not match this release.");
             if (refs.Head is not null && mergeability.HeadSha != refs.Head ||
-                refs.Target is not null && mergeability.BaseSha != refs.Target)
+                state?.Merged != true && refs.Target is not null && mergeability.BaseSha != refs.Target)
             {
                 stale = true;
                 blockers.Add("The pull request head or target changed while its status was being checked.");
@@ -243,10 +260,16 @@ public sealed class FactoryReleasePromotionService(NpgsqlDataSource dataSource, 
         var closed = state?.Closed == true;
         if (merged)
         {
-            if (refs.Head is not null && previous.FrozenHeadCommit != refs.Head)
+            if (refs.Head is not null && previous.FrozenHeadCommit != refs.Head ||
+                state?.HeadCommit != previous.FrozenHeadCommit)
             {
                 stale = true;
-                blockers.Add("The integration branch has commits beyond the reviewed pull request head.");
+                blockers.Add("The merged pull request head no longer matches the reviewed integration branch head.");
+            }
+            if (state?.BaseBranch != release.TargetBranch || mergeability.Succeeded && mergeability.BaseBranch != release.TargetBranch)
+            {
+                stale = true;
+                blockers.Add("The merged pull request target no longer matches the intended target branch.");
             }
         }
         else
@@ -269,7 +292,7 @@ public sealed class FactoryReleasePromotionService(NpgsqlDataSource dataSource, 
         if (!merged && ciStatus != PullRequestCiStatus.Success)
             blockers.Add($"Release pull request CI is {ciStatus.ToLowerInvariant()}.");
 
-        var status = merged ? stale ? "Stale" : "Merged"
+        var status = merged ? "Merged"
             : closed ? "Closed"
             : stale ? "Stale"
             : conflicts.Count > 0 || blockers.Count > 0 ? "Blocked"
@@ -284,7 +307,20 @@ public sealed class FactoryReleasePromotionService(NpgsqlDataSource dataSource, 
             Error = refs.Errors.Count > 0 ? string.Join(" ", refs.Errors) : mergeability.Error ?? checks.Error
         };
         await releases.SavePromotionAsync(release.Id, promotion, cancellationToken);
-        return await RequireReleaseAsync(release.Id, cancellationToken);
+        var current = await RequireReleaseAsync(release.Id, cancellationToken);
+        if (!merged)
+            return current;
+
+        var frozenMembershipMatches = previous.FrozenMembershipHash is not null &&
+            previous.FrozenMembershipHash == membershipHash;
+        var evidenceValid = !stale && refs.Errors.Count == 0 && frozenMembershipMatches &&
+            previous.FrozenHeadCommit is not null && previous.FrozenTargetCommit is not null &&
+            state?.HeadCommit == previous.FrozenHeadCommit && state.BaseBranch == release.TargetBranch &&
+            mergeability.Succeeded && mergeability.HeadSha == previous.FrozenHeadCommit &&
+            mergeability.HeadBranch == release.IntegrationBranch && mergeability.BaseBranch == release.TargetBranch;
+        var evidenceBlocker = blockers.FirstOrDefault() ?? "The merged promotion no longer matches its frozen review evidence.";
+        return await versionPublication.PublishMergedAsync(current, promotion, state, refs.Head, refs.Target,
+            evidenceValid, evidenceBlocker, cancellationToken);
     }
 
     private async Task<BranchRefs> ReadRefsAsync(GitHubRepository repository, FactoryRelease release,

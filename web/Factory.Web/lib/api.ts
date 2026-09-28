@@ -154,13 +154,22 @@ export const factoryReleaseIssueSchema = z.object({
   taskBaseBranch:z.string().nullable(),taskReleaseId:z.string().nullable(),ciStatus:z.string().nullable(),
   pullRequestNumber:z.number().nullable(),pullRequestUrl:z.string().nullable()
 });
+export const factoryReleaseVersionPublicationSchema = z.object({
+  status: z.string(), repositoryId: z.number(), repository: z.string(), plannedVersion: z.string(),
+  tagName: z.string().nullable(), targetBranchCommit: z.string().nullable(),
+  githubReleaseId: z.number().nullable(), githubReleaseUrl: z.string().nullable(),
+  tagRecordedAt: z.string().nullable(), publishedAt: z.string().nullable(), startedAt: z.string().nullable(),
+  completedAt: z.string().nullable(), lastAttemptAt: z.string().nullable(), attemptCount: z.number(),
+  lastError: z.string().nullable()
+});
 export const factoryReleasePromotionSchema = z.object({
   status: z.string(), pullRequestNumber: z.number().nullable(), pullRequestUrl: z.string().nullable(),
   headCommit: z.string().nullable(), targetCommit: z.string().nullable(), frozenHeadCommit: z.string().nullable(),
   frozenTargetCommit: z.string().nullable(), membershipHash: z.string().nullable(), frozenMembershipHash: z.string().nullable(),
   membershipIssueIds: z.array(z.number()), ciStatus: z.string(), mergeabilityStatus: z.string(), lastCheckedAt: z.string().nullable(),
   remainingIssues: z.array(z.string()), blockers: z.array(z.string()), conflicts: z.array(z.string()),
-  branchCleanupEligible: z.boolean(), error: z.string().nullable()
+  branchCleanupEligible: z.boolean(), error: z.string().nullable(),
+  versionPublication: factoryReleaseVersionPublicationSchema.nullable().optional()
 });
 export const factoryReleaseSchema = z.object({
   id: z.string(), repositoryId: z.number(), repository: z.string(), name: z.string(), releaseNumber: z.string(),
@@ -174,7 +183,8 @@ export type FactoryRelease = z.infer<typeof factoryReleaseSchema>;
 
 export const releaseVersionSuggestionSchema = z.object({ reason: z.string(), label: z.string(), version: z.string() });
 export const observedReleaseVersionSchema = z.object({
-  version: z.string(), gitTagObserved: z.boolean(), gitHubReleaseObserved: z.boolean(), publishedAt: z.string().nullable()
+  version: z.string(), gitTagObserved: z.boolean(), gitHubReleaseObserved: z.boolean(), publishedAt: z.string().nullable(),
+  githubReleaseId: z.number().nullable().optional(), githubReleaseUrl: z.string().nullable().optional()
 });
 export const repositoryReleaseVersionPlanSchema = z.object({
   repositoryId: z.number(), versionFormat: z.string(), tagPrefix: z.string(), breakingChangeDefinition: z.string(),

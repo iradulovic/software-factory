@@ -10,7 +10,7 @@ public sealed class RepositoryReleaseVersionHistoryReaderTests
     {
         var runner = new SequencedRunner();
         runner.Enqueue(0, "refs/tags/v1.2.3\nrefs/tags/1.2\nrefs/tags/main\n");
-        runner.Enqueue(0, "v1.2.3\t2025-04-12T08:30:00Z\n");
+        runner.Enqueue(0, "123\tv1.2.3\t2025-04-12T08:30:00Z\thttps://github.com/acme/settings/releases/tag/v1.2.3\n");
         var repository = new GitHubRepository(7, "acme", "settings", "https://github.com/acme/settings.git", "main", true);
 
         var history = await new GhCliRepositoryReleaseVersionHistoryReader(runner).ReadAsync(repository, CancellationToken.None);
@@ -19,6 +19,8 @@ public sealed class RepositoryReleaseVersionHistoryReaderTests
         var release = Assert.Single(history.PublishedReleases);
         Assert.Equal("v1.2.3", release.TagName);
         Assert.Equal(new DateTimeOffset(2025, 4, 12, 8, 30, 0, TimeSpan.Zero), release.PublishedAt);
+        Assert.Equal(123, release.ReleaseId);
+        Assert.Equal("https://github.com/acme/settings/releases/tag/v1.2.3", release.Url);
         Assert.Equal(2, runner.Requests.Count);
         Assert.Contains("repos/acme/settings/git/matching-refs/tags/", runner.Requests[0].Arguments);
         Assert.Contains("repos/acme/settings/releases?per_page=100", runner.Requests[1].Arguments);
