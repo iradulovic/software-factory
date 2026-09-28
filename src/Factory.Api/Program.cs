@@ -699,6 +699,18 @@ app.MapPost("/api/releases/{id:guid}/promote", async (Guid id, ReleasePlanServic
 
 app.MapGet("/api/integration-releases", async (FactoryReleaseService releases, CancellationToken ct) =>
     Results.Ok(await releases.ListAsync(ct)));
+app.MapGet("/api/repositories/{id:long}/release-version-plan", async (long id, FactoryReleaseService releases, CancellationToken ct) =>
+{
+    try { return Results.Ok(await releases.GetVersionPlanAsync(id, ct)); }
+    catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
+});
+app.MapPost("/api/repositories/{id:long}/release-version-plan/reconcile", async (long id,
+    ReconcileRepositoryReleaseVersionsRequest request, FactoryReleaseService releases, CancellationToken ct) =>
+{
+    try { return Results.Ok(await releases.ReconcileVersionHistoryAsync(id, request, ct)); }
+    catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
+    catch (InvalidOperationException exception) { return Results.Conflict(new { error = exception.Message }); }
+});
 app.MapPost("/api/integration-releases", async (CreateFactoryReleaseRequest request, FactoryReleaseService releases, CancellationToken ct) =>
 {
     try

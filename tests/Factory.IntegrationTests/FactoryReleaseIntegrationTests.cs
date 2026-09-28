@@ -226,6 +226,72 @@ public sealed class FactoryReleaseIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Version_history_is_repository_scoped_and_release_reason_survives_store_restart()
+    {
+        var options = Options.Create(new FactoryOptions
+        {
+            ConnectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING") ?? new FactoryOptions().ConnectionString
+        });
+        await new DatabaseMigrator(options).MigrateAsync(CancellationToken.None);
+        await using var connection = new NpgsqlConnection(options.Value.ConnectionString);
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("""
+            DELETE FROM factory.release WHERE repository_id IN (SELECT id FROM github.repository WHERE owner='factory-release-version-tests');
+            DELETE FROM github.repository WHERE owner='factory-release-version-tests';
+            """);
+        var suffix = Guid.NewGuid().ToString("N");
+        var firstRepositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('factory-release-version-tests',@name,@cloneUrl,'main',true) RETURNING id
+            """, new { name = $"first-{suffix}", cloneUrl = $"https://example.invalid/first-{suffix}.git" });
+        var secondRepositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('factory-release-version-tests',@name,@cloneUrl,'main',true) RETURNING id
+            """, new { name = $"second-{suffix}", cloneUrl = $"https://example.invalid/second-{suffix}.git" });
+        var store = new PostgresFactoryReleaseStore(options);
+
+        try
+        {
+            var initialFirst = await store.GetVersionStateAsync(firstRepositoryId, CancellationToken.None);
+            var initialSecond = await store.GetVersionStateAsync(secondRepositoryId, CancellationToken.None);
+            Assert.Equal("MAJOR.MINOR.PATCH", initialFirst.VersionFormat);
+            Assert.Equal("v", initialFirst.TagPrefix);
+            Assert.Empty(initialFirst.PublishedVersions);
+            Assert.Empty(initialSecond.PublishedVersions);
+
+            await store.ReconcileVersionHistoryAsync(firstRepositoryId, ["v1.2.3"], ["v1.2.3"], ["1.2.3"],
+                "Confirmed the version used by production", CancellationToken.None);
+            var reconciledFirst = await new PostgresFactoryReleaseStore(options).GetVersionStateAsync(firstRepositoryId, CancellationToken.None);
+            var untouchedSecond = await store.GetVersionStateAsync(secondRepositoryId, CancellationToken.None);
+            Assert.Equal(["1.2.3"], reconciledFirst.PublishedVersions);
+            Assert.Equal("Confirmed the version used by production", reconciledFirst.LastReconciliation?.Reason);
+            Assert.Empty(untouchedSecond.PublishedVersions);
+
+            var firstRelease = await store.CreateAsync(new FactoryReleaseDraft(firstRepositoryId, "First", "1.2.4", "main",
+                VersionReason: "bug-fixes"), [], CancellationToken.None);
+            var secondRelease = await store.CreateAsync(new FactoryReleaseDraft(secondRepositoryId, "Second", "1.2.4", "main",
+                VersionReason: "initial-version"), [], CancellationToken.None);
+            Assert.NotNull(firstRelease);
+            Assert.NotNull(secondRelease);
+            var persistedRelease = await new PostgresFactoryReleaseStore(options).GetAsync(firstRelease!.Id, CancellationToken.None);
+            Assert.Equal("1.2.4", persistedRelease?.ReleaseNumber);
+            Assert.Equal("bug-fixes", persistedRelease?.VersionReason);
+            Assert.Equal("1.2.4", (await store.GetAsync(secondRelease!.Id, CancellationToken.None))?.ReleaseNumber);
+            Assert.Equal(["1.2.4"], (await store.GetVersionStateAsync(firstRepositoryId, CancellationToken.None)).PlannedReleaseNumbers);
+            Assert.Null(await store.CreateAsync(new FactoryReleaseDraft(firstRepositoryId, "Duplicate", "1.2.4", "main"), [], CancellationToken.None));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.release WHERE repository_id IN (
+                  SELECT id FROM github.repository WHERE owner='factory-release-version-tests'
+                );
+                DELETE FROM github.repository WHERE owner='factory-release-version-tests';
+                """);
+        }
+    }
+
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
     private sealed class LateTaskRow { public string BaseBranch { get; init; } = ""; public Guid? ReleaseId { get; init; } }
 

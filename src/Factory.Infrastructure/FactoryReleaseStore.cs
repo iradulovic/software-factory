@@ -5,7 +5,7 @@ using Npgsql;
 
 namespace Factory.Infrastructure;
 
-public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options) : IFactoryReleaseStore
+public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options) : IFactoryReleaseStore, IFactoryReleaseVersionStore
 {
     private NpgsqlConnection Connection() => new(options.Value.ConnectionString);
 
@@ -25,6 +25,71 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
         if (row is null) return null;
         var releases = await AddIssuesAsync(connection, [row], cancellationToken);
         return releases[0];
+    }
+
+    public async Task<RepositoryReleaseVersionState> GetVersionStateAsync(long repositoryId, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.repository_version_policy(repository_id)
+            VALUES(@repositoryId) ON CONFLICT(repository_id) DO NOTHING
+            """, new { repositoryId }, cancellationToken: cancellationToken));
+        var policy = await connection.QuerySingleAsync<VersionPolicyRow>(new CommandDefinition("""
+            SELECT version_format AS "VersionFormat",tag_prefix AS "TagPrefix",
+              breaking_change_definition AS "BreakingChangeDefinition"
+            FROM factory.repository_version_policy WHERE repository_id=@repositoryId
+            """, new { repositoryId }, cancellationToken: cancellationToken));
+        var publishedVersions = (await connection.QueryAsync<string>(new CommandDefinition("""
+            SELECT version FROM factory.repository_published_version WHERE repository_id=@repositoryId
+            ORDER BY version
+            """, new { repositoryId }, cancellationToken: cancellationToken))).AsList();
+        var reconciliation = await connection.QuerySingleOrDefaultAsync<VersionReconciliationRow>(new CommandDefinition("""
+            SELECT observed_tags AS "ObservedTags",observed_release_tags AS "ObservedReleaseTags",
+              accepted_versions AS "AcceptedVersions",reason AS "Reason",reconciled_at AS "ReconciledAt"
+            FROM factory.repository_version_reconciliation WHERE repository_id=@repositoryId
+            ORDER BY reconciled_at DESC,id DESC LIMIT 1
+            """, new { repositoryId }, cancellationToken: cancellationToken));
+        var planned = (await connection.QueryAsync<string>(new CommandDefinition("""
+            SELECT release_number FROM factory.release WHERE repository_id=@repositoryId
+              AND status IN ('Pending','Creating','Active','Failed') ORDER BY created_at DESC
+            """, new { repositoryId }, cancellationToken: cancellationToken))).AsList();
+        return new RepositoryReleaseVersionState(policy.VersionFormat, policy.TagPrefix, policy.BreakingChangeDefinition,
+            publishedVersions, reconciliation?.ToModel(), planned);
+    }
+
+    public async Task ReconcileVersionHistoryAsync(long repositoryId, IReadOnlyList<string> observedTags,
+        IReadOnlyList<string> observedReleaseTags, IReadOnlyList<string> acceptedVersions, string reason,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition("SELECT pg_advisory_xact_lock(@repositoryId)", new { repositoryId }, transaction, cancellationToken: cancellationToken));
+        var existingVersions = (await connection.QueryAsync<string>(new CommandDefinition("""
+            SELECT version FROM factory.repository_published_version WHERE repository_id=@repositoryId FOR UPDATE
+            """, new { repositoryId }, transaction, cancellationToken: cancellationToken))).AsList();
+        var allAccepted = existingVersions.Concat(acceptedVersions).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        foreach (var version in allAccepted)
+        {
+            if (!SemanticReleaseVersion.TryParse(version, out _))
+                throw new InvalidOperationException($"'{version}' is not a valid MAJOR.MINOR.PATCH version.");
+            await connection.ExecuteAsync(new CommandDefinition("""
+                INSERT INTO factory.repository_published_version(repository_id,version,source)
+                VALUES(@repositoryId,@version,'OperatorConfirmed') ON CONFLICT(repository_id,version) DO NOTHING
+                """, new { repositoryId, version }, transaction, cancellationToken: cancellationToken));
+        }
+        await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.repository_version_reconciliation(id,repository_id,observed_tags,observed_release_tags,accepted_versions,reason)
+            VALUES(@id,@repositoryId,@observedTags,@observedReleaseTags,@acceptedVersions,@reason)
+            """, new
+        {
+            id = Guid.NewGuid(), repositoryId,
+            observedTags = observedTags.Order(StringComparer.Ordinal).ToArray(),
+            observedReleaseTags = observedReleaseTags.Order(StringComparer.Ordinal).ToArray(),
+            acceptedVersions = allAccepted, reason
+        }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<FactoryRelease?> CreateAsync(FactoryReleaseDraft draft, IReadOnlyList<long> githubIssueIds,
@@ -74,14 +139,17 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
 
         var id = Guid.NewGuid();
         var insertedId = await connection.QuerySingleOrDefaultAsync<Guid?>(new CommandDefinition("""
-            INSERT INTO factory.release(id,repository_id,name,release_number,target_branch,status,github_milestone_id)
-            VALUES(@id,@repositoryId,@name,@releaseNumber,@targetBranch,'Pending',@githubMilestoneId)
+            INSERT INTO factory.release(id,repository_id,name,release_number,target_branch,status,github_milestone_id,
+              version_reason,version_override_reason)
+            VALUES(@id,@repositoryId,@name,@releaseNumber,@targetBranch,'Pending',@githubMilestoneId,
+              @versionReason,@versionOverrideReason)
             ON CONFLICT(repository_id,release_number) DO NOTHING
             RETURNING id
             """, new
         {
             id, draft.RepositoryId, name = draft.Name.Trim(), releaseNumber = draft.ReleaseNumber.Trim(),
-            targetBranch = draft.TargetBranch.Trim(), draft.GitHubMilestoneId
+            targetBranch = draft.TargetBranch.Trim(), draft.GitHubMilestoneId,
+            draft.VersionReason, draft.VersionOverrideReason
         }, transaction, cancellationToken: cancellationToken));
 
         if (insertedId is null)
@@ -228,7 +296,8 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
           fr.name,fr.release_number AS "ReleaseNumber",fr.integration_branch AS "IntegrationBranch",
           fr.target_branch AS "TargetBranch",fr.target_commit AS "TargetCommit",fr.status,
           fr.created_at AS "CreatedAt",fr.updated_at AS "UpdatedAt",fr.branch_created_at AS "BranchCreatedAt",
-          fr.github_milestone_id AS "GitHubMilestoneId",fr.last_error AS "LastError"
+          fr.github_milestone_id AS "GitHubMilestoneId",fr.last_error AS "LastError",
+          fr.version_reason AS "VersionReason",fr.version_override_reason AS "VersionOverrideReason"
         FROM factory.release fr JOIN github.repository gr ON gr.id=fr.repository_id
         """;
 
@@ -248,11 +317,13 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
         public DateTime? BranchCreatedAt { get; init; }
         public long? GitHubMilestoneId { get; init; }
         public string? LastError { get; init; }
+        public string? VersionReason { get; init; }
+        public string? VersionOverrideReason { get; init; }
 
         public FactoryRelease ToModel(IReadOnlyList<FactoryReleaseIssue> issues) => new(Id, RepositoryId, Repository,
             Name, ReleaseNumber, IntegrationBranch, TargetBranch, TargetCommit, Enum.Parse<FactoryReleaseStatus>(Status),
             Offset(CreatedAt), Offset(UpdatedAt), BranchCreatedAt is null ? null : Offset(BranchCreatedAt.Value),
-            GitHubMilestoneId, LastError, issues);
+            GitHubMilestoneId, LastError, issues, VersionReason, VersionOverrideReason);
 
         private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     }
@@ -262,5 +333,24 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
     {
         public FactoryReleaseIssue Issue => new(GitHubIssueId, IssueNumber, Title, State, Eligible, TaskStatus,
             TaskId, TaskBaseBranch, TaskReleaseId);
+    }
+
+    private sealed class VersionPolicyRow
+    {
+        public string VersionFormat { get; init; } = "";
+        public string TagPrefix { get; init; } = "";
+        public string BreakingChangeDefinition { get; init; } = "";
+    }
+
+    private sealed class VersionReconciliationRow
+    {
+        public string[] ObservedTags { get; init; } = [];
+        public string[] ObservedReleaseTags { get; init; } = [];
+        public string[] AcceptedVersions { get; init; } = [];
+        public string Reason { get; init; } = "";
+        public DateTime ReconciledAt { get; init; }
+
+        public RepositoryVersionReconciliation ToModel() => new(ObservedTags, ObservedReleaseTags, AcceptedVersions,
+            Reason, new DateTimeOffset(DateTime.SpecifyKind(ReconciledAt, DateTimeKind.Utc)));
     }
 }

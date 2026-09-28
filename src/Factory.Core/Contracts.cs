@@ -488,6 +488,22 @@ public interface IFactoryReleaseStore
     Task<bool> ArchiveAsync(Guid id, CancellationToken cancellationToken);
 }
 
+/// <summary>Repository-scoped planned and published version state, separate from branch-provisioning operations.</summary>
+public interface IFactoryReleaseVersionStore
+{
+    Task<RepositoryReleaseVersionState> GetVersionStateAsync(long repositoryId, CancellationToken cancellationToken);
+    Task ReconcileVersionHistoryAsync(long repositoryId, IReadOnlyList<string> observedTags,
+        IReadOnlyList<string> observedReleaseTags, IReadOnlyList<string> acceptedVersions, string reason,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>Reads published Git tag and GitHub Release history for one repository. This is a read-only GitHub
+/// boundary; version-history decisions are persisted by <see cref="IFactoryReleaseVersionStore"/>.</summary>
+public interface IRepositoryReleaseVersionHistoryReader
+{
+    Task<RepositoryReleaseVersionHistory> ReadAsync(GitHubRepository repository, CancellationToken cancellationToken);
+}
+
 public interface IGitHubClient
 {
     /// <summary>All issues (open and closed) whose <c>updatedAt</c> is at or after <paramref name="since"/> (or
