@@ -35,6 +35,21 @@ public sealed class RootEndpointTests : IClassFixture<RootEndpointTests.FactoryA
         Assert.Equal("reachable", document?.Database);
     }
 
+    [Fact]
+    public async Task Version_endpoint_returns_build_metadata_without_requiring_the_database()
+    {
+        var response = await client.GetAsync("/api/version");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+        var state = root.GetProperty("state").GetString()!;
+        Assert.Contains(state, new[] { "development", "release", "unknown" });
+        Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("productVersion").GetString()));
+        Assert.True(root.TryGetProperty("sourceCommit", out _));
+        Assert.True(root.TryGetProperty("buildTimeUtc", out _));
+    }
+
     [Theory]
     [InlineData("title", "asc", "t.title", "ASC")]
     [InlineData("startedAt", "desc", "t.started_at", "DESC")]

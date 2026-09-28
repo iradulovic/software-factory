@@ -98,6 +98,9 @@ app.UseCors();
 if (!app.Environment.IsEnvironment("Testing"))
     await app.Services.GetRequiredService<DatabaseMigrator>().MigrateAsync(CancellationToken.None);
 
+var factoryBuildInfo = FactoryBuildInfo.FromAssembly(typeof(Program).Assembly);
+app.MapGet("/api/version", () => Results.Ok(factoryBuildInfo));
+
 var dashboardUrl = builder.Configuration["Dashboard:Url"] ?? "http://localhost:3000";
 app.MapGet("/", () => Results.Ok(new
 {
@@ -910,8 +913,15 @@ app.MapGet("/api/steps/{id:guid}/log", async (Guid id, bool? tail, NpgsqlDataSou
 
 app.MapGet("/api/repositories", Query("""
     SELECT r.id,r.owner,r.name,r.clone_url AS "cloneUrl",r.default_branch AS "defaultBranch",r.is_enabled AS "isEnabled",r.last_synced_at AS "lastSyncedAt",
+      published.version AS "latestPublishedVersion",
       failure.error AS "latestSyncFailure",failure.occurred_at AS "latestSyncFailureAt"
     FROM github.repository r
+    LEFT JOIN LATERAL (
+      SELECT version FROM factory.repository_published_version pv
+      WHERE pv.repository_id=r.id
+      ORDER BY split_part(version,'.',1)::integer DESC,split_part(version,'.',2)::integer DESC,split_part(version,'.',3)::integer DESC
+      LIMIT 1
+    ) published ON TRUE
     LEFT JOIN LATERAL (
       SELECT error,occurred_at FROM github.repository_sync_failure WHERE repository_id=r.id ORDER BY occurred_at DESC,id DESC LIMIT 1
     ) failure ON TRUE
@@ -925,11 +935,18 @@ app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, I
     var item = await c.QuerySingleOrDefaultAsync(new CommandDefinition("""
         SELECT r.id,r.owner,r.name,r.clone_url AS "cloneUrl",r.default_branch AS "defaultBranch",r.is_enabled AS "isEnabled",
           r.created_at AS "createdAt",r.updated_at AS "updatedAt",r.last_synced_at AS "lastSyncedAt",
+          published.version AS "latestPublishedVersion",
           failure.error AS "latestSyncFailure",failure.occurred_at AS "latestSyncFailureAt",
           (SELECT count(*) FROM github.issue i WHERE i.repository_id=r.id) AS "issueCount",
           (SELECT count(*) FROM factory.task t WHERE t.repository_id=r.id) AS "taskCount",
           (SELECT worktree_path FROM factory.task t WHERE t.repository_id=r.id AND t.worktree_path IS NOT NULL ORDER BY t.created_at DESC LIMIT 1) AS "configurationWorktreePath"
         FROM github.repository r
+        LEFT JOIN LATERAL (
+          SELECT version FROM factory.repository_published_version pv
+          WHERE pv.repository_id=r.id
+          ORDER BY split_part(version,'.',1)::integer DESC,split_part(version,'.',2)::integer DESC,split_part(version,'.',3)::integer DESC
+          LIMIT 1
+        ) published ON TRUE
         LEFT JOIN LATERAL (
           SELECT error,occurred_at FROM github.repository_sync_failure WHERE repository_id=r.id ORDER BY occurred_at DESC,id DESC LIMIT 1
         ) failure ON TRUE
@@ -942,7 +959,7 @@ app.MapGet("/api/repositories/{id:long}", async (long id, NpgsqlDataSource db, I
     if (!string.IsNullOrWhiteSpace(worktreePath) && Directory.Exists(worktreePath))
         configuration = await configurationReader.ReadAsync(worktreePath, $"origin/{(string)item.defaultBranch}", ct);
     var deployments = await deploymentStore.ListAsync(id, ct);
-    return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration, deployments });
+    return Results.Ok(new { item.id, item.owner, item.name, item.cloneUrl, item.defaultBranch, item.isEnabled, item.createdAt, item.updatedAt, item.lastSyncedAt, item.latestPublishedVersion, item.latestSyncFailure, item.latestSyncFailureAt, item.issueCount, item.taskCount, configuration, deployments });
 });
 
 app.MapPost("/api/repositories/{id:long}/deployments/provision", async (long id, ProvisionDeploymentRequest body,

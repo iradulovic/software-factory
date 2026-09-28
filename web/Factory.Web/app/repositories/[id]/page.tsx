@@ -3,7 +3,7 @@
 import Link from "next/link";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, GitBranch, ListChecks, ListTodo, Rocket, Settings2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, GitBranch, ListChecks, ListTodo, Rocket, Settings2, Tag } from "lucide-react";
 import { z } from "zod";
 import { apiBase, factoryReleaseSchema, getJson, repositoryDetailSchema, repositoryReleaseVersionPlanSchema } from "@/lib/api";
 import { Badge, Empty, RelativeTime } from "@/components/ui";
@@ -27,14 +27,15 @@ export default function RepositoryDetailPage({params}:{params:Promise<{id:string
   const config=data.configuration;
   const releases=(releaseList.data??[]).filter(release=>release.repositoryId===id).sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt));
   const latestPlannedRelease=releases.find(release=>!["Archived","Cancelled"].includes(release.status));
+  const latestPublishedVersion=versionPlan.data?.latestPublishedVersion??data.latestPublishedVersion;
   const latestPublished=versionPlan.data?.observedVersions.find(version=>version.version===versionPlan.data?.latestPublishedVersion);
   const configuredProviders=["Vercel","Supabase"];
   return <div className="space-y-5"><Link className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground" href="/repositories"><ArrowLeft className="size-4"/>Repositories</Link><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="eyebrow">Repository</p><h1 className="mt-1 text-2xl font-semibold">{data.owner}/{data.name}</h1><p className="mt-1 font-mono text-xs text-muted-foreground">{data.cloneUrl}</p></div><Badge value={data.isEnabled?"Enabled":"Disabled"}/></div>
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"><Stat icon={<GitBranch/>} label="Default branch" value={data.defaultBranch}/><Stat icon={<ListTodo/>} label="Imported issues" value={String(data.issueCount)}/><Stat icon={<ListChecks/>} label="Factory tasks" value={String(data.taskCount)}/><Stat icon={<Settings2/>} label="Last sync" value={data.lastSyncedAt?"Recorded":"Not yet synced"}/></div>
     <section className="panel p-4"><div className="flex flex-wrap items-start justify-between gap-4">
-      <div><p className="eyebrow">Repository release</p><h2 className="mt-1 text-lg font-semibold">Published version</h2>
+      <div><p className="eyebrow">Repository release</p><h2 className="mt-1 text-lg font-semibold"><Tag className="mr-2 inline size-4"/>Published version</h2>
         {versionPlan.isLoading?<p className="mt-2 text-sm text-muted-foreground">Loading version history…</p>:
-          versionPlan.data?.latestPublishedVersion?<p className="mt-2 text-sm"><span className="font-mono font-semibold">{versionPlan.data.latestPublishedVersion}</span>
+          latestPublishedVersion?<p className="mt-2 text-sm"><span className="font-mono font-semibold">{latestPublishedVersion}</span>
             {latestPublished?.publishedAt?<span className="ml-2 text-muted-foreground">published {new Date(latestPublished.publishedAt).toLocaleDateString()}</span>:null}
             {latestPublished?.githubReleaseUrl?<a className="ml-3 text-primary underline underline-offset-2" href={latestPublished.githubReleaseUrl} target="_blank" rel="noreferrer">Open GitHub Release</a>:null}</p>:
             <p className="mt-2 text-sm text-muted-foreground">No confirmed published version for this repository yet.</p>}

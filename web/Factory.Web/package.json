@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "node ../../scripts/factory-build-identity.mjs next dev",
+    "build": "node ../../scripts/factory-build-identity.mjs next build",
     "lint": "eslint .",
-    "test": "node ./tests/run-github-status-test.cjs && node ./tests/run-merge-policy-badge-test.cjs && node ./tests/run-release-version-selector-test.cjs && node ./tests/run-agent-state-badge-test.cjs && node ./tests/run-agent-usage-test.cjs && node ./tests/run-mergeability-panel-test.cjs && node ./tests/run-shell-layout-test.cjs && node ./tests/run-service-health-indicators-test.cjs && node ./tests/run-attention-queue-test.cjs && node ./tests/run-nudge-inbox-test.cjs && node ./tests/run-human-action-panel-test.cjs && node --test ./tests/current-work-layout.test.cjs && node ./tests/run-current-work-test.cjs && node ./tests/run-assistant-context-test.cjs",
+    "test": "node --test ../../scripts/factory-build-identity.test.mjs && node ./tests/run-about-build-info-test.cjs && node ./tests/run-github-status-test.cjs && node ./tests/run-merge-policy-badge-test.cjs && node ./tests/run-release-version-selector-test.cjs && node ./tests/run-agent-state-badge-test.cjs && node ./tests/run-agent-usage-test.cjs && node ./tests/run-mergeability-panel-test.cjs && node ./tests/run-shell-layout-test.cjs && node ./tests/run-service-health-indicators-test.cjs && node ./tests/run-attention-queue-test.cjs && node ./tests/run-nudge-inbox-test.cjs && node ./tests/run-human-action-panel-test.cjs && node --test ./tests/current-work-layout.test.cjs && node ./tests/run-current-work-test.cjs && node ./tests/run-assistant-context-test.cjs",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
