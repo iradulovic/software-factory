@@ -79,6 +79,7 @@ builder.Services.AddScoped<OperatorAskRouter>();
 builder.Services.AddScoped<ReleasePlanService>();
 builder.Services.AddScoped<FactoryReleaseService>();
 builder.Services.AddScoped<FactoryReleasePromotionService>();
+builder.Services.AddScoped<FactoryReleaseVersionPublicationService>();
 builder.Services.AddHttpClient();
 builder.Services.Configure<AgentUsageOptions>(builder.Configuration.GetSection("AgentUsage"));
 builder.Services.AddSingleton<IAgentUsageSnapshotStore, AgentUsageSnapshotStore>();
@@ -731,6 +732,12 @@ app.MapPost("/api/integration-releases/{id:guid}/promotion/check", async (Guid i
 app.MapPost("/api/integration-releases/{id:guid}/promote", async (Guid id, FactoryReleasePromotionService promotions, CancellationToken ct) =>
 {
     try { return Results.Ok(await promotions.PromoteAsync(id, ct)); }
+    catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
+});
+app.MapPost("/api/integration-releases/{id:guid}/version-publication/retry", async (Guid id,
+    FactoryReleasePromotionService promotions, CancellationToken ct) =>
+{
+    try { return Results.Ok(await promotions.RetryVersionPublicationAsync(id, ct)); }
     catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
 });
 app.MapPost("/api/integration-releases/{id:guid}/retry", async (Guid id, RetryFactoryReleaseRequest? request,

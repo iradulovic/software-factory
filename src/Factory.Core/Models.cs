@@ -53,7 +53,8 @@ public readonly record struct SemanticReleaseVersion(int Major, int Minor, int P
     }
 }
 
-public sealed record PublishedGitHubRelease(string TagName, DateTimeOffset? PublishedAt);
+public sealed record PublishedGitHubRelease(string TagName, DateTimeOffset? PublishedAt, long? ReleaseId = null,
+    string? Url = null);
 public sealed record RepositoryReleaseVersionHistory(IReadOnlyList<string> VersionLikeTags,
     IReadOnlyList<PublishedGitHubRelease> PublishedReleases);
 
@@ -77,7 +78,16 @@ public sealed record FactoryReleasePromotion(string Status, int? PullRequestNumb
     string? MembershipHash, string? FrozenMembershipHash, IReadOnlyList<long> MembershipIssueIds,
     string CiStatus, string MergeabilityStatus, DateTimeOffset? LastCheckedAt,
     IReadOnlyList<string> RemainingIssues, IReadOnlyList<string> Blockers, IReadOnlyList<string> Conflicts,
-    bool BranchCleanupEligible, string? Error = null);
+    bool BranchCleanupEligible, string? Error = null,
+    FactoryReleaseVersionPublication? VersionPublication = null);
+
+/// <summary>Repository-scoped durable outcome of publishing a version tag and GitHub Release after promotion.
+/// Promotion can be successful while this metadata is blocked, partially complete, or awaiting retry.</summary>
+public sealed record FactoryReleaseVersionPublication(string Status, long RepositoryId, string Repository,
+    string PlannedVersion, string? TagName, string? TargetBranchCommit, long? GitHubReleaseId,
+    string? GitHubReleaseUrl, DateTimeOffset? TagRecordedAt, DateTimeOffset? PublishedAt,
+    DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, DateTimeOffset? LastAttemptAt,
+    int AttemptCount, string? LastError);
 
 public sealed record ReleasePromotionEvaluation(string CiStatus, IReadOnlyList<string> RemainingIssues,
     IReadOnlyList<string> Blockers)
@@ -510,7 +520,13 @@ public sealed record ReleasePullRequestResult(bool Succeeded, int? Number, strin
     string? State, string? Body, string? Error);
 public sealed record GitHubWriteResult(bool Succeeded, string? Error);
 public sealed record ReleaseIssueWriteResult(bool Succeeded, int? IssueNumber, string? Url, string? Error);
-public sealed record PullRequestState(bool Merged, bool Closed);
+public sealed record PullRequestState(bool Merged, bool Closed, string? MergeCommit = null,
+    string? HeadCommit = null, string? BaseBranch = null, DateTimeOffset? MergedAt = null);
+
+public sealed record CommitBranchVerificationResult(bool Succeeded, bool CommitIsOnBranch, string? Error);
+public sealed record RepositoryTagPublicationResult(string Status, string? Commit, string? Error);
+public sealed record GitHubReleasePublicationResult(string Status, long? ReleaseId, string? Url, string? Error,
+    DateTimeOffset? PublishedAt = null);
 
 /// <summary>GitHub's merge calculation for the exact PR head and base observed in one read.</summary>
 public sealed record PullRequestMergeResult(bool Succeeded, bool Open, string? HeadSha, string? BaseSha,

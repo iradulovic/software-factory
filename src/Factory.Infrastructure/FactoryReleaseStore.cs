@@ -93,6 +93,56 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task RecordFactoryPublishedVersionAsync(long repositoryId, string version, string tagName,
+        CancellationToken cancellationToken)
+    {
+        if (!SemanticReleaseVersion.TryParse(version, out _) || tagName != $"v{version}")
+            throw new InvalidOperationException("Factory can only record a published MAJOR.MINOR.PATCH version with its exact v-prefixed tag.");
+
+        await using var connection = Connection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(
+            "SELECT pg_advisory_xact_lock(@repositoryId)", new { repositoryId }, transaction, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.repository_version_policy(repository_id)
+            VALUES(@repositoryId) ON CONFLICT(repository_id) DO NOTHING
+            """, new { repositoryId }, transaction, cancellationToken: cancellationToken));
+
+        var previous = await connection.QuerySingleOrDefaultAsync<VersionReconciliationRow>(new CommandDefinition("""
+            SELECT observed_tags AS "ObservedTags",observed_release_tags AS "ObservedReleaseTags",
+              accepted_versions AS "AcceptedVersions",reason AS "Reason",reconciled_at AS "ReconciledAt"
+            FROM factory.repository_version_reconciliation WHERE repository_id=@repositoryId
+            ORDER BY reconciled_at DESC,id DESC LIMIT 1 FOR UPDATE
+            """, new { repositoryId }, transaction, cancellationToken: cancellationToken));
+        var existingVersions = (await connection.QueryAsync<string>(new CommandDefinition("""
+            SELECT version FROM factory.repository_published_version WHERE repository_id=@repositoryId FOR UPDATE
+            """, new { repositoryId }, transaction, cancellationToken: cancellationToken))).AsList();
+        var acceptedVersions = existingVersions.Append(version).Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal).ToArray();
+        await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.repository_published_version(repository_id,version,source,factory_published_at)
+            VALUES(@repositoryId,@version,'Factory',now())
+            ON CONFLICT(repository_id,version) DO UPDATE SET
+              source='Factory',factory_published_at=COALESCE(factory.repository_published_version.factory_published_at,now())
+            """, new { repositoryId, version }, transaction, cancellationToken: cancellationToken));
+
+        var observedTags = (previous?.ObservedTags ?? []).Append(tagName).Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal).ToArray();
+        var observedReleaseTags = (previous?.ObservedReleaseTags ?? []).Append(tagName).Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal).ToArray();
+        await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.repository_version_reconciliation(id,repository_id,observed_tags,
+              observed_release_tags,accepted_versions,reason)
+            VALUES(@id,@repositoryId,@observedTags,@observedReleaseTags,@acceptedVersions,@reason)
+            """, new
+        {
+            id = Guid.NewGuid(), repositoryId, observedTags, observedReleaseTags, acceptedVersions,
+            reason = $"Factory published {tagName} after its release promotion merged."
+        }, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     public async Task<FactoryRelease?> CreateAsync(FactoryReleaseDraft draft, IReadOnlyList<long> githubIssueIds,
         CancellationToken cancellationToken)
     {
@@ -311,6 +361,42 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
         }, cancellationToken: cancellationToken));
     }
 
+    public async Task SaveVersionPublicationAsync(Guid id, FactoryReleaseVersionPublication publication,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.ExecuteAsync(new CommandDefinition("""
+            UPDATE factory.release_promotion SET
+              version_publication_status=@status,
+              version_publication_repository_id=@repositoryId,
+              version_publication_repository=@repository,
+              version_planned_version=@plannedVersion,
+              version_tag_name=@tagName,
+              version_target_branch_commit=@targetBranchCommit,
+              github_release_id=@githubReleaseId,
+              github_release_url=@githubReleaseUrl,
+              version_tag_recorded_at=@tagRecordedAt,
+              version_published_at=@publishedAt,
+              version_publication_started_at=@startedAt,
+              version_publication_completed_at=@completedAt,
+              version_publication_last_attempt_at=@lastAttemptAt,
+              version_publication_attempt_count=@attemptCount,
+              version_publication_last_error=@lastError,
+              updated_at=now()
+            WHERE release_id=@id
+            """, new
+        {
+            id, status = publication.Status, repositoryId = publication.RepositoryId,
+            repository = publication.Repository, plannedVersion = publication.PlannedVersion,
+            tagName = publication.TagName, targetBranchCommit = publication.TargetBranchCommit,
+            githubReleaseId = publication.GitHubReleaseId, githubReleaseUrl = publication.GitHubReleaseUrl,
+            tagRecordedAt = publication.TagRecordedAt, publishedAt = publication.PublishedAt,
+            startedAt = publication.StartedAt, completedAt = publication.CompletedAt,
+            lastAttemptAt = publication.LastAttemptAt, attemptCount = publication.AttemptCount,
+            lastError = publication.LastError
+        }, cancellationToken: cancellationToken));
+    }
+
     private static async Task<IReadOnlyList<FactoryRelease>> AddIssuesAsync(NpgsqlConnection connection,
         IReadOnlyList<ReleaseRow> rows, CancellationToken cancellationToken)
     {
@@ -348,7 +434,16 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
               membership_issue_ids AS "MembershipIssueIds",ci_status AS "CiStatus",mergeability_status AS "MergeabilityStatus",
               last_checked_at AS "LastCheckedAt",remaining_issues::text AS "RemainingIssuesJson",
               blockers::text AS "BlockersJson",conflicts::text AS "ConflictsJson",
-              branch_cleanup_eligible AS "BranchCleanupEligible",error AS "Error"
+              branch_cleanup_eligible AS "BranchCleanupEligible",error AS "Error",
+              version_publication_status AS "VersionPublicationStatus",
+              version_publication_repository_id AS "VersionPublicationRepositoryId",
+              version_publication_repository AS "VersionPublicationRepository",
+              version_planned_version AS "VersionPlannedVersion",version_tag_name AS "VersionTagName",
+              version_target_branch_commit AS "VersionTargetBranchCommit",github_release_id AS "GitHubReleaseId",
+              github_release_url AS "GitHubReleaseUrl",version_tag_recorded_at AS "VersionTagRecordedAt",
+              version_published_at AS "VersionPublishedAt",version_publication_started_at AS "VersionStartedAt",
+              version_publication_completed_at AS "VersionCompletedAt",version_publication_last_attempt_at AS "VersionLastAttemptAt",
+              version_publication_attempt_count AS "VersionAttemptCount",version_publication_last_error AS "VersionLastError"
             FROM factory.release_promotion WHERE release_id=ANY(@ids)
             """, new { ids }, cancellationToken: cancellationToken))).ToDictionary(row => row.ReleaseId);
         return rows.Select(row => row.ToModel(issuesByRelease.GetValueOrDefault(row.Id) ?? []) with
@@ -423,12 +518,36 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
         public string ConflictsJson { get; init; } = "[]";
         public bool BranchCleanupEligible { get; init; }
         public string? Error { get; init; }
+        public string VersionPublicationStatus { get; init; } = "NotStarted";
+        public long? VersionPublicationRepositoryId { get; init; }
+        public string? VersionPublicationRepository { get; init; }
+        public string? VersionPlannedVersion { get; init; }
+        public string? VersionTagName { get; init; }
+        public string? VersionTargetBranchCommit { get; init; }
+        public long? GitHubReleaseId { get; init; }
+        public string? GitHubReleaseUrl { get; init; }
+        public DateTime? VersionTagRecordedAt { get; init; }
+        public DateTime? VersionPublishedAt { get; init; }
+        public DateTime? VersionStartedAt { get; init; }
+        public DateTime? VersionCompletedAt { get; init; }
+        public DateTime? VersionLastAttemptAt { get; init; }
+        public int VersionAttemptCount { get; init; }
+        public string? VersionLastError { get; init; }
 
         public FactoryReleasePromotion ToModel() => new(Status, PullRequestNumber, PullRequestUrl, HeadCommit, TargetCommit,
             FrozenHeadCommit, FrozenTargetCommit, MembershipHash, FrozenMembershipHash, MembershipIssueIds ?? [], CiStatus,
             MergeabilityStatus, LastCheckedAt is null ? null : Utc(LastCheckedAt.Value),
             JsonSerializer.Deserialize<string[]>(RemainingIssuesJson) ?? [], JsonSerializer.Deserialize<string[]>(BlockersJson) ?? [],
-            JsonSerializer.Deserialize<string[]>(ConflictsJson) ?? [], BranchCleanupEligible, Error);
+            JsonSerializer.Deserialize<string[]>(ConflictsJson) ?? [], BranchCleanupEligible, Error,
+            VersionPublicationRepositoryId is null ? null : new FactoryReleaseVersionPublication(
+                VersionPublicationStatus, VersionPublicationRepositoryId.Value, VersionPublicationRepository ?? "",
+                VersionPlannedVersion ?? "", VersionTagName, VersionTargetBranchCommit, GitHubReleaseId,
+                GitHubReleaseUrl, VersionTagRecordedAt is null ? null : Utc(VersionTagRecordedAt.Value),
+                VersionPublishedAt is null ? null : Utc(VersionPublishedAt.Value),
+                VersionStartedAt is null ? null : Utc(VersionStartedAt.Value),
+                VersionCompletedAt is null ? null : Utc(VersionCompletedAt.Value),
+                VersionLastAttemptAt is null ? null : Utc(VersionLastAttemptAt.Value), VersionAttemptCount,
+                VersionLastError));
 
         private static DateTimeOffset Utc(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     }

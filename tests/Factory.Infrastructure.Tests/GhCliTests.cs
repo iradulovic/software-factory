@@ -180,8 +180,8 @@ public sealed class GhCliTests
     [InlineData("""{"state":"OPEN"}""", false, false)]
     public async Task GetPullRequestStateAsync_parses_state(string stdout, bool expectedMerged, bool expectedClosed)
     {
-        // gh 2.98.0 rejects a separate "merged" field outright ("Unknown JSON field: merged"); "state" alone is
-        // requested and is authoritative for MERGED vs. CLOSED (without merge) vs. OPEN.
+        // State is authoritative for MERGED vs. CLOSED (without merge) vs. OPEN; the additional fields identify
+        // the exact landed merge commit and the reviewed source and target branches.
         var runner = new RecordingRunner(0, stdout, "");
         var client = new GhCliClient(runner);
 
@@ -191,7 +191,7 @@ public sealed class GhCliTests
         Assert.Equal(expectedMerged, state.Merged);
         Assert.Equal(expectedClosed, state.Closed);
         Assert.Equal("gh", runner.Request!.FileName);
-        Assert.Equal(new[] { "pr", "view", "17", "--repo", "acme/billing", "--json", "state" }, runner.Request.Arguments);
+        Assert.Equal(new[] { "pr", "view", "17", "--repo", "acme/billing", "--json", "state,mergeCommit,headRefOid,baseRefName,mergedAt" }, runner.Request.Arguments);
     }
 
     [Fact]
@@ -201,6 +201,21 @@ public sealed class GhCliTests
         var client = new GhCliClient(runner);
 
         Assert.Null(await client.GetPullRequestStateAsync("acme", "billing", 17, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetPullRequestStateAsync_reads_merge_commit_and_branch_identity()
+    {
+        var runner = new RecordingRunner(0,
+            """{"state":"MERGED","mergeCommit":{"oid":"merge-sha"},"headRefOid":"reviewed-head","baseRefName":"main","mergedAt":"2026-09-28T10:20:00Z"}""", "");
+
+        var state = await new GhCliClient(runner).GetPullRequestStateAsync("acme", "billing", 17, CancellationToken.None);
+
+        Assert.True(state?.Merged);
+        Assert.Equal("merge-sha", state?.MergeCommit);
+        Assert.Equal("reviewed-head", state?.HeadCommit);
+        Assert.Equal("main", state?.BaseBranch);
+        Assert.Equal(new DateTimeOffset(2026, 9, 28, 10, 20, 0, TimeSpan.Zero), state?.MergedAt);
     }
 
     [Fact]

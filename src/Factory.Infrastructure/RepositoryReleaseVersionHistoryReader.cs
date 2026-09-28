@@ -21,7 +21,7 @@ public sealed class GhCliRepositoryReleaseVersionHistoryReader(IProcessRunner pr
 
         var releases = await processes.RunAsync(new ProcessRequest("gh",
             ["api", "--paginate", $"repos/{repositoryName}/releases?per_page=100", "--jq",
-             ".[] | select(.draft == false and .prerelease == false) | [.tag_name, .published_at] | @tsv"],
+             ".[] | select(.draft == false and .prerelease == false) | [.id, .tag_name, .published_at, .html_url] | @tsv"],
             Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(2)), cancellationToken);
         if (!releases.Succeeded)
             throw new InvalidOperationException($"Could not read published GitHub Releases for {repositoryName}: {Failure(releases)}");
@@ -30,11 +30,12 @@ public sealed class GhCliRepositoryReleaseVersionHistoryReader(IProcessRunner pr
         foreach (var line in releases.StandardOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
             var fields = line.Split('\t');
-            if (fields.Length < 2 || string.IsNullOrWhiteSpace(fields[0]))
+            if (fields.Length < 4 || !long.TryParse(fields[0], NumberStyles.None, CultureInfo.InvariantCulture, out var releaseId) ||
+                string.IsNullOrWhiteSpace(fields[1]))
                 throw new InvalidOperationException($"GitHub returned an invalid published Release record for {repositoryName}.");
-            DateTimeOffset? publishedAt = DateTimeOffset.TryParse(fields[1], CultureInfo.InvariantCulture,
+            DateTimeOffset? publishedAt = DateTimeOffset.TryParse(fields[2], CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var date) ? date : null;
-            publishedReleases.Add(new PublishedGitHubRelease(fields[0], publishedAt));
+            publishedReleases.Add(new PublishedGitHubRelease(fields[1], publishedAt, releaseId, fields[3]));
         }
 
         return new RepositoryReleaseVersionHistory(references, publishedReleases);

@@ -487,12 +487,26 @@ public interface IFactoryReleaseStore
     Task<bool> CancelAsync(Guid id, CancellationToken cancellationToken);
     Task<bool> ArchiveAsync(Guid id, CancellationToken cancellationToken);
     Task SavePromotionAsync(Guid id, FactoryReleasePromotion promotion, CancellationToken cancellationToken);
+    Task SaveVersionPublicationAsync(Guid id, FactoryReleaseVersionPublication publication, CancellationToken cancellationToken);
+}
+
+/// <summary>Creates immutable repository tags and stable GitHub Releases through the shared process runner.</summary>
+public interface IRepositoryVersionPublisher
+{
+    Task<CommitBranchVerificationResult> VerifyCommitOnBranchAsync(GitHubRepository repository, string branch,
+        string commit, CancellationToken cancellationToken);
+    Task<RepositoryTagPublicationResult> EnsureTagAsync(GitHubRepository repository, string tagName,
+        string commit, CancellationToken cancellationToken);
+    Task<GitHubReleasePublicationResult> EnsureReleaseAsync(GitHubRepository repository, string tagName,
+        string title, string body, CancellationToken cancellationToken);
 }
 
 /// <summary>Repository-scoped planned and published version state, separate from branch-provisioning operations.</summary>
 public interface IFactoryReleaseVersionStore
 {
     Task<RepositoryReleaseVersionState> GetVersionStateAsync(long repositoryId, CancellationToken cancellationToken);
+    Task RecordFactoryPublishedVersionAsync(long repositoryId, string version, string tagName,
+        CancellationToken cancellationToken);
     Task ReconcileVersionHistoryAsync(long repositoryId, IReadOnlyList<string> observedTags,
         IReadOnlyList<string> observedReleaseTags, IReadOnlyList<string> acceptedVersions, string reason,
         CancellationToken cancellationToken);

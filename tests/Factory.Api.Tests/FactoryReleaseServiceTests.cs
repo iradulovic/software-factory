@@ -38,6 +38,23 @@ public sealed class FactoryReleaseServiceTests
     }
 
     [Fact]
+    public async Task Version_plan_includes_the_repository_release_date_and_link()
+    {
+        var publishedAt = new DateTimeOffset(2026, 9, 28, 10, 20, 0, TimeSpan.Zero);
+        var url = "https://github.com/acme/settings/releases/tag/v1.2.3";
+        var history = new RepositoryReleaseVersionHistory(["v1.2.3"],
+            [new PublishedGitHubRelease("v1.2.3", publishedAt, 123, url)]);
+        var service = Service(new ReleaseStore(), Repository(), State(["1.2.3"], ["v1.2.3"], ["v1.2.3"]), history);
+
+        var plan = await service.GetVersionPlanAsync(42, CancellationToken.None);
+
+        var observed = Assert.Single(plan.ObservedVersions);
+        Assert.Equal(publishedAt, observed.PublishedAt);
+        Assert.Equal(123, observed.GitHubReleaseId);
+        Assert.Equal(url, observed.GitHubReleaseUrl);
+    }
+
+    [Fact]
     public async Task Version_plan_requires_a_starting_version_when_no_version_has_been_published()
     {
         var plan = await Service(new ReleaseStore(), Repository()).GetVersionPlanAsync(42, CancellationToken.None);
@@ -212,6 +229,21 @@ public sealed class FactoryReleaseServiceTests
         public RepositoryReleaseVersionState State => states.GetValueOrDefault(42) ?? states.Values.First();
         public Task<RepositoryReleaseVersionState> GetVersionStateAsync(long repositoryId, CancellationToken cancellationToken) =>
             Task.FromResult(states.TryGetValue(repositoryId, out var state) ? state : FactoryReleaseServiceTests.State([], [], []));
+        public Task RecordFactoryPublishedVersionAsync(long repositoryId, string version, string tagName, CancellationToken cancellationToken)
+        {
+            var current = states.GetValueOrDefault(repositoryId) ?? FactoryReleaseServiceTests.State([], [], []);
+            var allVersions = current.PublishedVersions.Append(version).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+            var previous = current.LastReconciliation;
+            states[repositoryId] = current with
+            {
+                PublishedVersions = allVersions,
+                LastReconciliation = new RepositoryVersionReconciliation(
+                    (previous?.ObservedTags ?? []).Append(tagName).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
+                    (previous?.ObservedReleaseTags ?? []).Append(tagName).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
+                    allVersions, $"Factory published {tagName}", DateTimeOffset.UtcNow)
+            };
+            return Task.CompletedTask;
+        }
         public Task ReconcileVersionHistoryAsync(long repositoryId, IReadOnlyList<string> observedTags,
             IReadOnlyList<string> observedReleaseTags, IReadOnlyList<string> acceptedVersions, string reason,
             CancellationToken cancellationToken)
@@ -266,6 +298,7 @@ public sealed class FactoryReleaseServiceTests
         public Task<bool> CancelAsync(Guid id, CancellationToken cancellationToken) => Task.FromResult(false);
         public Task<bool> ArchiveAsync(Guid id, CancellationToken cancellationToken) => Task.FromResult(false);
         public Task SavePromotionAsync(Guid id, FactoryReleasePromotion promotion, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task SaveVersionPublicationAsync(Guid id, FactoryReleaseVersionPublication publication, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class GitHubStore(IReadOnlyList<GitHubRepository> repositories) : IGitHubStore

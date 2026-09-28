@@ -74,10 +74,32 @@ function promotionSummary(status: string | undefined) {
     case "Blocked": return "Factory found issues that need attention before this release can be prepared.";
     case "Stale": return "A branch head, target, or reviewed issue set changed. Check the current release state before continuing.";
     case "PullRequestOpen": return "The promotion pull request is open. CI and mergeability are tracked here; a human must review and merge it.";
-    case "Merged": return "The promotion pull request was merged. The integration branch is eligible for cleanup only if it has no commits beyond the reviewed head.";
+    case "Merged": return "The promotion pull request merged successfully. Version metadata is tracked separately below.";
     case "Closed": return "The promotion pull request was closed without merging. Review it in GitHub before taking another action.";
     default: return "Check the selected tasks and exact branch heads to see whether this release is ready.";
   }
+}
+
+function versionPublicationSummary(status: string | undefined, promotionStatus: string | undefined) {
+  switch (status) {
+    case "Publishing": return "Factory is recording the repository tag and GitHub Release.";
+    case "Blocked": return "Code was promoted, but Factory could not verify that the merged changes still match the reviewed release. Review the reason before publishing.";
+    case "TagCreated": return "The version tag is saved. GitHub Release creation still needs a safe retry.";
+    case "Published": return "The planned version tag and GitHub Release were published.";
+    case "Conflict": return "A remote tag or Release conflicts with the reviewed commit. Review the remote version before taking another action.";
+    case "Failed": return "Code was promoted, but version metadata could not be completed. Retry publishing after reviewing the error.";
+    default: return promotionStatus === "Merged"
+      ? "Code was promoted successfully. Version metadata is waiting to be published."
+      : "The version is planned. Factory publishes its tag and Release only after the promotion pull request merges.";
+  }
+}
+
+function versionPublicationTone(status: string | undefined) {
+  if (status === "Published") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  if (status === "TagCreated" || status === "Failed" || status === "Conflict" || status === "Blocked")
+    return "border-amber-500/40 bg-amber-500/5 text-amber-800 dark:text-amber-300";
+  if (status === "Publishing") return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+  return "";
 }
 
 function promotionTone(status: string | undefined) {
@@ -288,6 +310,7 @@ export function FactoryReleasesView() {
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{release.repository} · {release.issues.length} associated issue{release.issues.length === 1 ? "" : "s"}</p>
             <p className="mt-1 text-xs text-muted-foreground">Planned version reason: {versionReasonLabel(release.versionReason)}</p>
+            <p className="mt-1 text-xs text-muted-foreground">Version publication: {release.promotion?.versionPublication?.status === "Published" ? `Published ${release.releaseNumber}` : versionPublicationSummary(release.promotion?.versionPublication?.status, release.promotion?.status)}</p>
             <p className="mt-1 text-xs text-muted-foreground">PR destination: <span className="font-mono text-foreground">{release.integrationBranch ?? "Pending branch setup"}</span></p>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">{progress(release)}</p>
           </Link>)}
@@ -317,6 +340,14 @@ export function FactoryReleaseDetails({ id }: { id: string }) {
   const promotionAction = useMutation({
     mutationFn: (kind: "check" | "promote") => postFactoryRelease(
       kind === "check" ? `/api/integration-releases/${id}/promotion/check` : `/api/integration-releases/${id}/promote`),
+    onSuccess: async release => {
+      client.setQueryData(["integration-release", id], release);
+      await Promise.all([client.invalidateQueries({ queryKey: ["integration-release", id] }), client.invalidateQueries({ queryKey: ["integration-releases"] })]);
+    },
+    onError: async () => Promise.all([client.invalidateQueries({ queryKey: ["integration-release", id] }), client.invalidateQueries({ queryKey: ["integration-releases"] })])
+  });
+  const publicationAction = useMutation({
+    mutationFn: () => postFactoryRelease(`/api/integration-releases/${id}/version-publication/retry`),
     onSuccess: async release => {
       client.setQueryData(["integration-release", id], release);
       await Promise.all([client.invalidateQueries({ queryKey: ["integration-release", id] }), client.invalidateQueries({ queryKey: ["integration-releases"] })]);
@@ -366,6 +397,48 @@ export function FactoryReleaseDetails({ id }: { id: string }) {
       </div>
       {action.error ? <p role="alert" className="mt-3 text-sm text-red-500">{errorText(action.error)}</p> : null}
       {["Cancelled", "Archived"].includes(release.status) ? <p className="mt-3 text-xs leading-5 text-muted-foreground">Factory release actions never delete a remote branch. Ask the repository owner to review or remove an abandoned branch in GitHub.</p> : null}
+    </section>
+
+    <section className="rounded-xl border border-[var(--border)] bg-card p-4" aria-label="Version publication">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><h2 className="text-base font-semibold">Version publication</h2>
+          <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{versionPublicationSummary(release.promotion?.versionPublication?.status, release.promotion?.status)}</p>
+          <p className="mt-2 text-sm">Planned version: <strong className="font-mono">v{release.releaseNumber}</strong></p>
+        </div>
+        <Badge variant="outline" className={versionPublicationTone(release.promotion?.versionPublication?.status)}>
+          {release.promotion?.versionPublication?.status ?? (release.promotion?.status === "Merged" ? "Pending" : "Planned")}
+        </Badge>
+      </div>
+      {release.promotion?.versionPublication?.status === "Published" ? <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+        <span>Published {release.promotion.versionPublication.publishedAt ? dateLabel(release.promotion.versionPublication.publishedAt) : "date unavailable"}</span>
+        {release.promotion.versionPublication.githubReleaseUrl ? <a className="font-medium text-primary underline underline-offset-2" href={release.promotion.versionPublication.githubReleaseUrl} target="_blank" rel="noreferrer">Open GitHub Release</a> : null}
+      </div> : null}
+      {release.promotion?.versionPublication?.lastError ? <p role="alert" className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-800 dark:text-amber-300">{release.promotion.versionPublication.lastError}</p> : null}
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        {(["TagCreated", "Failed", "Publishing", "Blocked"].includes(release.promotion?.versionPublication?.status ?? "")) ?
+          <Button disabled={publicationAction.isPending} onClick={() => publicationAction.mutate()}>
+            {publicationAction.isPending ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : <RefreshCw className="mr-2 size-4" />}
+            {publicationAction.isPending ? "Retrying…" : release.promotion?.versionPublication?.status === "Blocked"
+              ? "Recheck promotion evidence" : release.promotion?.versionPublication?.status === "Publishing"
+                ? "Resume version publishing" : "Retry version publishing"}
+          </Button> : null}
+        {release.promotion?.versionPublication?.status === "Published" ? <span className="text-sm text-emerald-700 dark:text-emerald-300">The repository tag and Release are recorded.</span> : null}
+      </div>
+      {publicationAction.error ? <p role="alert" className="mt-3 text-sm text-red-600 dark:text-red-400">{errorText(publicationAction.error)}</p> : null}
+      {release.promotion?.versionPublication ? <details className="mt-4 rounded-md border border-[var(--border)] p-3">
+        <summary className="cursor-pointer text-sm font-medium">Technical publication details</summary>
+        <dl className="mt-3 grid gap-3 break-all text-xs sm:grid-cols-2">
+          <div><dt className="text-muted-foreground">Repository</dt><dd className="mt-1">{release.promotion.versionPublication.repository}</dd></div>
+          <div><dt className="text-muted-foreground">Tag</dt><dd className="mt-1 font-mono">{release.promotion.versionPublication.tagName ?? "Not created"}</dd></div>
+          <div><dt className="text-muted-foreground">Target branch commit</dt><dd className="mt-1 font-mono">{release.promotion.versionPublication.targetBranchCommit ?? "Not resolved"}</dd></div>
+          <div><dt className="text-muted-foreground">GitHub Release identity</dt><dd className="mt-1">{release.promotion.versionPublication.githubReleaseId ?? "Not created"}</dd></div>
+          <div><dt className="text-muted-foreground">Tag verified</dt><dd className="mt-1">{release.promotion.versionPublication.tagRecordedAt ? dateLabel(release.promotion.versionPublication.tagRecordedAt) : "Not verified"}</dd></div>
+          <div><dt className="text-muted-foreground">Publication attempts</dt><dd className="mt-1">{release.promotion.versionPublication.attemptCount}</dd></div>
+          <div><dt className="text-muted-foreground">Last attempt</dt><dd className="mt-1">{release.promotion.versionPublication.lastAttemptAt ? dateLabel(release.promotion.versionPublication.lastAttemptAt) : "Not attempted"}</dd></div>
+          <div><dt className="text-muted-foreground">First attempt</dt><dd className="mt-1">{release.promotion.versionPublication.startedAt ? dateLabel(release.promotion.versionPublication.startedAt) : "Not attempted"}</dd></div>
+          <div><dt className="text-muted-foreground">Completed</dt><dd className="mt-1">{release.promotion.versionPublication.completedAt ? dateLabel(release.promotion.versionPublication.completedAt) : "Not completed"}</dd></div>
+        </dl>
+      </details> : null}
     </section>
 
     <section className="rounded-xl border border-[var(--border)] bg-card p-4" aria-label="Release promotion readiness">

@@ -11,7 +11,7 @@ public sealed record ReconcileRepositoryReleaseVersionsRequest(IReadOnlyList<str
 public sealed record ReleaseVersionSuggestion(string Reason, string Label, string Version);
 
 public sealed record ObservedReleaseVersion(string Version, bool GitTagObserved, bool GitHubReleaseObserved,
-    DateTimeOffset? PublishedAt);
+    DateTimeOffset? PublishedAt, long? GitHubReleaseId = null, string? GitHubReleaseUrl = null);
 
 public sealed record RepositoryReleaseVersionPlan(long RepositoryId, string VersionFormat, string TagPrefix,
     string BreakingChangeDefinition, string HistoryStatus, string? HistoryMessage, string? LatestPublishedVersion,
@@ -245,7 +245,9 @@ public sealed class FactoryReleaseService(IFactoryReleaseStore releases, IFactor
             var versionTags = observedTags.Where(tag => SemanticReleaseVersion.TryParseTag(tag, state.TagPrefix, out var parsed) && parsed.ToString() == version).ToArray();
             var matchingReleases = history.PublishedReleases.Where(item => SemanticReleaseVersion.TryParseTag(item.TagName, state.TagPrefix, out var parsed) && parsed.ToString() == version).ToArray();
             return new ObservedReleaseVersion(version, versionTags.Length > 0, matchingReleases.Length > 0,
-                matchingReleases.Where(item => item.PublishedAt is not null).Select(item => item.PublishedAt).Max());
+                matchingReleases.Where(item => item.PublishedAt is not null).Select(item => item.PublishedAt).Max(),
+                matchingReleases.OrderByDescending(item => item.PublishedAt).FirstOrDefault()?.ReleaseId,
+                matchingReleases.OrderByDescending(item => item.PublishedAt).FirstOrDefault()?.Url);
         }).OrderBy(item => SemanticReleaseVersion.TryParse(item.Version, out var parsed) ? parsed : default).ToArray();
         var legacyPlans = state.PlannedReleaseNumbers.Where(number => !SemanticReleaseVersion.TryParse(number, out _)).Distinct(StringComparer.Ordinal).ToArray();
 
