@@ -27,11 +27,21 @@ public sealed class SyncBaseBranchStep(
             ["fetch", "origin", $"+refs/heads/{context.Task.BaseBranch}:refs/remotes/origin/{context.Task.BaseBranch}"],
             cancellationToken, TimeSpan.FromMinutes(10));
         if (!fetch.Succeeded)
-            return await FailedAsync(stepId, $"Could not fetch base branch '{context.Task.BaseBranch}': {Error(fetch)}", cancellationToken);
+        {
+            var reason = $"Could not fetch base branch '{context.Task.BaseBranch}': {Error(fetch)}";
+            return context.Task.ReleaseId is null
+                ? await FailedAsync(stepId, reason, cancellationToken)
+                : await NeedsHumanAsync(stepId,
+                    $"Could not synchronize the captured release base branch '{context.Task.BaseBranch}'. Restore the branch or repository access before continuing; this task will not be retargeted. {Error(fetch)}",
+                    cancellationToken);
+        }
 
         var baseHead = await RunGitAsync(worktreePath, ["rev-parse", "--verify", $"{context.BaseRef}^{{commit}}"], cancellationToken);
         if (!baseHead.Succeeded || string.IsNullOrWhiteSpace(baseHead.StandardOutput))
-            return await FailedAsync(stepId, $"Could not read the fetched base branch HEAD: {Error(baseHead)}", cancellationToken);
+            return context.Task.ReleaseId is null
+                ? await FailedAsync(stepId, $"Could not read the fetched base branch HEAD: {Error(baseHead)}", cancellationToken)
+                : await NeedsHumanAsync(stepId,
+                    $"The captured release base branch '{context.Task.BaseBranch}' is unavailable after synchronization. Restore it before continuing; this task will not be retargeted.", cancellationToken);
         var baseHeadSha = baseHead.StandardOutput.Trim();
 
         var isCurrent = await RunGitAsync(worktreePath, ["merge-base", "--is-ancestor", baseHeadSha, "HEAD"], cancellationToken);

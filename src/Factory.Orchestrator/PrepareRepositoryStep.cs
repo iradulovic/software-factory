@@ -11,9 +11,11 @@ public sealed class PrepareRepositoryStep(ITaskStore tasks, IGitHubStore github)
         var repository = await github.GetRepositoryAsync(context.Task.RepositoryId, cancellationToken);
         if (repository is null)
         {
-            const string reason = "Repository not found.";
+            var reason = context.Task.ReleaseId is null
+                ? "Repository not found."
+                : $"The repository for release {context.Task.ReleaseId} is not synchronized. Restore it before continuing; the captured base branch '{context.Task.BaseBranch}' was not changed.";
             await tasks.CompleteStepAsync(stepId, ExecutionStatus.Failed, reason, null, cancellationToken);
-            return PipelineStepResult.Failed(reason);
+            return context.Task.ReleaseId is null ? PipelineStepResult.Failed(reason) : PipelineStepResult.NeedsHuman(reason);
         }
 
         context.Repository = repository;

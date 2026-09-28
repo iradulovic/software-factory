@@ -45,17 +45,20 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
 
         if (issueIds.Length > 0)
         {
-            // Coordinate with task claiming: a release can take over a queued task, but cannot silently change
-            // the base branch of work that has already been dispatched.
+            // Coordinate with task claiming: a release can take over a never-started queued task, but cannot
+            // silently change the base branch of a task that has ever been dispatched.
             await connection.QueryAsync<Guid>(new CommandDefinition("""
                 SELECT id FROM factory.task WHERE github_issue_id=ANY(@issueIds) ORDER BY id FOR UPDATE
                 """, new { issueIds }, transaction, cancellationToken: cancellationToken));
             var alreadyDispatched = await connection.ExecuteScalarAsync<bool>(new CommandDefinition("""
-                SELECT EXISTS(SELECT 1 FROM factory.task WHERE github_issue_id=ANY(@issueIds)
-                  AND status NOT IN ('Pending','Failed','Cancelled','Completed','Rejected'))
+                SELECT EXISTS(
+                  SELECT 1 FROM factory.task t WHERE t.github_issue_id=ANY(@issueIds)
+                    AND (t.status <> 'Pending' OR t.started_at IS NOT NULL OR t.branch_name IS NOT NULL
+                      OR t.worktree_path IS NOT NULL OR EXISTS (SELECT 1 FROM factory.run r WHERE r.task_id=t.id))
+                )
                 """, new { issueIds }, transaction, cancellationToken: cancellationToken));
             if (alreadyDispatched)
-                throw new InvalidOperationException("Associate issues before their factory task is dispatched. A dispatched task keeps its recorded base branch.");
+                throw new InvalidOperationException("This issue already has a started or previously dispatched factory task. Its captured base branch cannot be changed; associate it with a release before creating or retrying task execution.");
 
             var alreadyAssigned = await connection.ExecuteScalarAsync<bool>(new CommandDefinition("""
                 SELECT EXISTS(
@@ -143,8 +146,9 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
         }
 
         await connection.ExecuteAsync(new CommandDefinition("""
-            UPDATE factory.task t SET base_branch=@integrationBranch
-            WHERE t.status='Pending' AND t.github_issue_id IN (
+            UPDATE factory.task t SET base_branch=@integrationBranch,release_id=@id
+            WHERE t.status='Pending' AND t.started_at IS NULL AND t.branch_name IS NULL AND t.worktree_path IS NULL
+              AND t.release_id IS NULL AND t.github_issue_id IN (
               SELECT github_issue_id FROM factory.release_issue WHERE release_id=@id
             )
             """, new { id, integrationBranch }, transaction, cancellationToken: cancellationToken));
@@ -204,8 +208,13 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
             SELECT ri.release_id AS "ReleaseId",i.id AS "GitHubIssueId",i.issue_number AS "IssueNumber",
               i.title,i.state,
               EXISTS(SELECT 1 FROM github.issue_label l WHERE l.issue_id=i.id AND lower(l.name)='factory:ready') AS "Eligible",
-              (SELECT t.status FROM factory.task t WHERE t.github_issue_id=i.id ORDER BY t.created_at DESC LIMIT 1) AS "TaskStatus"
+              linked_task.status AS "TaskStatus",linked_task.id AS "TaskId",linked_task.base_branch AS "TaskBaseBranch",
+              linked_task.release_id AS "TaskReleaseId"
             FROM factory.release_issue ri JOIN github.issue i ON i.id=ri.github_issue_id
+            LEFT JOIN LATERAL (
+              SELECT t.id,t.status,t.base_branch,t.release_id FROM factory.task t
+              WHERE t.github_issue_id=i.id ORDER BY t.created_at DESC LIMIT 1
+            ) linked_task ON true
             WHERE ri.release_id=ANY(@ids)
             ORDER BY i.issue_number
             """, new { ids }, cancellationToken: cancellationToken));
@@ -249,8 +258,9 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
     }
 
     private sealed record FactoryReleaseIssueRow(Guid ReleaseId, long GitHubIssueId, int IssueNumber, string Title,
-        string State, bool Eligible, string? TaskStatus)
+        string State, bool Eligible, string? TaskStatus, Guid? TaskId, string? TaskBaseBranch, Guid? TaskReleaseId)
     {
-        public FactoryReleaseIssue Issue => new(GitHubIssueId, IssueNumber, Title, State, Eligible, TaskStatus);
+        public FactoryReleaseIssue Issue => new(GitHubIssueId, IssueNumber, Title, State, Eligible, TaskStatus,
+            TaskId, TaskBaseBranch, TaskReleaseId);
     }
 }

@@ -62,6 +62,17 @@ public sealed class PublicationExecutorTests
     }
 
     [Fact]
+    public async Task Release_task_publishes_to_its_captured_integration_branch()
+    {
+        var harness = new Harness { BaseBranch = "release/2.4-account-settings" };
+
+        await harness.ExecuteAsync();
+
+        Assert.Equal("origin/release/2.4-account-settings", harness.SummarizeBaseRef);
+        Assert.Equal(("acme", "billing", "factory/142-add-export", "release/2.4-account-settings"), harness.PullRequestTarget);
+    }
+
+    [Fact]
     public async Task Pull_request_body_omits_issue_reference_when_the_task_has_no_issue()
     {
         var harness = new Harness { IssueNumber = null };
@@ -287,6 +298,7 @@ public sealed class PublicationExecutorTests
         public PullRequestResult? ExistingPullRequest { get; init; }
         public string? ExistingPullRequestLookupError { get; init; }
         public bool RequireHumanMerge { get; init; } = true;
+        public string BaseBranch { get; init; } = "main";
 
         public List<string> Pushed { get; } = [];
         public string? SummarizeBaseRef { get; private set; }
@@ -299,7 +311,7 @@ public sealed class PublicationExecutorTests
 
         private PublicationRequest? _request;
         public PublicationRequest Request => _request ??= new(Guid.NewGuid(), Guid.NewGuid(), BranchNameOverride ?? "factory/142-add-export",
-            "/tmp/worktree/issue-142", "main", 1, "acme", "billing", "Add invoice export", IssueNumber, ValidatedHeadCommit, RequireHumanMerge);
+            "/tmp/worktree/issue-142", BaseBranch, 1, "acme", "billing", "Add invoice export", IssueNumber, ValidatedHeadCommit, RequireHumanMerge);
 
         public async Task ExecuteAsync()
         {

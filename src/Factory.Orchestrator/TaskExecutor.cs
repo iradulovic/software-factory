@@ -12,6 +12,7 @@ namespace Factory.Orchestrator;
 public sealed class TaskExecutor(
     ITaskStore tasks,
     PrepareRepositoryStep prepareRepository,
+    ValidateReleaseBaseBranchStep validateReleaseBaseBranch,
     CreateWorktreeStep createWorktree,
     WriteContextStep writeContext,
     RunAgentStep runAgent,
@@ -39,6 +40,7 @@ public sealed class TaskExecutor(
         {
             await TransitionAsync(context, FactoryTaskStatus.Preparing, null, cancellationToken);
             if (!await RunStepAsync(prepareRepository, context, cancellationToken)) return;
+            if (!await RunStepAsync(validateReleaseBaseBranch, context, cancellationToken)) return;
             if (task.PostImplementationRequestId is { } requestId)
             {
                 var request = await tasks.GetPostImplementationRequestAsync(task.Id, cancellationToken);

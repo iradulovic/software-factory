@@ -1030,6 +1030,8 @@ public sealed class TaskExecutorTests
             var runId = await Store.StartRunAsync(ClaimedTask.Id, "worker", CancellationToken.None);
             var executor = new TaskExecutor(Store,
                 new PrepareRepositoryStep(Store, new FakeGitHubStore(this)),
+                new ValidateReleaseBaseBranchStep(Store, new FakeFactoryReleaseStore(), new FakeRepositoryCache(),
+                    new FakeProcessRunner(this), NullLogger<ValidateReleaseBaseBranchStep>.Instance),
                 new CreateWorktreeStep(Store, new FakeWorktrees(this)),
                 new WriteContextStep(Store, new FakeContextWriter(this), new FakeConfigurationReader(this)),
                 new RunAgentStep(Store, new AgentSelector(ConfiguredAgents.Select(name => new FakeAgent(this, name)), Store), Options.Create(new FactoryOptions()), new FakeInspector(this), NullLogger<RunAgentStep>.Instance),
@@ -1071,6 +1073,26 @@ public sealed class TaskExecutorTests
                 return Task.FromResult(GetLocation(repository, task));
             }
             public Task RemoveAsync(string owner, string name, string worktreePath, CancellationToken cancellationToken) => Task.CompletedTask;
+        }
+
+        private sealed class FakeFactoryReleaseStore : IFactoryReleaseStore
+        {
+            public Task<IReadOnlyList<FactoryRelease>> ListAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<FactoryRelease?> GetAsync(Guid id, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<FactoryRelease?> CreateAsync(FactoryReleaseDraft draft, IReadOnlyList<long> githubIssueIds, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<FactoryReleaseWorkItem?> ClaimNextAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<bool> RecordBranchPlanAsync(Guid id, string integrationBranch, string targetCommit, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<bool> CompleteBranchCreationAsync(Guid id, string integrationBranch, string targetCommit, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task RecordBranchFailureAsync(Guid id, string error, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<bool> RetryAsync(Guid id, string? integrationBranch, string? targetBranch, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<bool> CancelAsync(Guid id, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<bool> ArchiveAsync(Guid id, CancellationToken cancellationToken) => throw new NotSupportedException();
+        }
+
+        private sealed class FakeRepositoryCache : IRepositoryCache
+        {
+            public Task<string> PrepareAsync(GitHubRepository repository, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public string GetPath(string owner, string name) => throw new NotSupportedException();
         }
 
         private sealed class FakeInspector(Harness harness) : IWorktreeInspector

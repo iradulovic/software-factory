@@ -11,7 +11,7 @@ public enum FactoryTaskStatus
 public enum FactoryReleaseStatus { Pending, Creating, Active, Failed, Cancelled, Archived }
 
 public sealed record FactoryReleaseIssue(long GitHubIssueId, int IssueNumber, string Title, string State,
-    bool Eligible, string? TaskStatus);
+    bool Eligible, string? TaskStatus, Guid? TaskId = null, string? TaskBaseBranch = null, Guid? TaskReleaseId = null);
 
 public sealed record FactoryRelease(Guid Id, long RepositoryId, string Repository, string Name, string ReleaseNumber,
     string? IntegrationBranch, string TargetBranch, string? TargetCommit, FactoryReleaseStatus Status,
@@ -96,7 +96,8 @@ public sealed record FactoryTask(
     string? PreferredAgentReason = null,
     string? AgentRoutingError = null,
     string? TaskClass = null,
-    Guid? PostImplementationRequestId = null);
+    Guid? PostImplementationRequestId = null,
+    Guid? ReleaseId = null);
 
 /// <param name="LastSyncedAt">The point in time through which this repository's issues are known to be fully
 /// synchronized, used as the incremental sync checkpoint; <see langword="null"/> before the first sync.</param>
