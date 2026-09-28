@@ -14,18 +14,19 @@ type TriggerProps = {
   onClick: (event: { detail: number; currentTarget: HTMLButtonElement; preventDefault: () => void }) => void;
 };
 
-function trigger(indicators: ReturnType<typeof buildServiceHealthIndicators>, options: { popoverOpen?: boolean; openedByHover?: boolean } = {}) {
+function trigger(indicators: ReturnType<typeof buildServiceHealthIndicators>, options: { popoverOpen?: boolean; openedByHover?: boolean; compactByOverflow?: boolean } = {}) {
   return ServiceHealthIndicators({
     indicators,
     popoverOpen: options.popoverOpen ?? false,
     openedByHover: options.openedByHover ?? false,
+    compactByOverflow: options.compactByOverflow ?? false,
     onActivate: () => {},
     onPointerEnter: () => {},
     onPointerLeave: () => {}
   }) as unknown as ReactElement<TriggerProps>;
 }
 
-test("keeps mixed GitHub and agent states independent in the responsive header indicators", () => {
+test("shows labeled service pills with independent status cues in a stable order", () => {
   const indicators = buildServiceHealthIndicators({
     github: { state: "Available" },
     githubLoading: false,
@@ -37,19 +38,38 @@ test("keeps mixed GitHub and agent states independent in the responsive header i
 
   assert.deepEqual(indicators.map(({ name, kind }) => [name, kind]), [
     ["GitHub", "healthy"],
-    ["Codex", "healthy"],
-    ["Claude", "unavailable"]
+    ["Claude", "unavailable"],
+    ["Codex", "healthy"]
   ]);
   const html = renderToStaticMarkup(trigger(indicators));
   assert.equal((html.match(/<button/g) ?? []).length, 1, "all services must share one trigger");
-  assert.match(html, /aria-label="View service health\. GitHub: Available; Codex: Verified; Claude: Unavailable\."/);
+  assert.match(html, /aria-label="View service health\. GitHub: Available; Claude: Unavailable; Codex: Verified\."/);
   assert.match(html, /aria-haspopup="dialog"/);
   assert.match(html, /aria-expanded="false"/);
   assert.match(html, /aria-controls="service-health-popover"/);
-  assert.deepEqual([...html.matchAll(/data-health-state="([^"]+)"/g)].map(match => match[1]), ["healthy", "healthy", "unavailable"]);
-  assert.match(html, /max-w-\[min\(36vw,12rem\)\]/);
-  assert.match(html, /overflow-x-auto/);
-  assert.doesNotMatch(html, />(?:GitHub|Codex|Claude)</, "service names must stay out of the visible navbar label");
+  assert.deepEqual([...html.matchAll(/data-health-state="([^"]+)"/g)].map(match => match[1]), ["healthy", "unavailable", "healthy"]);
+  assert.deepEqual([...html.matchAll(/data-service-name="([^"]+)"/g)].map(match => match[1]), ["GitHub", "Claude", "Codex"]);
+  assert.match(html, /service-health-labeled/);
+  assert.match(html, /service-health-summary/);
+  assert.match(html, />GitHub</);
+  assert.match(html, /lucide-circle-x/);
+  assert.doesNotMatch(html, /overflow-x-auto/, "the header must not horizontally scroll its service statuses");
+});
+
+test("uses the compact summary trigger when labeled pills do not fit", () => {
+  const indicators = buildServiceHealthIndicators({
+    github: { state: "Available" },
+    githubLoading: false,
+    githubUnavailable: false,
+    agents: [{ agent: "Claude Code", state: "Busy" }, { agent: "Codex", state: "Verified" }, { agent: "Pi", state: "Paused" }],
+    agentsLoading: false,
+    agentsUnavailable: false
+  });
+  const html = renderToStaticMarkup(trigger(indicators, { compactByOverflow: true }));
+
+  assert.match(html, /data-compact="true"/);
+  assert.match(html, /class="service-health-summary[^>]*>[\s\S]*?Services/);
+  assert.match(html, /aria-label="View service health\. GitHub: Available; Claude Code: Busy; Codex: Verified; Pi: Paused\."/);
 });
 
 test("maps busy, paused, quota, unavailable, unknown, and loading into distinct state cues", () => {
@@ -68,7 +88,7 @@ test("maps busy, paused, quota, unavailable, unknown, and loading into distinct 
     agentsUnavailable: false
   });
 
-  assert.deepEqual(indicators.map(({ kind }) => kind), ["loading", "busy", "paused", "quotaBlocked", "unavailable", "unknown", "unknown"]);
+  assert.deepEqual(indicators.map(({ kind }) => kind), ["loading", "busy", "unknown", "unavailable", "paused", "quotaBlocked", "unknown"]);
   const html = renderToStaticMarkup(trigger(indicators));
   for (const state of ["loading", "busy", "paused", "quotaBlocked", "unavailable", "unknown"]) {
     assert.match(html, new RegExp(`data-health-state="${state}"`));

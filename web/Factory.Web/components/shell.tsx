@@ -80,23 +80,23 @@ export function Shell({ children, defaultSidebarOpen }: { children: React.ReactN
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="min-h-0 min-w-0 w-0 max-w-full overflow-hidden">
-        <header className="flex h-16 min-w-0 shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] bg-[color:var(--background)/.85] px-3 backdrop-blur md:gap-3 md:px-5">
+        <header className="flex h-16 min-w-0 shrink-0 items-center gap-1.5 border-b border-[var(--border)] bg-[color:var(--background)/.85] px-3 backdrop-blur md:grid md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-3 md:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-2 md:gap-3">
             <SidebarTrigger className="shrink-0" />
-            <div className="min-w-0">
+            <div className="hidden min-w-0 min-[480px]:block">
               <p className="text-xs uppercase tracking-[.16em] text-muted-foreground">Operations</p>
               <p className="hidden truncate text-sm font-medium sm:block">Development orchestration</p>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
-            <div role="group" aria-label="Dispatch and nudge controls" className="flex items-center gap-0.5">
-              <DispatchPausePill />
-              <NudgePill />
-            </div>
-            <div role="group" aria-label="Service health" className="flex items-center">
+          <div role="group" aria-label="Dispatch and nudge controls" className="flex shrink-0 items-center gap-0.5 rounded-lg border border-[var(--border)] bg-muted/30 p-0.5">
+            <DispatchPausePill />
+            <NudgePill />
+          </div>
+          <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5 md:gap-2">
+            <div role="group" aria-label="Service health" className="flex min-w-0 flex-1 items-center justify-end border-l border-[var(--border)] pl-1.5 md:pl-3">
               <ServiceHealthPopover />
             </div>
-            <span role="separator" aria-orientation="vertical" className="mx-0.5 h-5 w-px bg-[var(--border)] sm:mx-1" />
+            <span role="separator" aria-orientation="vertical" className="h-5 w-px shrink-0 bg-[var(--border)]" />
             <ThemeToggle />
           </div>
         </header>
@@ -193,8 +193,8 @@ export function DispatchPausePill() {
           <Button
             type="button"
             variant="ghost"
-            size="icon"
-            className={`relative size-8 rounded-md ${buttonTone}`}
+            size="sm"
+            className={`relative flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-md px-1.5 ${buttonTone} min-[900px]:px-2`}
             aria-label={accessibleAction}
             aria-pressed={ready ? globalPaused : undefined}
             aria-busy={mutation.isPending}
@@ -208,7 +208,8 @@ export function DispatchPausePill() {
                 : globalPaused
                   ? <Play className="size-4" aria-hidden="true" />
                   : <Pause className="size-4" aria-hidden="true" />}
-            <span className={`absolute right-1 top-1 size-1.5 rounded-full ring-2 ring-[var(--background)] ${cueTone}`} aria-hidden="true" />
+            <span className="hidden text-xs font-medium min-[900px]:inline">Dispatch</span>
+            <span className={`absolute left-[1.15rem] top-1 size-1.5 rounded-full ring-2 ring-[var(--background)] ${cueTone}`} aria-hidden="true" />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="max-w-64 motion-reduce:animate-none">
@@ -259,7 +260,7 @@ export function NudgePill() {
     <PopoverTrigger asChild>
       <button
         type="button"
-        className="relative flex size-8 items-center justify-center rounded-md bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="relative flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-md bg-transparent px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background min-[900px]:px-2"
         aria-label={hasUnread ? `View nudges, ${unreadCount} unread` : "View nudges"}
         aria-expanded={open}
         onPointerEnter={event => { if (event.pointerType === "mouse") { openedByHover.current = true; openPanel(); } }}
@@ -274,11 +275,9 @@ export function NudgePill() {
         }}
       >
         <Bell className={`size-4 ${hasUnread ? "text-[var(--badge-amber-fg)]" : ""}`} aria-hidden="true" />
+        <span className="hidden text-xs font-medium min-[900px]:inline">Nudges</span>
         {hasUnread ? <>
-          <span className="absolute -left-0.5 -top-0.5 flex size-2.5" aria-hidden="true">
-            <span className="size-full rounded-full bg-[var(--badge-amber-fg)] ring-2 ring-[var(--background)]" />
-          </span>
-          <span className="absolute -right-2 -top-2 min-w-4 rounded-full bg-[var(--badge-amber-fg)] px-1 text-center text-[10px] font-bold leading-4 text-[var(--background)]" aria-hidden="true">{unreadCount > 99 ? "99+" : unreadCount}</span>
+          <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-[var(--badge-amber-fg)] px-1 text-[10px] font-bold leading-4 text-[var(--background)]" aria-hidden="true">{unreadCount > 99 ? "99+" : unreadCount}</span>
         </> : null}
       </button>
     </PopoverTrigger>
@@ -341,6 +340,9 @@ function ServiceHealthPopover() {
   const panelHasFocus = useRef(false);
   const lastTrigger = useRef<HTMLButtonElement | null>(null);
   const panel = useRef<HTMLDivElement | null>(null);
+  const serviceArea = useRef<HTMLDivElement>(null);
+  const serviceMeasure = useRef<HTMLDivElement>(null);
+  const [compactByOverflow, setCompactByOverflow] = useState(false);
   const refresh = () => Promise.all([
     client.invalidateQueries({ queryKey: ["agents-status"] }),
     client.invalidateQueries({ queryKey: ["dashboard"] })
@@ -409,6 +411,29 @@ function ServiceHealthPopover() {
     agentsLoading,
     agentsUnavailable: !!agentsError
   });
+  const serviceNamesKey = healthIndicators.map(indicator => indicator.name).join("\u001f");
+  useEffect(() => {
+    let frame = 0;
+    const updateCompactMode = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const isLabelBreakpoint = window.matchMedia("(min-width: 1280px)").matches;
+        const availableWidth = serviceArea.current?.clientWidth ?? 0;
+        const requiredWidth = (serviceMeasure.current?.scrollWidth ?? 0) + 14;
+        setCompactByOverflow(isLabelBreakpoint && availableWidth > 0 && requiredWidth > availableWidth);
+      });
+    };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateCompactMode);
+    if (serviceArea.current) observer?.observe(serviceArea.current);
+    if (serviceMeasure.current) observer?.observe(serviceMeasure.current);
+    window.addEventListener("resize", updateCompactMode);
+    updateCompactMode();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", updateCompactMode);
+    };
+  }, [serviceNamesKey]);
   return <Popover open={open} onOpenChange={nextOpen => {
     cancelClose();
     setOpen(nextOpen);
@@ -420,17 +445,25 @@ function ServiceHealthPopover() {
   }}>
     <PopoverAnchor asChild>
       <div
-        className="flex min-w-0 items-center"
+        ref={serviceArea}
+        className="relative flex min-w-0 flex-1 items-center justify-end"
         onFocusCapture={cancelClose}
       >
         <ServiceHealthIndicators
           indicators={healthIndicators}
           popoverOpen={open}
           openedByHover={openedByHover}
+          compactByOverflow={compactByOverflow}
           onActivate={openPanel}
           onPointerEnter={openFromHover}
           onPointerLeave={triggerPointerLeave}
         />
+        <div ref={serviceMeasure} className="pointer-events-none invisible absolute left-0 top-0 flex w-max -translate-y-full items-center gap-1" aria-hidden="true">
+          {healthIndicators.map(indicator => <span key={indicator.name} className="flex h-7 max-w-[8rem] shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-muted/30 px-2 text-xs font-medium">
+            <span className="size-3.5 shrink-0" />
+            <span className="min-w-0 max-w-24 truncate">{indicator.name}</span>
+          </span>)}
+        </div>
       </div>
     </PopoverAnchor>
     <PopoverContent
