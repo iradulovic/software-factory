@@ -148,7 +148,7 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
     public async Task<PullRequestMergeResult> GetPullRequestMergeabilityAsync(string owner, string name, int number, CancellationToken cancellationToken)
     {
         var result = await runner.RunAsync(new ProcessRequest("gh",
-            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "state,headRefOid,headRefName,baseRefOid,mergeable,mergeStateStatus,isDraft"],
+            ["pr", "view", number.ToString(), "--repo", $"{owner}/{name}", "--json", "state,headRefOid,headRefName,baseRefOid,baseRefName,mergeable,mergeStateStatus,isDraft"],
             Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
         if (!result.Succeeded)
             return new PullRequestMergeResult(false, false, null, null, null, null, result.StandardError.Trim());
@@ -161,11 +161,32 @@ public sealed class GhCliClient(IProcessRunner runner) : IGitHubClient
                 ? property.GetString() : null;
             return new PullRequestMergeResult(true, Field(pr, "state") == "OPEN", Field(pr, "headRefOid"),
                 Field(pr, "baseRefOid"), Field(pr, "mergeable"), Field(pr, "mergeStateStatus"), null, Field(pr, "headRefName"),
-                pr.TryGetProperty("isDraft", out var draft) && draft.ValueKind == JsonValueKind.True);
+                pr.TryGetProperty("isDraft", out var draft) && draft.ValueKind == JsonValueKind.True, Field(pr, "baseRefName"));
         }
         catch (JsonException ex)
         {
             return new PullRequestMergeResult(false, false, null, null, null, null, $"GitHub returned invalid PR data: {ex.Message}");
+        }
+    }
+
+    public async Task<GitHubBranchCommitResult> GetBranchCommitAsync(string owner, string name, string branch, CancellationToken cancellationToken)
+    {
+        var escapedBranch = Uri.EscapeDataString(branch);
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["api", $"repos/{owner}/{name}/git/ref/heads/{escapedBranch}"], Environment.CurrentDirectory,
+            Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!result.Succeeded) return new GitHubBranchCommitResult(false, null, result.StandardError.Trim());
+        try
+        {
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var commit = document.RootElement.GetProperty("object").GetProperty("sha").GetString();
+            return string.IsNullOrWhiteSpace(commit)
+                ? new GitHubBranchCommitResult(false, null, "GitHub returned an empty branch commit.")
+                : new GitHubBranchCommitResult(true, commit, null);
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return new GitHubBranchCommitResult(false, null, $"GitHub returned invalid branch data: {exception.Message}");
         }
     }
 
@@ -294,6 +315,31 @@ public sealed class GhCliPublisher(IProcessRunner runner) : IGitHubPublisher
         if (items.GetArrayLength() == 0) return null;
         var first = items[0];
         return new PullRequestResult(true, first.GetProperty("number").GetInt32(), first.GetProperty("url").GetString(), null);
+    }
+
+    public async Task<ReleasePullRequestResult?> FindExistingReleasePullRequestAsync(string owner, string name,
+        string branchName, CancellationToken cancellationToken)
+    {
+        var result = await runner.RunAsync(new ProcessRequest("gh",
+            ["pr", "list", "--repo", $"{owner}/{name}", "--head", branchName, "--state", "all",
+                "--json", "number,url,baseRefName,state,body", "--limit", "100"],
+            Environment.CurrentDirectory, Timeout: TimeSpan.FromMinutes(1)), cancellationToken);
+        if (!result.Succeeded) return new ReleasePullRequestResult(false, null, null, null, null, null, result.StandardError.Trim());
+
+        try
+        {
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var items = document.RootElement;
+            if (items.GetArrayLength() == 0) return null;
+            var first = items[0];
+            return new ReleasePullRequestResult(true, first.GetProperty("number").GetInt32(),
+                first.GetProperty("url").GetString(), first.GetProperty("baseRefName").GetString(),
+                first.GetProperty("state").GetString(), first.GetProperty("body").GetString(), null);
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return new ReleasePullRequestResult(false, null, null, null, null, null, $"GitHub returned invalid pull request data: {exception.Message}");
+        }
     }
 
     public async Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, bool draft, CancellationToken cancellationToken)

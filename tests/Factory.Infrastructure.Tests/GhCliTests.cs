@@ -14,13 +14,42 @@ public sealed class GhCliTests
     public async Task Mergeability_distinguishes_GitHub_calculation_states(string mergeable, string mergeState, string expected)
     {
         var runner = new SequencedRunner();
-        runner.EnqueueResponse(0, $$"""{"state":"OPEN","headRefOid":"head1","headRefName":"factory/task","baseRefOid":"base1","mergeable":"{{mergeable}}","mergeStateStatus":"{{mergeState}}","isDraft":false}""", "");
+        runner.EnqueueResponse(0, $$"""{"state":"OPEN","headRefOid":"head1","headRefName":"factory/task","baseRefOid":"base1","baseRefName":"main","mergeable":"{{mergeable}}","mergeStateStatus":"{{mergeState}}","isDraft":false}""", "");
         var result = await new GhCliClient(runner).GetPullRequestMergeabilityAsync("acme", "billing", 17, CancellationToken.None);
         Assert.Equal(expected, result.Status);
         Assert.Equal("head1", result.HeadSha);
         Assert.Equal("base1", result.BaseSha);
         Assert.Equal("factory/task", result.HeadBranch);
+        Assert.Equal("main", result.BaseBranch);
         Assert.Contains("mergeStateStatus", Assert.Single(runner.Requests).Arguments.Last());
+    }
+
+    [Fact]
+    public async Task Branch_commit_lookup_escapes_slashes_and_returns_the_exact_ref_sha()
+    {
+        var runner = new RecordingRunner(0, "{\"object\":{\"sha\":\"commit123\"}}", "");
+
+        var result = await new GhCliClient(runner).GetBranchCommitAsync("acme", "billing", "release/2.4.0", CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("commit123", result.Commit);
+        Assert.Contains("repos/acme/billing/git/ref/heads/release%2F2.4.0", runner.Request!.Arguments);
+    }
+
+    [Fact]
+    public async Task Release_pull_request_lookup_includes_closed_prs_for_idempotent_retries()
+    {
+        var body = "<!-- factory-release-promotion release=abc membership=hash head=head target=base -->";
+        var runner = new RecordingRunner(0,
+            "[{\"number\":42,\"url\":\"https://github.com/acme/billing/pull/42\",\"baseRefName\":\"main\",\"state\":\"MERGED\",\"body\":\"" + body + "\"}]", "");
+
+        var result = await new GhCliPublisher(runner).FindExistingReleasePullRequestAsync("acme", "billing", "release/2.4.0", CancellationToken.None);
+
+        Assert.Equal(42, result?.Number);
+        Assert.Equal("main", result?.BaseBranch);
+        Assert.Equal("MERGED", result?.State);
+        Assert.Equal(body, result?.Body);
+        Assert.Contains("all", runner.Request!.Arguments);
     }
 
     [Fact]

@@ -265,6 +265,7 @@ public sealed class FactoryReleaseServiceTests
         }
         public Task<bool> CancelAsync(Guid id, CancellationToken cancellationToken) => Task.FromResult(false);
         public Task<bool> ArchiveAsync(Guid id, CancellationToken cancellationToken) => Task.FromResult(false);
+        public Task SavePromotionAsync(Guid id, FactoryReleasePromotion promotion, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class GitHubStore(IReadOnlyList<GitHubRepository> repositories) : IGitHubStore

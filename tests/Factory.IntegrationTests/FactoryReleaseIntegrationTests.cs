@@ -92,6 +92,19 @@ public sealed class FactoryReleaseIntegrationTests
             Assert.Equal("release/2-4-account-settings", afterRestart?.Issues.Single().TaskBaseBranch);
             Assert.Equal(FactoryReleaseStatus.Active, (await restarted.ListAsync(CancellationToken.None))
                 .Single(release => release.Id == releaseId).Status);
+
+            var checkedAt = DateTimeOffset.UtcNow;
+            var promotion = new FactoryReleasePromotion("PullRequestOpen", 42,
+                "https://github.com/factory-release-tests/release/pull/42", new string('b', 40), new string('c', 40),
+                new string('b', 40), new string('c', 40), "membership-v1", "membership-v1", [issueId],
+                "Pending", "Mergeable", checkedAt, [], [], [], false);
+            await restarted.SavePromotionAsync(releaseId, promotion, CancellationToken.None);
+            var persistedPromotion = (await new PostgresFactoryReleaseStore(options).GetAsync(releaseId, CancellationToken.None))?.Promotion;
+            Assert.Equal("PullRequestOpen", persistedPromotion?.Status);
+            Assert.Equal(42, persistedPromotion?.PullRequestNumber);
+            Assert.Equal(new string('b', 40), persistedPromotion?.FrozenHeadCommit);
+            Assert.Equal([issueId], persistedPromotion?.MembershipIssueIds);
+            Assert.Equal(checkedAt.ToUnixTimeMilliseconds(), persistedPromotion?.LastCheckedAt?.ToUnixTimeMilliseconds());
         }
         finally
         {

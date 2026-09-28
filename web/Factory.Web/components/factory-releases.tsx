@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { z } from "zod";
-import { ArrowRight, GitBranch, LoaderCircle } from "lucide-react";
+import { ArrowRight, GitBranch, GitPullRequest, LoaderCircle, RefreshCw } from "lucide-react";
 import { apiBase, factoryReleaseSchema, getJson, issueSchema, repositoryReleaseVersionPlanSchema, repositorySchema, type FactoryRelease } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -65,6 +65,25 @@ function statusTone(status: string) {
   if (status === "Failed") return "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300";
   if (status === "Creating") return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
   if (["Pending", "Cancelled"].includes(status)) return "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300";
+  return "";
+}
+
+function promotionSummary(status: string | undefined) {
+  switch (status) {
+    case "Ready": return "All selected tasks are merged into the integration branch, their pull request CI is green, and both branch heads were checked.";
+    case "Blocked": return "Factory found issues that need attention before this release can be prepared.";
+    case "Stale": return "A branch head, target, or reviewed issue set changed. Check the current release state before continuing.";
+    case "PullRequestOpen": return "The promotion pull request is open. CI and mergeability are tracked here; a human must review and merge it.";
+    case "Merged": return "The promotion pull request was merged. The integration branch is eligible for cleanup only if it has no commits beyond the reviewed head.";
+    case "Closed": return "The promotion pull request was closed without merging. Review it in GitHub before taking another action.";
+    default: return "Check the selected tasks and exact branch heads to see whether this release is ready.";
+  }
+}
+
+function promotionTone(status: string | undefined) {
+  if (status === "Ready" || status === "Merged") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  if (["Blocked", "Stale", "Closed"].includes(status ?? "")) return "border-amber-500/40 bg-amber-500/5 text-amber-800 dark:text-amber-300";
+  if (status === "PullRequestOpen") return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
   return "";
 }
 
@@ -295,6 +314,15 @@ export function FactoryReleaseDetails({ id }: { id: string }) {
     },
     onError: async () => Promise.all([client.invalidateQueries({ queryKey: ["integration-release", id] }), client.invalidateQueries({ queryKey: ["integration-releases"] })])
   });
+  const promotionAction = useMutation({
+    mutationFn: (kind: "check" | "promote") => postFactoryRelease(
+      kind === "check" ? `/api/integration-releases/${id}/promotion/check` : `/api/integration-releases/${id}/promote`),
+    onSuccess: async release => {
+      client.setQueryData(["integration-release", id], release);
+      await Promise.all([client.invalidateQueries({ queryKey: ["integration-release", id] }), client.invalidateQueries({ queryKey: ["integration-releases"] })]);
+    },
+    onError: async () => Promise.all([client.invalidateQueries({ queryKey: ["integration-release", id] }), client.invalidateQueries({ queryKey: ["integration-releases"] })])
+  });
   const release = query.data;
   if (query.isLoading) return <main className="mx-auto max-w-5xl"><p className="text-sm text-muted-foreground">Loading integration release…</p></main>;
   if (!release) return <main className="mx-auto max-w-5xl"><p role="alert" className="text-sm text-red-500">{query.error ? errorText(query.error) : "Integration release not found."}</p></main>;
@@ -340,6 +368,70 @@ export function FactoryReleaseDetails({ id }: { id: string }) {
       {["Cancelled", "Archived"].includes(release.status) ? <p className="mt-3 text-xs leading-5 text-muted-foreground">Factory release actions never delete a remote branch. Ask the repository owner to review or remove an abandoned branch in GitHub.</p> : null}
     </section>
 
+    <section className="rounded-xl border border-[var(--border)] bg-card p-4" aria-label="Release promotion readiness">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-2"><GitPullRequest className="mt-0.5 size-4 text-muted-foreground" />
+          <div><h2 className="text-base font-semibold">Release promotion</h2>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{promotionSummary(release.promotion?.status)}</p>
+          </div>
+        </div>
+        <Badge variant="outline" className={promotionTone(release.promotion?.status)}>{release.promotion?.status ?? "Not checked"}</Badge>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">Factory prepares one pull request to <span className="font-mono text-foreground">{release.targetBranch}</span>. Repository auto-merge settings do not apply; a human must merge this release PR.</p>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {release.promotion?.pullRequestUrl ? <a href={release.promotion.pullRequestUrl} target="_blank" rel="noreferrer"
+          className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+          <GitPullRequest className="size-4" /> Open promotion PR #{release.promotion.pullRequestNumber}</a> : null}
+        <Button variant="outline" disabled={promotionAction.isPending || release.status !== "Active"}
+          onClick={() => promotionAction.mutate("check")}>
+          {promotionAction.isPending ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : <RefreshCw className="mr-2 size-4" />}
+          {release.promotion?.pullRequestNumber ? "Refresh promotion status" : "Check readiness"}
+        </Button>
+        {!release.promotion?.pullRequestNumber ? <Button disabled={promotionAction.isPending || release.status !== "Active" || release.promotion?.status !== "Ready"}
+          onClick={() => promotionAction.mutate("promote")}>
+          {promotionAction.isPending ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : <GitPullRequest className="mr-2 size-4" />}
+          Prepare promotion PR</Button> : null}
+      </div>
+      {promotionAction.error ? <p role="alert" className="mt-3 text-sm text-red-600 dark:text-red-400">{errorText(promotionAction.error)}</p> : null}
+
+      {release.promotion ? <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs">
+            <span>CI: <strong>{release.promotion.ciStatus}</strong></span>
+            <span>Mergeability: <strong>{release.promotion.mergeabilityStatus}</strong></span>
+            <span>Last checked: <strong>{release.promotion.lastCheckedAt ? dateLabel(release.promotion.lastCheckedAt) : "Never"}</strong></span>
+          </div>
+          {release.promotion.remainingIssues.length > 0 ? <div>
+            <h3 className="text-xs font-semibold">Remaining issues ({release.promotion.remainingIssues.length})</h3>
+            <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-muted-foreground">{release.promotion.remainingIssues.map(item => <li key={item}>{item}</li>)}</ul>
+          </div> : null}
+          {release.promotion.blockers.length > 0 ? <div>
+            <h3 className="text-xs font-semibold text-amber-800 dark:text-amber-300">Blockers</h3>
+            <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-muted-foreground">{release.promotion.blockers.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul>
+          </div> : null}
+          {release.promotion.conflicts.length > 0 ? <div>
+            <h3 className="text-xs font-semibold text-red-700 dark:text-red-300">Conflicts</h3>
+            <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-muted-foreground">{release.promotion.conflicts.map(item => <li key={item}>{item}</li>)}</ul>
+          </div> : null}
+        </div>
+        <div className="rounded-md border border-[var(--border)] bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
+          {release.promotion.status === "Merged" ? <p>Branch cleanup eligible: <strong className="text-foreground">{release.promotion.branchCleanupEligible ? "Yes" : "No; unpromoted commits remain"}</strong>.</p>
+            : <p>The integration branch stays in place. Factory never deletes it while release changes are unpromoted.</p>}
+          <details className="mt-2">
+            <summary className="cursor-pointer font-medium text-foreground">Technical details</summary>
+            <dl className="mt-2 space-y-2 break-all font-mono">
+              <div><dt className="font-sans text-muted-foreground">Checked integration head</dt><dd>{release.promotion.headCommit ?? "Unavailable"}</dd></div>
+              <div><dt className="font-sans text-muted-foreground">Checked target head</dt><dd>{release.promotion.targetCommit ?? "Unavailable"}</dd></div>
+              <div><dt className="font-sans text-muted-foreground">Frozen integration head</dt><dd>{release.promotion.frozenHeadCommit ?? "Not frozen"}</dd></div>
+              <div><dt className="font-sans text-muted-foreground">Frozen target head</dt><dd>{release.promotion.frozenTargetCommit ?? "Not frozen"}</dd></div>
+              <div><dt className="font-sans text-muted-foreground">Issue set fingerprint</dt><dd>{release.promotion.frozenMembershipHash ?? release.promotion.membershipHash ?? "Not recorded"}</dd></div>
+            </dl>
+          </details>
+        </div>
+      </div> : null}
+    </section>
+
     <section className="rounded-xl border border-[var(--border)] bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-base font-semibold">Associated issues</h2><p className="mt-1 text-xs text-muted-foreground">Pull request destination: <span className="font-mono text-foreground">{release.integrationBranch??"Integration branch pending"}</span></p></div><span className="text-xs text-muted-foreground">{release.issues.length}</span></div>
       {release.issues.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No issues are associated with this release.</p> :
@@ -349,6 +441,7 @@ export function FactoryReleaseDetails({ id }: { id: string }) {
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <Badge variant="outline" className={issue.eligible ? statusTone("Active") : ""}>{issue.eligible ? "factory:ready" : "not ready"}</Badge>
               {issue.taskId ? <Link className="text-muted-foreground hover:underline" href={`/tasks/${issue.taskId}`}>Task: {issue.taskStatus}</Link> : <span className="text-muted-foreground">No factory task</span>}
+              {issue.pullRequestUrl ? <a href={issue.pullRequestUrl} target="_blank" rel="noreferrer" className="text-muted-foreground hover:underline">Task PR #{issue.pullRequestNumber} · CI {issue.ciStatus ?? "unknown"}</a> : issue.taskId ? <span className="text-muted-foreground">CI {issue.ciStatus ?? "unknown"}</span> : null}
               <span className="text-muted-foreground">PR base: {issue.taskId
                 ? `${issue.taskBaseBranch ?? "Unknown"}${issue.taskReleaseId === release.id ? "" : " (task is not assigned to this release)"}`
                 : release.integrationBranch ?? "Pending"}</span>

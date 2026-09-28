@@ -147,14 +147,24 @@ export type ReleasePlan = z.infer<typeof releasePlanSchema>;
 export const factoryReleaseIssueSchema = z.object({
   githubIssueId: z.number(), issueNumber: z.number(), title: z.string(), state: z.string(),
   eligible: z.boolean(), taskStatus: z.string().nullable(), taskId:z.string().nullable(),
-  taskBaseBranch:z.string().nullable(),taskReleaseId:z.string().nullable()
+  taskBaseBranch:z.string().nullable(),taskReleaseId:z.string().nullable(),ciStatus:z.string().nullable(),
+  pullRequestNumber:z.number().nullable(),pullRequestUrl:z.string().nullable()
+});
+export const factoryReleasePromotionSchema = z.object({
+  status: z.string(), pullRequestNumber: z.number().nullable(), pullRequestUrl: z.string().nullable(),
+  headCommit: z.string().nullable(), targetCommit: z.string().nullable(), frozenHeadCommit: z.string().nullable(),
+  frozenTargetCommit: z.string().nullable(), membershipHash: z.string().nullable(), frozenMembershipHash: z.string().nullable(),
+  membershipIssueIds: z.array(z.number()), ciStatus: z.string(), mergeabilityStatus: z.string(), lastCheckedAt: z.string().nullable(),
+  remainingIssues: z.array(z.string()), blockers: z.array(z.string()), conflicts: z.array(z.string()),
+  branchCleanupEligible: z.boolean(), error: z.string().nullable()
 });
 export const factoryReleaseSchema = z.object({
   id: z.string(), repositoryId: z.number(), repository: z.string(), name: z.string(), releaseNumber: z.string(),
   integrationBranch: z.string().nullable(), targetBranch: z.string(), targetCommit: z.string().nullable(), status: z.string(),
   createdAt: z.string(), updatedAt: z.string(), branchCreatedAt: z.string().nullable(), githubMilestoneId: z.number().nullable(),
   lastError: z.string().nullable(), issues: z.array(factoryReleaseIssueSchema),
-  versionReason: z.string().nullable().optional(), versionOverrideReason: z.string().nullable().optional()
+  versionReason: z.string().nullable().optional(), versionOverrideReason: z.string().nullable().optional(),
+  promotion: factoryReleasePromotionSchema.nullable()
 });
 export type FactoryRelease = z.infer<typeof factoryReleaseSchema>;
 

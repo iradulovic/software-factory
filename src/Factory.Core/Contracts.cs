@@ -486,6 +486,7 @@ public interface IFactoryReleaseStore
     Task<bool> RetryAsync(Guid id, string? integrationBranch, string? targetBranch, CancellationToken cancellationToken);
     Task<bool> CancelAsync(Guid id, CancellationToken cancellationToken);
     Task<bool> ArchiveAsync(Guid id, CancellationToken cancellationToken);
+    Task SavePromotionAsync(Guid id, FactoryReleasePromotion promotion, CancellationToken cancellationToken);
 }
 
 /// <summary>Repository-scoped planned and published version state, separate from branch-provisioning operations.</summary>
@@ -514,6 +515,7 @@ public interface IGitHubClient
     /// <summary>The current state of a pull request the factory opened, or <see langword="null"/> if it could not be read.</summary>
     Task<PullRequestState?> GetPullRequestStateAsync(string owner, string name, int number, CancellationToken cancellationToken);
     Task<PullRequestMergeResult> GetPullRequestMergeabilityAsync(string owner, string name, int number, CancellationToken cancellationToken);
+    Task<GitHubBranchCommitResult> GetBranchCommitAsync(string owner, string name, string branch, CancellationToken cancellationToken);
 
     /// <summary>CI check status for a pull request's current head commit (SF-614). Never throws or returns
     /// <see langword="null"/> on a read failure — reported explicitly via <see cref="PullRequestChecksResult.Error"/>
@@ -626,6 +628,11 @@ public interface IGitHubPublisher
     /// succeeded) never creates a duplicate. <see langword="null"/> means none was found; a returned
     /// <see cref="PullRequestResult"/> with <c>Succeeded=false</c> means the check itself failed.</summary>
     Task<PullRequestResult?> FindExistingPullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken);
+
+    /// <summary>Finds an open, closed, or merged release promotion PR for the given exact head branch. Closed PRs
+    /// remain discoverable so a retry cannot silently create a second promotion PR for the same release branch.</summary>
+    Task<ReleasePullRequestResult?> FindExistingReleasePullRequestAsync(string owner, string name, string branchName,
+        CancellationToken cancellationToken);
 
     /// <param name="draft">Whether to open the pull request as a draft (SF-709): <see langword="true"/> for a task
     /// requiring human merge, exactly as every pull request was opened before SF-709; <see langword="false"/> opens

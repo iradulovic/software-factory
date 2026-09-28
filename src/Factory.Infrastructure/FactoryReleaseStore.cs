@@ -2,6 +2,7 @@ using Dapper;
 using Factory.Core;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using System.Text.Json;
 
 namespace Factory.Infrastructure;
 
@@ -267,6 +268,49 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
             """, new { id }, cancellationToken: cancellationToken)) == 1;
     }
 
+    public async Task SavePromotionAsync(Guid id, FactoryReleasePromotion promotion, CancellationToken cancellationToken)
+    {
+        await using var connection = Connection();
+        await connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO factory.release_promotion(
+              release_id,status,pull_request_number,pull_request_url,head_commit,target_commit,
+              approved_head_commit,approved_target_commit,membership_hash,approved_membership_hash,membership_issue_ids,
+              ci_status,mergeability_status,last_checked_at,remaining_issues,blockers,conflicts,
+              branch_cleanup_eligible,error,updated_at)
+            VALUES(
+              @id,@status,@pullRequestNumber,@pullRequestUrl,@headCommit,@targetCommit,
+              @frozenHeadCommit,@frozenTargetCommit,@membershipHash,@frozenMembershipHash,@membershipIssueIds,
+              @ciStatus,@mergeabilityStatus,@lastCheckedAt,@remainingIssues::jsonb,@blockers::jsonb,@conflicts::jsonb,
+              @branchCleanupEligible,@error,now())
+            ON CONFLICT(release_id) DO UPDATE SET
+              status=EXCLUDED.status,
+              pull_request_number=COALESCE(EXCLUDED.pull_request_number,factory.release_promotion.pull_request_number),
+              pull_request_url=COALESCE(EXCLUDED.pull_request_url,factory.release_promotion.pull_request_url),
+              head_commit=EXCLUDED.head_commit,target_commit=EXCLUDED.target_commit,
+              approved_head_commit=COALESCE(EXCLUDED.approved_head_commit,factory.release_promotion.approved_head_commit),
+              approved_target_commit=COALESCE(EXCLUDED.approved_target_commit,factory.release_promotion.approved_target_commit),
+              membership_hash=EXCLUDED.membership_hash,
+              approved_membership_hash=COALESCE(EXCLUDED.approved_membership_hash,factory.release_promotion.approved_membership_hash),
+              membership_issue_ids=COALESCE(EXCLUDED.membership_issue_ids,factory.release_promotion.membership_issue_ids),
+              ci_status=EXCLUDED.ci_status,mergeability_status=EXCLUDED.mergeability_status,
+              last_checked_at=EXCLUDED.last_checked_at,remaining_issues=EXCLUDED.remaining_issues,
+              blockers=EXCLUDED.blockers,conflicts=EXCLUDED.conflicts,
+              branch_cleanup_eligible=EXCLUDED.branch_cleanup_eligible,error=EXCLUDED.error,updated_at=now()
+            """, new
+        {
+            id, promotion.Status, pullRequestNumber = promotion.PullRequestNumber,
+            pullRequestUrl = promotion.PullRequestUrl, headCommit = promotion.HeadCommit,
+            targetCommit = promotion.TargetCommit, frozenHeadCommit = promotion.FrozenHeadCommit,
+            frozenTargetCommit = promotion.FrozenTargetCommit, membershipHash = promotion.MembershipHash,
+            frozenMembershipHash = promotion.FrozenMembershipHash,
+            membershipIssueIds = promotion.MembershipIssueIds.Count == 0 ? null : promotion.MembershipIssueIds.ToArray(),
+            promotion.CiStatus, promotion.MergeabilityStatus, lastCheckedAt = promotion.LastCheckedAt,
+            remainingIssues = JsonSerializer.Serialize(promotion.RemainingIssues),
+            blockers = JsonSerializer.Serialize(promotion.Blockers), conflicts = JsonSerializer.Serialize(promotion.Conflicts),
+            promotion.BranchCleanupEligible, promotion.Error
+        }, cancellationToken: cancellationToken));
+    }
+
     private static async Task<IReadOnlyList<FactoryRelease>> AddIssuesAsync(NpgsqlConnection connection,
         IReadOnlyList<ReleaseRow> rows, CancellationToken cancellationToken)
     {
@@ -277,18 +321,40 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
               i.title,i.state,
               EXISTS(SELECT 1 FROM github.issue_label l WHERE l.issue_id=i.id AND lower(l.name)='factory:ready') AS "Eligible",
               linked_task.status AS "TaskStatus",linked_task.id AS "TaskId",linked_task.base_branch AS "TaskBaseBranch",
-              linked_task.release_id AS "TaskReleaseId"
+              linked_task.release_id AS "TaskReleaseId",linked_task.ci_status AS "CiStatus",
+              linked_task.pull_request_number AS "PullRequestNumber",linked_task.pull_request_url AS "PullRequestUrl"
             FROM factory.release_issue ri JOIN github.issue i ON i.id=ri.github_issue_id
             LEFT JOIN LATERAL (
-              SELECT t.id,t.status,t.base_branch,t.release_id FROM factory.task t
+              SELECT t.id,t.status,t.base_branch,t.release_id,ci.overall_status AS ci_status,
+                publication.pull_request_number,publication.pull_request_url
+              FROM factory.task t
+              LEFT JOIN factory.task_ci_status ci ON ci.task_id=t.id
+              LEFT JOIN LATERAL (
+                SELECT p.pull_request_number,p.pull_request_url FROM factory.publication p
+                WHERE p.task_id=t.id AND p.pull_request_url IS NOT NULL ORDER BY p.requested_at DESC LIMIT 1
+              ) publication ON true
               WHERE t.github_issue_id=i.id ORDER BY t.created_at DESC LIMIT 1
             ) linked_task ON true
             WHERE ri.release_id=ANY(@ids)
             ORDER BY i.issue_number
-            """, new { ids }, cancellationToken: cancellationToken));
+        """, new { ids }, cancellationToken: cancellationToken));
         var issuesByRelease = issues.GroupBy(issue => issue.ReleaseId).ToDictionary(group => group.Key,
             group => (IReadOnlyList<FactoryReleaseIssue>)group.Select(issue => issue.Issue).ToArray());
-        return rows.Select(row => row.ToModel(issuesByRelease.GetValueOrDefault(row.Id) ?? [])).ToArray();
+        var promotions = (await connection.QueryAsync<PromotionRow>(new CommandDefinition("""
+            SELECT release_id AS "ReleaseId",status AS "Status",pull_request_number AS "PullRequestNumber",
+              pull_request_url AS "PullRequestUrl",head_commit AS "HeadCommit",target_commit AS "TargetCommit",
+              approved_head_commit AS "FrozenHeadCommit",approved_target_commit AS "FrozenTargetCommit",
+              membership_hash AS "MembershipHash",approved_membership_hash AS "FrozenMembershipHash",
+              membership_issue_ids AS "MembershipIssueIds",ci_status AS "CiStatus",mergeability_status AS "MergeabilityStatus",
+              last_checked_at AS "LastCheckedAt",remaining_issues::text AS "RemainingIssuesJson",
+              blockers::text AS "BlockersJson",conflicts::text AS "ConflictsJson",
+              branch_cleanup_eligible AS "BranchCleanupEligible",error AS "Error"
+            FROM factory.release_promotion WHERE release_id=ANY(@ids)
+            """, new { ids }, cancellationToken: cancellationToken))).ToDictionary(row => row.ReleaseId);
+        return rows.Select(row => row.ToModel(issuesByRelease.GetValueOrDefault(row.Id) ?? []) with
+        {
+            Promotion = promotions.TryGetValue(row.Id, out var promotion) ? promotion.ToModel() : null
+        }).ToArray();
     }
 
     private const string ReleaseSelect = """
@@ -329,10 +395,42 @@ public sealed class PostgresFactoryReleaseStore(IOptions<FactoryOptions> options
     }
 
     private sealed record FactoryReleaseIssueRow(Guid ReleaseId, long GitHubIssueId, int IssueNumber, string Title,
-        string State, bool Eligible, string? TaskStatus, Guid? TaskId, string? TaskBaseBranch, Guid? TaskReleaseId)
+        string State, bool Eligible, string? TaskStatus, Guid? TaskId, string? TaskBaseBranch, Guid? TaskReleaseId,
+        string? CiStatus, int? PullRequestNumber, string? PullRequestUrl)
     {
         public FactoryReleaseIssue Issue => new(GitHubIssueId, IssueNumber, Title, State, Eligible, TaskStatus,
-            TaskId, TaskBaseBranch, TaskReleaseId);
+            TaskId, TaskBaseBranch, TaskReleaseId, CiStatus, PullRequestNumber, PullRequestUrl);
+    }
+
+    private sealed class PromotionRow
+    {
+        public Guid ReleaseId { get; init; }
+        public string Status { get; init; } = "";
+        public int? PullRequestNumber { get; init; }
+        public string? PullRequestUrl { get; init; }
+        public string? HeadCommit { get; init; }
+        public string? TargetCommit { get; init; }
+        public string? FrozenHeadCommit { get; init; }
+        public string? FrozenTargetCommit { get; init; }
+        public string? MembershipHash { get; init; }
+        public string? FrozenMembershipHash { get; init; }
+        public long[]? MembershipIssueIds { get; init; }
+        public string CiStatus { get; init; } = "NotChecked";
+        public string MergeabilityStatus { get; init; } = "NotChecked";
+        public DateTime? LastCheckedAt { get; init; }
+        public string RemainingIssuesJson { get; init; } = "[]";
+        public string BlockersJson { get; init; } = "[]";
+        public string ConflictsJson { get; init; } = "[]";
+        public bool BranchCleanupEligible { get; init; }
+        public string? Error { get; init; }
+
+        public FactoryReleasePromotion ToModel() => new(Status, PullRequestNumber, PullRequestUrl, HeadCommit, TargetCommit,
+            FrozenHeadCommit, FrozenTargetCommit, MembershipHash, FrozenMembershipHash, MembershipIssueIds ?? [], CiStatus,
+            MergeabilityStatus, LastCheckedAt is null ? null : Utc(LastCheckedAt.Value),
+            JsonSerializer.Deserialize<string[]>(RemainingIssuesJson) ?? [], JsonSerializer.Deserialize<string[]>(BlockersJson) ?? [],
+            JsonSerializer.Deserialize<string[]>(ConflictsJson) ?? [], BranchCleanupEligible, Error);
+
+        private static DateTimeOffset Utc(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     }
 
     private sealed class VersionPolicyRow

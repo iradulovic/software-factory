@@ -78,6 +78,7 @@ builder.Services.AddScoped<OperatorPageContextResolver>();
 builder.Services.AddScoped<OperatorAskRouter>();
 builder.Services.AddScoped<ReleasePlanService>();
 builder.Services.AddScoped<FactoryReleaseService>();
+builder.Services.AddScoped<FactoryReleasePromotionService>();
 builder.Services.AddHttpClient();
 builder.Services.Configure<AgentUsageOptions>(builder.Configuration.GetSection("AgentUsage"));
 builder.Services.AddSingleton<IAgentUsageSnapshotStore, AgentUsageSnapshotStore>();
@@ -722,6 +723,16 @@ app.MapPost("/api/integration-releases", async (CreateFactoryReleaseRequest requ
 });
 app.MapGet("/api/integration-releases/{id:guid}", async (Guid id, FactoryReleaseService releases, CancellationToken ct) =>
     await releases.GetAsync(id, ct) is { } release ? Results.Ok(release) : Results.NotFound());
+app.MapPost("/api/integration-releases/{id:guid}/promotion/check", async (Guid id, FactoryReleasePromotionService promotions, CancellationToken ct) =>
+{
+    try { return Results.Ok(await promotions.CheckAsync(id, ct)); }
+    catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
+});
+app.MapPost("/api/integration-releases/{id:guid}/promote", async (Guid id, FactoryReleasePromotionService promotions, CancellationToken ct) =>
+{
+    try { return Results.Ok(await promotions.PromoteAsync(id, ct)); }
+    catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
+});
 app.MapPost("/api/integration-releases/{id:guid}/retry", async (Guid id, RetryFactoryReleaseRequest? request,
     FactoryReleaseService releases, CancellationToken ct) =>
 {
