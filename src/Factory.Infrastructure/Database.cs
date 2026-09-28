@@ -14,15 +14,26 @@ public sealed class DatabaseMigrator(IOptions<FactoryOptions> options)
         var files = Directory.GetFiles(Path.Combine(root, "database", "migrations"), "*.sql").Order(StringComparer.Ordinal);
         await using var connection = new NpgsqlConnection(options.Value.ConnectionString);
         await connection.OpenAsync(cancellationToken);
-        await connection.ExecuteAsync(new CommandDefinition("CREATE SCHEMA IF NOT EXISTS factory; CREATE TABLE IF NOT EXISTS factory.schema_migration(version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());", cancellationToken: cancellationToken));
-        foreach (var file in files)
+        // API, GitHub Sync, and the orchestrator can all start together. Serialize schema creation and migration
+        // recording on one PostgreSQL session so two processes cannot both create the same table/type or apply
+        // the same migration at the same time.
+        await connection.ExecuteAsync(new CommandDefinition("SELECT pg_advisory_lock(hashtext('software_factory'),hashtext('schema_migration'))", cancellationToken: cancellationToken));
+        try
         {
-            var version = Path.GetFileName(file);
-            if (await connection.ExecuteScalarAsync<bool>(new CommandDefinition("SELECT EXISTS(SELECT 1 FROM factory.schema_migration WHERE version=@version)", new { version }, cancellationToken: cancellationToken))) continue;
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-            await connection.ExecuteAsync(new CommandDefinition(await File.ReadAllTextAsync(file, cancellationToken), transaction: transaction, cancellationToken: cancellationToken));
-            await connection.ExecuteAsync(new CommandDefinition("INSERT INTO factory.schema_migration(version) VALUES (@version) ON CONFLICT DO NOTHING", new { version }, transaction, cancellationToken: cancellationToken));
-            await transaction.CommitAsync(cancellationToken);
+            await connection.ExecuteAsync(new CommandDefinition("CREATE SCHEMA IF NOT EXISTS factory; CREATE TABLE IF NOT EXISTS factory.schema_migration(version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());", cancellationToken: cancellationToken));
+            foreach (var file in files)
+            {
+                var version = Path.GetFileName(file);
+                if (await connection.ExecuteScalarAsync<bool>(new CommandDefinition("SELECT EXISTS(SELECT 1 FROM factory.schema_migration WHERE version=@version)", new { version }, cancellationToken: cancellationToken))) continue;
+                await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+                await connection.ExecuteAsync(new CommandDefinition(await File.ReadAllTextAsync(file, cancellationToken), transaction: transaction, cancellationToken: cancellationToken));
+                await connection.ExecuteAsync(new CommandDefinition("INSERT INTO factory.schema_migration(version) VALUES (@version) ON CONFLICT DO NOTHING", new { version }, transaction, cancellationToken: cancellationToken));
+                await transaction.CommitAsync(cancellationToken);
+            }
+        }
+        finally
+        {
+            await connection.ExecuteAsync(new CommandDefinition("SELECT pg_advisory_unlock(hashtext('software_factory'),hashtext('schema_migration'))", cancellationToken: CancellationToken.None));
         }
     }
 
@@ -109,6 +120,10 @@ public sealed partial class PostgresTaskStore(IOptions<FactoryOptions> options, 
                   -- only an already-executing recovery (below) skips this, since that task already started.
                   SELECT 1 FROM factory.task_dependency td JOIN factory.task dep ON dep.id=td.depends_on_task_id
                   WHERE td.task_id=factory.task.id AND dep.status <> 'Completed'
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM factory.release_issue ri JOIN factory.release rel ON rel.id=ri.release_id
+                  WHERE ri.github_issue_id=factory.task.github_issue_id AND rel.status IN ('Pending','Creating','Failed')
                 )
                 AND (post_implementation_request_id IS NOT NULL OR @maxOutstandingReviewWork <= 0 OR (
                   -- SF-612: cap outstanding review work (validated-but-unpublished ReadyForPublish plus
@@ -308,7 +323,12 @@ public sealed partial class PostgresTaskStore(IOptions<FactoryOptions> options, 
         const string sql = """
             INSERT INTO factory.task(id,repository_id,github_issue_id,title,description,status,preferred_agent,
               preferred_agent_reason,agent_routing_error,task_class,base_branch)
-            VALUES(@id,@repositoryId,@issueId,@title,@body,'Pending',@preferredAgent,@preferredAgentReason,@agentRoutingError,@taskClass,@baseBranch)
+            VALUES(@id,@repositoryId,@issueId,@title,@body,'Pending',@preferredAgent,@preferredAgentReason,@agentRoutingError,@taskClass,
+              COALESCE((SELECT rel.integration_branch FROM factory.release_issue ri
+                JOIN factory.release rel ON rel.id=ri.release_id
+                WHERE ri.github_issue_id=@issueId AND rel.status='Active'
+                  AND rel.integration_branch IS NOT NULL
+                ORDER BY rel.created_at DESC LIMIT 1),@baseBranch))
             ON CONFLICT DO NOTHING;
             """;
         await using var connection = Connection();

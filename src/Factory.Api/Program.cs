@@ -45,6 +45,9 @@ static TaskResponse AddConfiguredAgentMetadata(TaskResponse task, IEnumerable<IA
     };
 }
 
+static IResult FactoryReleaseError(FactoryReleaseApiException exception) =>
+    Results.Json(new { error = exception.Message }, statusCode: exception.StatusCode);
+
 // "Busy" (ActiveTask) is read from current_agent, the live selected-at-invocation-start signal (SF-609) — never
 // the task's preferred agent, which a fallback run can disagree with.
 const string AgentStatsSql = """
@@ -72,6 +75,7 @@ builder.Services.AddSingleton<IAssistantConversation>(sp => sp.GetRequiredServic
 builder.Services.AddScoped<OperatorPageContextResolver>();
 builder.Services.AddScoped<OperatorAskRouter>();
 builder.Services.AddScoped<ReleasePlanService>();
+builder.Services.AddScoped<FactoryReleaseService>();
 builder.Services.AddHttpClient();
 builder.Services.Configure<AgentUsageOptions>(builder.Configuration.GetSection("AgentUsage"));
 builder.Services.AddSingleton<IAgentUsageSnapshotStore, AgentUsageSnapshotStore>();
@@ -688,6 +692,36 @@ app.MapPost("/api/releases/{id:guid}/promote", async (Guid id, ReleasePlanServic
     try { return Results.Ok(await releases.PromoteAsync(id, ct)); }
     catch (ReleasePlanNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
     catch (ReleasePlanConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+
+app.MapGet("/api/integration-releases", async (FactoryReleaseService releases, CancellationToken ct) =>
+    Results.Ok(await releases.ListAsync(ct)));
+app.MapPost("/api/integration-releases", async (CreateFactoryReleaseRequest request, FactoryReleaseService releases, CancellationToken ct) =>
+{
+    try
+    {
+        var created = await releases.CreateAsync(request, ct);
+        return Results.Created($"/api/integration-releases/{created.Id}", created);
+    }
+    catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
+});
+app.MapGet("/api/integration-releases/{id:guid}", async (Guid id, FactoryReleaseService releases, CancellationToken ct) =>
+    await releases.GetAsync(id, ct) is { } release ? Results.Ok(release) : Results.NotFound());
+app.MapPost("/api/integration-releases/{id:guid}/retry", async (Guid id, RetryFactoryReleaseRequest? request,
+    FactoryReleaseService releases, CancellationToken ct) =>
+{
+    try { return Results.Ok(await releases.RetryAsync(id, request?.IntegrationBranch, request?.TargetBranch, ct)); }
+    catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
+});
+app.MapPost("/api/integration-releases/{id:guid}/cancel", async (Guid id, FactoryReleaseService releases, CancellationToken ct) =>
+{
+    try { return Results.Ok(await releases.CancelAsync(id, ct)); }
+    catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
+});
+app.MapPost("/api/integration-releases/{id:guid}/archive", async (Guid id, FactoryReleaseService releases, CancellationToken ct) =>
+{
+    try { return Results.Ok(await releases.ArchiveAsync(id, ct)); }
+    catch (FactoryReleaseApiException exception) { return FactoryReleaseError(exception); }
 });
 
 app.MapGet("/api/issues", async (string? repository, string? state, bool? eligible, NpgsqlDataSource db, CancellationToken ct) =>

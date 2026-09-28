@@ -463,6 +463,23 @@ public interface IGitHubStore
     Task<GitHubIssue> UpsertIssueAsync(long repositoryId, GitHubIssue issue, CancellationToken cancellationToken);
 }
 
+/// <summary>Durable Factory-managed release state. Release membership never creates tasks; issue task ingestion
+/// remains gated by the synchronized <c>factory:ready</c> label.</summary>
+public interface IFactoryReleaseStore
+{
+    Task<IReadOnlyList<FactoryRelease>> ListAsync(CancellationToken cancellationToken);
+    Task<FactoryRelease?> GetAsync(Guid id, CancellationToken cancellationToken);
+    /// <returns>The created release, or <see langword="null"/> when this repository already has the release number.</returns>
+    Task<FactoryRelease?> CreateAsync(FactoryReleaseDraft draft, IReadOnlyList<long> githubIssueIds, CancellationToken cancellationToken);
+    Task<FactoryReleaseWorkItem?> ClaimNextAsync(CancellationToken cancellationToken);
+    Task<bool> RecordBranchPlanAsync(Guid id, string integrationBranch, string targetCommit, CancellationToken cancellationToken);
+    Task<bool> CompleteBranchCreationAsync(Guid id, string integrationBranch, string targetCommit, CancellationToken cancellationToken);
+    Task RecordBranchFailureAsync(Guid id, string error, CancellationToken cancellationToken);
+    Task<bool> RetryAsync(Guid id, string? integrationBranch, string? targetBranch, CancellationToken cancellationToken);
+    Task<bool> CancelAsync(Guid id, CancellationToken cancellationToken);
+    Task<bool> ArchiveAsync(Guid id, CancellationToken cancellationToken);
+}
+
 public interface IGitHubClient
 {
     /// <summary>All issues (open and closed) whose <c>updatedAt</c> is at or after <paramref name="since"/> (or

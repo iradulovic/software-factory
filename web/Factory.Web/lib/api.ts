@@ -143,6 +143,18 @@ export const releasePlanSchema = z.object({
 });
 export type ReleasePlan = z.infer<typeof releasePlanSchema>;
 
+export const factoryReleaseIssueSchema = z.object({
+  githubIssueId: z.number(), issueNumber: z.number(), title: z.string(), state: z.string(),
+  eligible: z.boolean(), taskStatus: z.string().nullable()
+});
+export const factoryReleaseSchema = z.object({
+  id: z.string(), repositoryId: z.number(), repository: z.string(), name: z.string(), releaseNumber: z.string(),
+  integrationBranch: z.string().nullable(), targetBranch: z.string(), targetCommit: z.string().nullable(), status: z.string(),
+  createdAt: z.string(), updatedAt: z.string(), branchCreatedAt: z.string().nullable(), githubMilestoneId: z.number().nullable(),
+  lastError: z.string().nullable(), issues: z.array(factoryReleaseIssueSchema)
+});
+export type FactoryRelease = z.infer<typeof factoryReleaseSchema>;
+
 export const databaseColumnSchema = z.object({ name: z.string(), type: z.string() });
 export const databaseTableSchema = z.object({ schema: z.string(), table: z.string(), columns: z.array(databaseColumnSchema) });
 export type DatabaseTable = z.infer<typeof databaseTableSchema>;
