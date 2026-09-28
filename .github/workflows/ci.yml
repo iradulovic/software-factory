@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*", "[0-9]*"]
   pull_request:
 
 permissions:
@@ -13,8 +14,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build_identity:
+    name: Resolve shared build identity
+    runs-on: ubuntu-latest
+    outputs:
+      product_version: ${{ steps.identity.outputs.product_version }}
+      source_commit: ${{ steps.identity.outputs.source_commit }}
+      build_time_utc: ${{ steps.identity.outputs.build_time_utc }}
+      build_state: ${{ steps.identity.outputs.build_state }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Resolve exact-tag or development identity
+        id: identity
+        run: node scripts/factory-build-identity.mjs --github-output >> "$GITHUB_OUTPUT"
+
   backend:
     name: Backend build and tests
+    needs: build_identity
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -32,6 +53,10 @@ jobs:
     env:
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      FACTORY_PRODUCT_VERSION: ${{ needs.build_identity.outputs.product_version }}
+      FACTORY_SOURCE_COMMIT: ${{ needs.build_identity.outputs.source_commit }}
+      FACTORY_BUILD_TIME_UTC: ${{ needs.build_identity.outputs.build_time_utc }}
+      FACTORY_BUILD_STATE: ${{ needs.build_identity.outputs.build_state }}
       # Local-only service-container credentials; the PostgreSQL integration tests run instead of being skipped.
       FACTORY_TEST_CONNECTION_STRING: Host=localhost;Port=5432;Database=software_factory_tests;Username=factory;Password=factory
     steps:
@@ -55,12 +80,20 @@ jobs:
 
   frontend:
     name: Frontend lint, type-check, and build
+    needs: build_identity
     runs-on: ubuntu-latest
+    env:
+      FACTORY_PRODUCT_VERSION: ${{ needs.build_identity.outputs.product_version }}
+      FACTORY_SOURCE_COMMIT: ${{ needs.build_identity.outputs.source_commit }}
+      FACTORY_BUILD_TIME_UTC: ${{ needs.build_identity.outputs.build_time_utc }}
+      FACTORY_BUILD_STATE: ${{ needs.build_identity.outputs.build_state }}
     defaults:
       run:
         working-directory: web/Factory.Web
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -68,6 +101,8 @@ jobs:
           cache-dependency-path: web/Factory.Web/package-lock.json
       - name: Install
         run: npm ci
+      - name: Test
+        run: npm test
       - name: Lint
         run: npm run lint
       - name: Type-check

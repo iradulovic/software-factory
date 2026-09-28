@@ -1,3 +1,9 @@
+x-factory-build-args: &factory-build-args
+  FACTORY_PRODUCT_VERSION: ${FACTORY_PRODUCT_VERSION:-Development}
+  FACTORY_SOURCE_COMMIT: ${FACTORY_SOURCE_COMMIT:-unknown}
+  FACTORY_BUILD_TIME_UTC: ${FACTORY_BUILD_TIME_UTC:-}
+  FACTORY_BUILD_STATE: ${FACTORY_BUILD_STATE:-development}
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -16,6 +22,7 @@ services:
     build:
       context: .
       dockerfile: src/Factory.Api/Dockerfile
+      args: *factory-build-args
     environment:
       Factory__ConnectionString: Host=postgres;Port=5432;Database=software_factory;Username=factory;Password=factory
       ASPNETCORE_URLS: http://+:8080
@@ -24,8 +31,11 @@ services:
       postgres: { condition: service_healthy }
   factory-web:
     build:
-      context: web/Factory.Web
-      args: { NEXT_PUBLIC_FACTORY_API_URL: "http://localhost:5080" }
+      context: .
+      dockerfile: web/Factory.Web/Dockerfile
+      args:
+        <<: *factory-build-args
+        NEXT_PUBLIC_FACTORY_API_URL: "http://localhost:5080"
     ports: ["3000:3000"]
     depends_on: [factory-api]
 volumes:

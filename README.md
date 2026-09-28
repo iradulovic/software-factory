@@ -260,7 +260,7 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn
 Register-ScheduledTask -TaskName 'SoftwareFactoryStartup' -Action $action -Trigger $trigger -RunLevel Limited
 ```
 
-Alternatively, `docker compose up --build postgres factory-api factory-web` runs the infrastructure, API, and dashboard in containers; keep Sync and Orchestrator on the host either way.
+Alternatively, `node scripts/factory-build-identity.mjs --compose up --build postgres factory-api factory-web` resolves one exact-tag or development identity and passes it to both container builds. This runs PostgreSQL, the API, and the dashboard in containers; keep Sync and Orchestrator on the host either way.
 
 ## 5. Exercise the vertical slice
 
