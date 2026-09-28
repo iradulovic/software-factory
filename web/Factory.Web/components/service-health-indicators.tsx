@@ -60,7 +60,13 @@ export function buildServiceHealthIndicators(input: ServiceHealthInput): Service
 
   let agents: ServiceHealthIndicator[];
   if (input.agents?.length) {
-    agents = input.agents.map(agent => indicator(agent.agent, agent.state));
+    agents = [...input.agents]
+      .sort((left, right) => {
+        const leftName = left.agent.toLowerCase();
+        const rightName = right.agent.toLowerCase();
+        return leftName < rightName ? -1 : leftName > rightName ? 1 : left.agent < right.agent ? -1 : left.agent > right.agent ? 1 : 0;
+      })
+      .map(agent => indicator(agent.agent, agent.state));
   } else if (input.agentsLoading) {
     agents = [indicator("Coding agents", "Loading", "Checking")];
   } else if (input.agentsUnavailable) {
@@ -101,6 +107,7 @@ export function ServiceHealthIndicators({
   indicators,
   popoverOpen,
   openedByHover,
+  compactByOverflow = false,
   onActivate,
   onPointerEnter,
   onPointerLeave
@@ -108,6 +115,7 @@ export function ServiceHealthIndicators({
   indicators: ServiceHealthIndicator[];
   popoverOpen: boolean;
   openedByHover: boolean;
+  compactByOverflow?: boolean;
   onActivate: (keyboardActivation: boolean, trigger: HTMLButtonElement) => void;
   onPointerEnter: (trigger: HTMLButtonElement) => void;
   onPointerLeave: () => void;
@@ -116,7 +124,8 @@ export function ServiceHealthIndicators({
 
   return <button
     type="button"
-    className="flex h-8 min-w-8 max-w-[min(36vw,12rem)] shrink-0 items-center gap-1.5 overflow-hidden rounded-md px-2 text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+    className="service-health-trigger relative flex h-9 min-w-0 max-w-full shrink items-center overflow-hidden rounded-md border border-[var(--border)] bg-background/70 px-1.5 text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+    data-compact={compactByOverflow ? "true" : "false"}
     aria-label={accessibleSummary}
     aria-haspopup="dialog"
     aria-expanded={popoverOpen}
@@ -131,11 +140,15 @@ export function ServiceHealthIndicators({
       onActivate(event.detail === 0, event.currentTarget);
     }}
   >
-    <Activity className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-    <span className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]" aria-hidden="true">
-      {indicators.map(item => <span key={item.name} className="flex size-5 shrink-0 items-center justify-center" data-health-state={item.kind}>
+    <span className="service-health-labeled flex min-w-0 items-center gap-1" aria-hidden="true">
+      {indicators.map(item => <span key={item.name} className="flex h-7 max-w-[8rem] shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-muted/30 px-2 text-xs font-medium" data-health-state={item.kind} data-service-name={item.name}>
         <StateSymbol kind={item.kind} />
+        <span className="min-w-0 max-w-24 truncate">{item.name}</span>
       </span>)}
+    </span>
+    <span className="service-health-summary flex min-w-0 items-center gap-1.5 px-1 text-xs font-medium" aria-hidden="true">
+      <span>Services</span>
+      <span className="inline-flex min-w-4 items-center justify-center rounded-full border border-[var(--border)] px-1 text-[10px] tabular-nums text-muted-foreground">{indicators.length}</span>
     </span>
   </button>;
 }
