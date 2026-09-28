@@ -27,18 +27,31 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
         {
             var reviewOutcome = await RunReviewWithRetriesAsync(context, preferredReviewAgent, configuredReviewAgent, reviewTaskClass,
                 fixAttempt, cancellationToken);
-            if (reviewOutcome.Result.Outcome != PipelineOutcome.NeedsHuman) return reviewOutcome.Result;
+            if (reviewOutcome.Result.Outcome != PipelineOutcome.Succeeded || reviewOutcome.Review is null)
+                return reviewOutcome.Result;
 
-            var review = reviewOutcome.Review!;
-            if (review.Findings.Count == 0 || fixAttempt >= maxFixAttempts)
+            var review = reviewOutcome.Review;
+            var decision = ReviewPolicy.Evaluate(review, fixAttempt, maxFixAttempts);
+            await tasks.SaveAgentReviewAsync(context.Task.Id, context.RunId, reviewOutcome.Agent!, review,
+                decision.Disposition, decision.Reason, cancellationToken);
+            await tasks.CompleteStepAsync(reviewOutcome.StepId!.Value, ExecutionStatus.Succeeded, null,
+                FormatReviewOutput(review, decision), cancellationToken);
+
+            if (decision.RequiresHuman)
             {
-                var reason = review.HumanReason ?? review.Summary;
-                return PipelineStepResult.NeedsHuman(review.Status == "blocked" ? $"Review blocked: {reason}" : reason);
+                var reason = review.HumanReason ?? decision.Reason;
+                return PipelineStepResult.NeedsHuman(reason);
             }
+            if (decision.RequiredFindings.Count == 0) return PipelineStepResult.Ok;
 
-            var fixResult = await RunFixAsync(context, review.Findings, fixAttempt + 1, cancellationToken);
+            var fixResult = await RunFixAsync(context, decision.RequiredFindings, fixAttempt + 1, cancellationToken);
             if (fixResult.Outcome != PipelineOutcome.Succeeded) return fixResult;
             context.ReviewFixAttempts++;
+            if (context.ValidateReviewFixAsync is not null)
+            {
+                var validation = await context.ValidateReviewFixAsync(cancellationToken);
+                if (validation.Outcome != PipelineOutcome.Succeeded) return validation;
+            }
         }
     }
 
@@ -76,7 +89,7 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
     private async Task<ReviewOutcome> RunReviewAsync(PipelineContext context, IAgentRunner agent, int attempt, int fixAttempt,
         string taskClass, string selectionReason, CancellationToken cancellationToken)
     {
-        var stepId = await tasks.StartStepAsync(context.RunId, "AgentReview", attempt, cancellationToken);
+        var stepId = await tasks.StartStepAsync(context.RunId, "AgentReview", fixAttempt + 1, cancellationToken);
         var agentRunId = Guid.NewGuid();
         logger.LogInformation("Task {TaskId} run {RunId} step {StepId} agent run {AgentRunId} starting review attempt {Attempt} after {FixAttempts} fix attempt(s)",
             context.Task.Id, context.RunId, stepId, agentRunId, attempt, fixAttempt);
@@ -119,11 +132,13 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
             return new(PipelineStepResult.Failed($"Review agent reported failure: {review.Summary}"), null);
         }
 
-        await tasks.SaveReviewFindingsAsync(context.Task.Id, context.RunId, agent.Name, review.Findings, cancellationToken);
-        await tasks.CompleteStepAsync(stepId, ExecutionStatus.Succeeded, null, review.Summary, cancellationToken);
-        return review.Status is "blocked" or "needs-human" || review.NeedsHuman
-            ? new(PipelineStepResult.NeedsHuman(review.HumanReason ?? review.Summary), review)
-            : new(PipelineStepResult.Ok, review);
+        return new(PipelineStepResult.Ok, review, stepId, agent.Name);
+    }
+
+    private static string FormatReviewOutput(AgentReviewResult review, ReviewPolicyDecision decision)
+    {
+        var score = review.Score is { } value ? $"Score: {value}/5. {review.ScoreRationale}" : "Score: not supplied.";
+        return $"Verdict: {review.Status}. {review.Summary}\n{score}\nDisposition: {decision.Disposition}.\nPolicy: {decision.Reason}";
     }
 
     private async Task<PipelineStepResult> RunFixAsync(PipelineContext context, IReadOnlyList<ReviewFinding> findings,
@@ -195,5 +210,5 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
         }
     }
 
-    private sealed record ReviewOutcome(PipelineStepResult Result, AgentReviewResult? Review);
+    private sealed record ReviewOutcome(PipelineStepResult Result, AgentReviewResult? Review, Guid? StepId = null, string? Agent = null);
 }

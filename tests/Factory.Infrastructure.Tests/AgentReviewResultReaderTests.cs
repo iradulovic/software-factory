@@ -133,4 +133,81 @@ public sealed class AgentReviewResultReaderTests
         }
         finally { root.Delete(true); }
     }
+
+    [Fact]
+    public async Task Medium_impact_and_optional_score_are_parsed()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-review-");
+        try
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(root.FullName, ".factory"));
+            await File.WriteAllTextAsync(Path.Combine(directory.FullName, "review.json"),
+                """{"status":"completed","summary":"Reviewed","findings":[{"severity":"medium","file":"src/Export.cs","line":8,"description":"The workflow breaks for localized users","mediumImpact":"user-workflow","rationale":"A real export changes based on locale"}],"needsHuman":false,"score":4,"scoreRationale":"One workflow defect remains"}""");
+
+            var (result, error) = await new AgentReviewResultReader().ReadAsync(root.FullName, CancellationToken.None);
+
+            Assert.Null(error);
+            Assert.Equal(4, result?.Score);
+            Assert.Equal("One workflow defect remains", result?.ScoreRationale);
+            var finding = Assert.Single(result!.Findings);
+            Assert.Equal("user-workflow", finding.MediumImpact);
+            Assert.Equal("A real export changes based on locale", finding.Rationale);
+        }
+        finally { root.Delete(true); }
+    }
+
+    [Fact]
+    public async Task A_medium_finding_without_explicit_impact_is_rejected()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-review-");
+        try
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(root.FullName, ".factory"));
+            await File.WriteAllTextAsync(Path.Combine(directory.FullName, "review.json"),
+                """{"status":"completed","summary":"Review","findings":[{"severity":"medium","description":"Could be an issue"}],"needsHuman":false}""");
+
+            var (result, error) = await new AgentReviewResultReader().ReadAsync(root.FullName, CancellationToken.None);
+
+            Assert.Null(result);
+            Assert.Contains("must set mediumImpact", error);
+        }
+        finally { root.Delete(true); }
+    }
+
+    [Fact]
+    public async Task A_high_finding_cannot_be_marked_advisory()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-review-");
+        try
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(root.FullName, ".factory"));
+            await File.WriteAllTextAsync(Path.Combine(directory.FullName, "review.json"),
+                """{"status":"completed","summary":"Review","findings":[{"severity":"high","description":"Incorrect total","mediumImpact":"advisory","rationale":"Reviewer downgrade"}],"needsHuman":false,"score":5,"scoreRationale":"Excellent"}""");
+
+            var (result, error) = await new AgentReviewResultReader().ReadAsync(root.FullName, CancellationToken.None);
+
+            Assert.Null(result);
+            Assert.Contains("Only medium finding", error);
+        }
+        finally { root.Delete(true); }
+    }
+
+    [Fact]
+    public async Task Scores_must_be_in_range_and_include_a_rationale()
+    {
+        var root = Directory.CreateTempSubdirectory("factory-review-");
+        try
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(root.FullName, ".factory"));
+            await File.WriteAllTextAsync(Path.Combine(directory.FullName, "review.json"),
+                """{"status":"completed","summary":"Review","findings":[],"needsHuman":false,"score":6,"scoreRationale":"Great"}""");
+
+            var (result, error) = await new AgentReviewResultReader().ReadAsync(root.FullName, CancellationToken.None);
+
+            Assert.Null(result);
+            Assert.Contains("between 1 and 5", error);
+        }
+        finally { root.Delete(true); }
+    }
+
 }

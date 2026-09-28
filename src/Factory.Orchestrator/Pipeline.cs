@@ -42,6 +42,7 @@ public sealed class PipelineContext(FactoryTask task, Guid runId)
     public string? ImplementingAgent { get; set; }
     public string? ImplementationSessionId { get; set; }
     public int ReviewFixAttempts { get; set; }
+    public Func<CancellationToken, Task<PipelineStepResult>>? ValidateReviewFixAsync { get; set; }
     public ChangeSummary? ChangeSummary { get; set; }
 
     /// <summary>Whether the pre-publication base-sync step advanced this task branch. If so, every publication

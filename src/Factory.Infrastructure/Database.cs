@@ -811,12 +811,72 @@ public sealed partial class PostgresTaskStore(IOptions<FactoryOptions> options, 
     {
         const string sql = """
             SELECT id AS "Id",task_id AS "TaskId",run_id AS "RunId",agent AS "Agent",severity AS "Severity",
-              file AS "File",line AS "Line",description AS "Description",created_at AS "CreatedAt"
+              file AS "File",line AS "Line",description AS "Description",created_at AS "CreatedAt",
+              medium_impact AS "MediumImpact",rationale AS "Rationale"
             FROM factory.review_finding WHERE task_id=@taskId ORDER BY created_at
             """;
         await using var c = Connection();
         var rows = await c.QueryAsync<ReviewFindingRow>(new CommandDefinition(sql, new { taskId }, cancellationToken: cancellationToken));
         return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task SaveAgentReviewAsync(Guid taskId, Guid runId, string agent, AgentReviewResult review,
+        string disposition, string policyReason, CancellationToken cancellationToken)
+    {
+        var reviewId = Guid.NewGuid();
+        await using var c = Connection();
+        await c.OpenAsync(cancellationToken);
+        await using var transaction = await c.BeginTransactionAsync(cancellationToken);
+        const string reviewSql = """
+            INSERT INTO factory.agent_review(id,task_id,run_id,agent,status,summary,needs_human,human_reason,score,score_rationale,disposition,policy_reason)
+            VALUES(@id,@taskId,@runId,@agent,@status,@summary,@needsHuman,@humanReason,@score,@scoreRationale,@disposition,@policyReason)
+            """;
+        await c.ExecuteAsync(new CommandDefinition(reviewSql, new
+        {
+            id = reviewId, taskId, runId, agent, review.Status, review.Summary, review.NeedsHuman,
+            review.HumanReason, review.Score, review.ScoreRationale, disposition, policyReason
+        }, transaction, cancellationToken: cancellationToken));
+
+        if (review.Findings.Count > 0)
+        {
+            const string findingSql = """
+                INSERT INTO factory.review_finding(id,task_id,run_id,agent,severity,file,line,description,review_id,medium_impact,rationale)
+                VALUES(@Id,@TaskId,@RunId,@Agent,@Severity,@File,@Line,@Description,@ReviewId,@MediumImpact,@Rationale)
+                """;
+            var findings = review.Findings.Select(f => new
+            {
+                Id = Guid.NewGuid(), TaskId = taskId, RunId = runId, Agent = agent,
+                f.Severity, f.File, f.Line, f.Description, ReviewId = reviewId,
+                f.MediumImpact, f.Rationale
+            });
+            await c.ExecuteAsync(new CommandDefinition(findingSql, findings, transaction, cancellationToken: cancellationToken));
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<PersistedAgentReview>> GetAgentReviewsAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        const string reviewSql = """
+            SELECT id AS "Id",task_id AS "TaskId",run_id AS "RunId",agent AS "Agent",status AS "Status",
+              summary AS "Summary",needs_human AS "NeedsHuman",human_reason AS "HumanReason",score AS "Score",
+              score_rationale AS "ScoreRationale",disposition AS "Disposition",policy_reason AS "PolicyReason",created_at AS "CreatedAt"
+            FROM factory.agent_review WHERE task_id=@taskId ORDER BY created_at,id
+            """;
+        await using var c = Connection();
+        var reviews = (await c.QueryAsync<AgentReviewRow>(new CommandDefinition(reviewSql, new { taskId }, cancellationToken: cancellationToken))).ToList();
+        if (reviews.Count == 0) return [];
+
+        const string findingSql = """
+            SELECT id AS "Id",task_id AS "TaskId",run_id AS "RunId",agent AS "Agent",severity AS "Severity",
+              file AS "File",line AS "Line",description AS "Description",created_at AS "CreatedAt",
+              review_id AS "ReviewId",medium_impact AS "MediumImpact",rationale AS "Rationale"
+            FROM factory.review_finding WHERE review_id=ANY(@reviewIds) ORDER BY created_at,id
+            """;
+        var findings = (await c.QueryAsync<ReviewFindingRow>(new CommandDefinition(findingSql,
+            new { reviewIds = reviews.Select(r => r.Id).ToArray() }, cancellationToken: cancellationToken)))
+            .GroupBy(f => f.ReviewId!.Value).ToDictionary(g => g.Key, g => (IReadOnlyList<PersistedReviewFinding>)g.Select(f => f.ToModel()).ToList());
+        return reviews.Select(review => review.ToModel(findings.GetValueOrDefault(review.Id) ?? [])).ToList();
     }
 
     public async Task SetCurrentAgentAsync(Guid taskId, string? agentName, string? selectionReason, CancellationToken cancellationToken)
@@ -1957,9 +2017,33 @@ internal sealed class ReviewFindingRow
     public int? Line { get; init; }
     public string Description { get; init; } = "";
     public DateTime CreatedAt { get; init; }
+    public Guid? ReviewId { get; init; }
+    public string? MediumImpact { get; init; }
+    public string? Rationale { get; init; }
 
     public PersistedReviewFinding ToModel() => new(Id, TaskId, RunId, Agent, Severity, File, Line, Description,
-        new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)));
+        new DateTimeOffset(DateTime.SpecifyKind(CreatedAt, DateTimeKind.Utc)), MediumImpact, Rationale);
+}
+
+internal sealed class AgentReviewRow
+{
+    public Guid Id { get; init; }
+    public Guid TaskId { get; init; }
+    public Guid RunId { get; init; }
+    public string Agent { get; init; } = "";
+    public string Status { get; init; } = "";
+    public string Summary { get; init; } = "";
+    public bool NeedsHuman { get; init; }
+    public string? HumanReason { get; init; }
+    public int? Score { get; init; }
+    public string? ScoreRationale { get; init; }
+    public string Disposition { get; init; } = "";
+    public string PolicyReason { get; init; } = "";
+    public DateTimeOffset CreatedAt { get; init; }
+
+    public PersistedAgentReview ToModel(IReadOnlyList<PersistedReviewFinding> findings) =>
+        new(Id, TaskId, RunId, Agent, Status, Summary, NeedsHuman, HumanReason, Score, ScoreRationale,
+            Disposition, PolicyReason, CreatedAt, findings);
 }
 
 internal sealed class TaskDependencyRow

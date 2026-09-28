@@ -2651,6 +2651,38 @@ public sealed class PostgresStoreIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Agent_review_score_policy_and_structured_findings_round_trip_with_legacy_score_omission()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var cancellationToken = CancellationToken.None;
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "review-integration-worker", cancellationToken);
+            var finding = new ReviewFinding("medium", "src/Export.cs", 8, "Locale changes the file format",
+                "user-workflow", "Users receive different output under another locale");
+            var scored = new AgentReviewResult("completed", "One workflow issue", [finding], false, null, 4, "Most paths are correct");
+            await fixture.Tasks.SaveAgentReviewAsync(fixture.TaskId, runId, "Claude", scored, "FixRequired",
+                "The medium finding affects a real user workflow.", cancellationToken);
+            await fixture.Tasks.SaveAgentReviewAsync(fixture.TaskId, runId, "Claude",
+                new AgentReviewResult("completed", "No findings", [], false, null), "Approved", "No findings were reported.", cancellationToken);
+
+            var reviews = await fixture.Tasks.GetAgentReviewsAsync(fixture.TaskId, cancellationToken);
+
+            Assert.Equal(2, reviews.Count);
+            Assert.Equal(4, reviews[0].Score);
+            Assert.Equal("Most paths are correct", reviews[0].ScoreRationale);
+            Assert.Equal("FixRequired", reviews[0].Disposition);
+            var persistedFinding = Assert.Single(reviews[0].Findings);
+            Assert.Equal("user-workflow", persistedFinding.MediumImpact);
+            Assert.Equal("Users receive different output under another locale", persistedFinding.Rationale);
+            Assert.Null(reviews[1].Score);
+            Assert.Null(reviews[1].ScoreRationale);
+            Assert.Empty(reviews[1].Findings);
+        }
+    }
+
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
 
     private sealed class LeaseFixture : IAsyncDisposable
@@ -2696,6 +2728,8 @@ public sealed class PostgresStoreIntegrationTests
                 DELETE FROM factory.agent_human_request WHERE task_id=@TaskId;
                 DELETE FROM factory.task_feedback WHERE task_id=@TaskId;
                 DELETE FROM factory.publication WHERE task_id=@TaskId;
+                DELETE FROM factory.review_finding WHERE task_id=@TaskId;
+                DELETE FROM factory.agent_review WHERE task_id=@TaskId;
                 DELETE FROM factory.agent_run WHERE task_id=@TaskId;
                 DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id=@TaskId);
                 DELETE FROM factory.run WHERE task_id=@TaskId;

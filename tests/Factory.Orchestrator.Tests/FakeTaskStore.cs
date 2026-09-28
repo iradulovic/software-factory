@@ -231,6 +231,18 @@ internal sealed class FakeTaskStore : ITaskStore
         return Task.CompletedTask;
     }
 
+    public List<(Guid TaskId, Guid RunId, string Agent, AgentReviewResult Review, string Disposition, string PolicyReason)> SavedAgentReviews { get; } = [];
+    public Task SaveAgentReviewAsync(Guid taskId, Guid runId, string agent, AgentReviewResult review, string disposition,
+        string policyReason, CancellationToken cancellationToken)
+    {
+        SavedAgentReviews.Add((taskId, runId, agent, review, disposition, policyReason));
+        SavedReviewFindings.Add((taskId, runId, agent, review.Findings));
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<PersistedAgentReview>> GetAgentReviewsAsync(Guid taskId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<PersistedAgentReview>>([]);
+
     public List<PersistedReviewFinding> ReviewFindings { get; set; } = [];
     public Task<IReadOnlyList<PersistedReviewFinding>> GetReviewFindingsAsync(Guid taskId, CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<PersistedReviewFinding>>(ReviewFindings.Where(f => f.TaskId == taskId).ToList());

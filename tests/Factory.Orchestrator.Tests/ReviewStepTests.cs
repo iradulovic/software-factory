@@ -61,6 +61,7 @@ public sealed class ReviewStepTests
         Assert.Equal(context.Task.Id, saved.TaskId);
         Assert.Equal("Codex", saved.Agent);
         Assert.Single(saved.Findings);
+        Assert.Equal(ReviewPolicy.AdvisoryFindings, Assert.Single(store.SavedAgentReviews).Disposition);
         Assert.Equal(ExecutionStatus.Succeeded, store.Step("AgentReview").Status);
     }
 
@@ -161,7 +162,7 @@ public sealed class ReviewStepTests
     }
 
     [Fact]
-    public async Task Blocked_review_triggers_one_fix_then_a_passing_re_review()
+    public async Task A_completed_review_with_a_high_finding_triggers_one_fix_then_a_passing_re_review()
     {
         var store = new FakeTaskStore();
         var context = Context(new RepositoryConfiguration("main", [], [], 2, 1, true, MaxReviewFixAttempts: 1));
@@ -178,7 +179,7 @@ public sealed class ReviewStepTests
         {
             reviewCalls++;
             var review = reviewCalls == 1
-                ? new AgentReviewResult("blocked", "Empty lists fail", [finding], true, "Fix empty lists")
+                ? new AgentReviewResult("completed", "Empty lists fail", [finding], false, null)
                 : new AgentReviewResult("completed", "Fixed", [], false, null);
             return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: review));
         });
@@ -194,7 +195,7 @@ public sealed class ReviewStepTests
     }
 
     [Fact]
-    public async Task Review_findings_exhausting_fix_bound_fall_through_to_needs_human()
+    public async Task Required_findings_remaining_after_the_fix_bound_require_human_review()
     {
         var store = new FakeTaskStore();
         var context = Context(new RepositoryConfiguration("main", [], [], 2, 1, true, MaxReviewFixAttempts: 1));
@@ -202,16 +203,17 @@ public sealed class ReviewStepTests
         var finding = new ReviewFinding("high", null, null, "Totals remain incorrect");
         var implementer = new FakeAgent("Codex", _ => Task.FromResult(new AgentRunResult(Process(), CompletedFix(), null, false)));
         var reviewer = new FakeAgent("Claude", _ => Task.FromResult(new AgentRunResult(Process(), null, null, false,
-            ReviewResult: new AgentReviewResult("blocked", "Totals are wrong", [finding], true, "Correct the totals"))));
+            ReviewResult: new AgentReviewResult("completed", "Totals are wrong", [finding], false, null))));
         var step = new ReviewStep(store, new AgentSelector([implementer, reviewer], store),
             Options.Create(new FactoryOptions { ReviewPreferredAgent = "Claude" }), NullLogger<ReviewStep>.Instance);
 
         var result = await step.ExecuteAsync(context, CancellationToken.None);
 
         Assert.Equal(PipelineOutcome.NeedsHuman, result.Outcome);
-        Assert.Equal("Review blocked: Correct the totals", result.Reason);
+        Assert.Contains("maximum of 1 review fix attempt", result.Reason);
         Assert.Equal(1, store.AgentRuns.Count(run => run.Purpose == "Fix"));
         Assert.Equal(2, store.AgentRuns.Count(run => run.Purpose == "Review"));
+        Assert.Equal(ReviewPolicy.FixLimitReached, store.SavedAgentReviews[^1].Disposition);
     }
 
     [Theory]
@@ -223,12 +225,12 @@ public sealed class ReviewStepTests
         var context = Context(new RepositoryConfiguration("main", [], [], 2, 1, true, MaxReviewFixAttempts: 1));
         context.ImplementingAgent = implementerName;
         var reviewCalls = 0;
-        var finding = new ReviewFinding("medium", "src/Export.cs", 4, "Use invariant formatting");
+        var finding = new ReviewFinding("medium", "src/Export.cs", 4, "A user-provided locale changes the output", "user-workflow", "Export behavior differs for a real user");
         var implementer = new FakeAgent(implementerName, _ => Task.FromResult(new AgentRunResult(Process(), CompletedFix(), null, false)));
         var reviewer = new FakeAgent(reviewerName, _ =>
         {
             var review = ++reviewCalls == 1
-                ? new AgentReviewResult("blocked", "Formatting bug", [finding], false, null)
+                ? new AgentReviewResult("completed", "Formatting bug", [finding], false, null)
                 : new AgentReviewResult("completed", "Looks good", [], false, null);
             return Task.FromResult(new AgentRunResult(Process(), null, null, false, ReviewResult: review));
         });

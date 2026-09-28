@@ -78,6 +78,19 @@ public sealed class PostgreSqlContractTests
         Assert.Contains("factory:ready", taskStore);
     }
 
+    [Fact]
+    public void Review_policy_migration_persists_verdict_score_disposition_and_medium_impact()
+    {
+        var sql = File.ReadAllText(Path.Combine(Root(), "database", "migrations", "040_review_policy.sql"));
+        Assert.Contains("CREATE TABLE factory.agent_review", sql);
+        Assert.Contains("score smallint", sql);
+        Assert.Contains("score_rationale text", sql);
+        Assert.Contains("disposition text NOT NULL", sql);
+        Assert.Contains("review_id uuid REFERENCES factory.agent_review", sql);
+        Assert.Contains("medium_impact text", sql);
+        Assert.Contains("rationale text", sql);
+    }
+
     private static string ReadMigration() => File.ReadAllText(Path.Combine(Root(), "database", "migrations", "001_initial.sql"));
     private static string Root()
     {

@@ -97,17 +97,8 @@ public sealed class TaskExecutor(
             if (context.ReviewRequested)
             {
                 await TransitionAsync(context, FactoryTaskStatus.Reviewing, null, cancellationToken);
+                context.ValidateReviewFixAsync = ct => ValidateReviewFixAsync(context, ct);
                 if (!await RunStepAsync(review, context, cancellationToken)) return;
-                // A review fix changes the commit that was validated before review. Re-run every deterministic
-                // publication prerequisite against the final, re-reviewed commit so the persisted validated HEAD
-                // and change summary cannot point at the pre-fix implementation.
-                if (context.ReviewFixAttempts > 0)
-                {
-                    if (!await RunStepAsync(collectDiff, context, cancellationToken)) return;
-                    if (!await RunStepAsync(validate, context, cancellationToken)) return;
-                    if (!await RunStepAsync(smokeTest, context, cancellationToken)) return;
-                    if (!await RunStepAsync(preparePublication, context, cancellationToken)) return;
-                }
             }
 
             // ReadyForPublish is a resting state: a validated implementation waits here for a human (or, for an
@@ -148,11 +139,7 @@ public sealed class TaskExecutor(
     private async Task<bool> RunStepAsync(IPipelineStep step, PipelineContext context, CancellationToken cancellationToken,
         bool baseSyncValidation = false)
     {
-        using var activity = FactoryTelemetry.Source.StartActivity(step.GetType().Name);
-        activity?.SetTag("factory.task_id", context.Task.Id);
-        activity?.SetTag("factory.run_id", context.RunId);
-
-        var result = await step.ExecuteAsync(context, cancellationToken);
+        var result = await ExecuteStepAsync(step, context, cancellationToken);
         if (baseSyncValidation && result.Outcome == PipelineOutcome.Failed)
             result = PipelineStepResult.NeedsHuman($"Base branch synchronization completed, but validation failed: {result.Reason}");
         switch (result.Outcome)
@@ -207,6 +194,26 @@ public sealed class TaskExecutor(
                 await notifier.NotifyFailedAsync(context, terminalReason ?? "No reason given.", cancellationToken);
                 return false;
         }
+    }
+
+    private async Task<PipelineStepResult> ValidateReviewFixAsync(PipelineContext context, CancellationToken cancellationToken)
+    {
+        // A committed review fix is validated before the reviewer is asked to inspect the updated branch.
+        foreach (var step in new IPipelineStep[] { collectDiff, validate, smokeTest, preparePublication })
+        {
+            var result = await ExecuteStepAsync(step, context, cancellationToken);
+            if (result.Outcome != PipelineOutcome.Succeeded) return result;
+        }
+        return PipelineStepResult.Ok;
+    }
+
+    private static async Task<PipelineStepResult> ExecuteStepAsync(IPipelineStep step, PipelineContext context,
+        CancellationToken cancellationToken)
+    {
+        using var activity = FactoryTelemetry.Source.StartActivity(step.GetType().Name);
+        activity?.SetTag("factory.task_id", context.Task.Id);
+        activity?.SetTag("factory.run_id", context.RunId);
+        return await step.ExecuteAsync(context, cancellationToken);
     }
 
     private async Task TransitionAsync(PipelineContext context, FactoryTaskStatus next, string? reason, CancellationToken cancellationToken)
