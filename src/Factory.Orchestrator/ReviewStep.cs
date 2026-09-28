@@ -105,7 +105,8 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
             result.Process.StandardOutput, result.Process.StandardError, result.QuotaDetected, result.QuotaResetAt, attempt,
             review?.NeedsHuman == true || review?.Status is "blocked" or "needs-human", null,
             CountsAsImplementationAttempt: false, ProviderSessionId: result.ProviderSessionId, Model: result.Model ?? agent.Model,
-            ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort, SelectionReason: selectionReason, Purpose: "Review", TaskClass: taskClass), cancellationToken);
+            ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort, SelectionReason: selectionReason, Purpose: "Review", TaskClass: taskClass,
+            Provider: result.Provider ?? agent.Provider, TokenUsage: result.TokenUsage), cancellationToken);
         await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent.Provider, result.QuotaDetected, result.Window, result.ResetKind,
             result.QuotaResetAt, result.Process.CompletedAt, result.QuotaDetail), cancellationToken);
 
@@ -170,7 +171,8 @@ public sealed class ReviewStep(ITaskStore tasks, AgentSelector selector, IOption
                 result.Process.StandardOutput, result.Process.StandardError, result.QuotaDetected, result.QuotaResetAt, attempt,
                 result.Result?.NeedsHuman == true || result.Result?.Status is "blocked" or "needs-human", result.Result,
                 CountsAsImplementationAttempt: false, ProviderSessionId: result.ProviderSessionId, Model: result.Model ?? agent.Model,
-                ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort, SelectionReason: selectionReason, Purpose: "Fix", TaskClass: taskClass), cancellationToken);
+                ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort, SelectionReason: selectionReason, Purpose: "Fix", TaskClass: taskClass,
+                Provider: result.Provider ?? agent.Provider, TokenUsage: result.TokenUsage), cancellationToken);
             await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent.Provider, result.QuotaDetected, result.Window, result.ResetKind,
                 result.QuotaResetAt, result.Process.CompletedAt, result.QuotaDetail), cancellationToken);
             await tasks.SetResumableSessionAsync(context.Task.Id, agent.Name, result.ProviderSessionId, cancellationToken);

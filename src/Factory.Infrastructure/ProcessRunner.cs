@@ -85,7 +85,9 @@ public sealed class ProcessRunner(IClock clock) : IProcessRunner
             await stderrTask;
 
             return new ProcessResult(request.FileName, request.Arguments, request.WorkingDirectory, start, clock.UtcNow,
-                process.HasExited ? process.ExitCode : null, Bounded(stdoutBuffer), Bounded(stderrBuffer), timedOut, cancelled);
+                process.HasExited ? process.ExitCode : null,
+                request.CaptureFullStandardOutput ? stdoutBuffer.ToString() : Bounded(stdoutBuffer),
+                Bounded(stderrBuffer), timedOut, cancelled);
         }
         finally
         {
@@ -96,6 +98,9 @@ public sealed class ProcessRunner(IClock clock) : IProcessRunner
 
     private static string Bounded(StringBuilder buffer) =>
         buffer.Length <= PreviewLimit ? buffer.ToString() : buffer.ToString(buffer.Length - PreviewLimit, PreviewLimit);
+
+    internal static string BoundPreview(string output) =>
+        output.Length <= PreviewLimit ? output : output[^PreviewLimit..];
 
     /// <summary>Windows' CreateProcess only ever appends ".exe" to an extension-less command name (never the other
     /// PATHEXT extensions), so a CLI whose Windows entry point is a .cmd/.bat shim — e.g. a node-based tool installed

@@ -77,7 +77,8 @@ public sealed class RunAgentStep(ITaskStore tasks, AgentSelector selector, IOpti
             result.QuotaDetected, result.QuotaResetAt, context.AttemptNumber, result.Result?.NeedsHuman ?? false, result.Result,
             CountsAsImplementationAttempt: !result.QuotaDetected, ProviderSessionId: result.ProviderSessionId,
             Model: result.Model ?? agent.Model, ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort,
-            SelectionReason: selectionReason, Purpose: context.AgentPurpose.ToString(), TaskClass: taskClass), cancellationToken);
+            SelectionReason: selectionReason, Purpose: context.AgentPurpose.ToString(), TaskClass: taskClass,
+            Provider: result.Provider ?? agent.Provider, TokenUsage: result.TokenUsage), cancellationToken);
 
         // Quota status is persisted independently of this task's run: every invocation updates it, whether or not
         // quota was detected, so a status that cleared is reflected immediately for AgentSelector rather than only

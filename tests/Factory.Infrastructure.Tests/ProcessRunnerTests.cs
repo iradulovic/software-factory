@@ -17,6 +17,24 @@ public sealed class ProcessRunnerTests
     }
 
     [Fact]
+    public async Task Full_stdout_capture_is_opt_in_and_can_exceed_the_preview_limit()
+    {
+        var executable = OperatingSystem.IsWindows() ? "powershell" : "sh";
+        var arguments = OperatingSystem.IsWindows()
+            ? new[] { "-NoProfile", "-Command", "[Console]::Write('x' * 70000)" }
+            : new[] { "-c", "head -c 70000 /dev/zero | tr '\\000' x" };
+        var runner = new ProcessRunner(new SystemClock());
+
+        var full = await runner.RunAsync(new ProcessRequest(executable, arguments, ".", CaptureFullStandardOutput: true), CancellationToken.None);
+        var preview = await runner.RunAsync(new ProcessRequest(executable, arguments, "."), CancellationToken.None);
+
+        Assert.Equal(70000, full.StandardOutput.Length);
+        Assert.All(full.StandardOutput, value => Assert.Equal('x', value));
+        Assert.Equal(64 * 1024, preview.StandardOutput.Length);
+        Assert.All(preview.StandardOutput, value => Assert.Equal('x', value));
+    }
+
+    [Fact]
     public async Task An_argument_containing_spaces_reaches_the_process_as_a_single_argument()
     {
         var runner = new ProcessRunner(new SystemClock());

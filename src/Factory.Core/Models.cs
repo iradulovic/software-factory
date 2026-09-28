@@ -258,7 +258,15 @@ public sealed record AgentRunRecord(Guid Id, Guid TaskId, Guid RunId, Guid StepI
     DateTimeOffset? CompletedAt, double? DurationSeconds, int? ExitCode, string Status, string? StandardOutput,
     string? StandardError, bool QuotaDetected, DateTimeOffset? QuotaResetAt, int AttemptNumber, bool NeedsHuman, AgentResult? Result,
     bool CountsAsImplementationAttempt = true, string? ProviderSessionId = null, string? Model = null,
-    string? ReasoningEffort = null, string? SelectionReason = null, string Purpose = "Implement", string? TaskClass = null);
+    string? ReasoningEffort = null, string? SelectionReason = null, string Purpose = "Implement", string? TaskClass = null,
+    string? Provider = null, AgentTokenUsage? TokenUsage = null);
+
+/// <summary>Provider-reported token counts for one CLI invocation. Counts are tokens, not estimated prices.
+/// <see cref="InputTokensIncludesCachedInput"/> describes whether the provider's input count already includes
+/// cache-read tokens; null fields remain unknown rather than being treated as zero. <see cref="Source"/> identifies
+/// the provider output event from which the counts were read.</summary>
+public sealed record AgentTokenUsage(long? InputTokens, long? CachedInputTokens, long? OutputTokens,
+    long? ReasoningTokens, long? CacheWriteInputTokens, bool? InputTokensIncludesCachedInput, string Source);
 
 /// <param name="LogPath">When set, stdout and stderr are streamed to this file as the process runs, interleaved
 /// in arrival order, in addition to the bounded preview <see cref="ProcessResult"/> always returns.</param>
@@ -269,7 +277,8 @@ public sealed record ProcessRequest(
     IReadOnlyDictionary<string, string?>? Environment = null,
     TimeSpan? Timeout = null,
     string? StandardInput = null,
-    string? LogPath = null);
+    string? LogPath = null,
+    bool CaptureFullStandardOutput = false);
 
 public sealed record ProcessResult(
     string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory, DateTimeOffset StartedAt,
@@ -308,7 +317,7 @@ public sealed record AgentRunRequest(Guid TaskId, Guid RunId, Guid StepId, strin
 public sealed record AgentRunResult(ProcessResult Process, AgentResult? Result, string? ValidationError, bool QuotaDetected,
     DateTimeOffset? QuotaResetAt = null, QuotaWindow Window = QuotaWindow.None, QuotaResetKind ResetKind = QuotaResetKind.None,
     string? QuotaDetail = null, string? ProviderSessionId = null, AgentReviewResult? ReviewResult = null,
-    string? Model = null, string? ReasoningEffort = null);
+    string? Model = null, string? ReasoningEffort = null, string? Provider = null, AgentTokenUsage? TokenUsage = null);
 
 public sealed record AgentConversationTurn(string Role, string Content);
 

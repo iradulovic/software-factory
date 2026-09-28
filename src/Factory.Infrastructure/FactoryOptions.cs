@@ -59,11 +59,11 @@ public sealed class AgentProfilesOptions
     public static readonly IReadOnlyList<AgentProfile> DefaultProfiles =
     [
         new AgentProfile("Codex", "codex", [], "stdin", 90, ["quota", "usage limit"], ["--version"], 5, 5,
-            SessionIdPattern: @"session id: (?<sessionId>[0-9a-fA-F-]{36})",
+            SessionIdPattern: @"thread_id.{0,20}(?<sessionId>[0-9a-fA-F-]{36})",
             Provider: "Codex",
             Classes: [
-                new("quick", "gpt-6-luna", "max", ["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--dangerously-bypass-approvals-and-sandbox", "-"]),
-                new("deep", "gpt-6-sol", "medium", ["exec", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"])
+                new("quick", "gpt-6-luna", "max", ["exec", "--json", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "--json", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--dangerously-bypass-approvals-and-sandbox", "-"]),
+                new("deep", "gpt-6-sol", "medium", ["exec", "--json", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"medium\"", "--approve-for-me", "-"], ["exec", "resume", "{SESSION_ID}", "--json", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"medium\"", "--dangerously-bypass-approvals-and-sandbox", "-"])
             ],
             ConversationArguments: ["exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=\"max\"", "--sandbox", "read-only", "-"]) with { AuthenticationArguments = ["login", "status"] }
     ];

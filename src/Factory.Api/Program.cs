@@ -400,11 +400,14 @@ app.MapGet("/api/tasks/{id:guid}", async (Guid id, NpgsqlDataSource db, ITaskSto
         """, new { id }, cancellationToken: ct));
     var steps = await c.QueryAsync(new CommandDefinition("SELECT s.id,s.run_id AS \"runId\",s.step_type AS \"stepType\",s.status,s.started_at AS \"startedAt\",s.completed_at AS \"completedAt\",s.duration_ms AS \"durationMs\",s.attempt,s.error,s.output,(s.log_path IS NOT NULL) AS \"hasLog\",(coalesce(length(s.output),0)>=65536) AS \"outputTruncated\" FROM factory.step s JOIN factory.run r ON r.id=s.run_id WHERE r.task_id=@id ORDER BY s.started_at", new { id }, cancellationToken: ct));
     var agentRunRows = await c.QueryAsync<AgentRunDetailsRow>(new CommandDefinition("""
-        SELECT id,run_id AS "RunId",agent,purpose,model,reasoning_effort AS "ReasoningEffort",selection_reason AS "SelectionReason",task_class AS "TaskClass",
+        SELECT id,run_id AS "RunId",agent,provider,purpose,model,reasoning_effort AS "ReasoningEffort",selection_reason AS "SelectionReason",task_class AS "TaskClass",
           started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
           exit_code AS "ExitCode",status,stdout,stderr,quota_detected AS "QuotaDetected",attempt_number AS "AttemptNumber",needs_human AS "NeedsHuman",
           result_json::text AS "ResultJson",result_summary AS "ResultSummary",tests_run::text AS "TestsRunJson",tests_passed AS "TestsPassed",
-          files_changed::text AS "FilesChangedJson",risks::text AS "RisksJson",human_reason AS "HumanReason"
+          files_changed::text AS "FilesChangedJson",risks::text AS "RisksJson",human_reason AS "HumanReason",
+          input_tokens AS "InputTokens",cached_input_tokens AS "CachedInputTokens",output_tokens AS "OutputTokens",
+          reasoning_tokens AS "ReasoningTokens",cache_write_input_tokens AS "CacheWriteInputTokens",
+          input_tokens_includes_cached_input AS "InputTokensIncludesCachedInput",usage_source AS "UsageSource"
         FROM factory.agent_run WHERE task_id=@id ORDER BY started_at
         """, new { id }, cancellationToken: ct));
     var agentRuns = agentRunRows.Select(AgentRunDetailsMapper.Map);
@@ -882,11 +885,14 @@ app.MapGet("/api/runs/{id:guid}", async (Guid id, NpgsqlDataSource db, Cancellat
     if (run is null) return Results.NotFound();
     var steps = await c.QueryAsync(new CommandDefinition("SELECT id,run_id AS \"runId\",step_type AS \"stepType\",status,started_at AS \"startedAt\",completed_at AS \"completedAt\",duration_ms AS \"durationMs\",attempt,error,output,(log_path IS NOT NULL) AS \"hasLog\",(coalesce(length(output),0)>=65536) AS \"outputTruncated\" FROM factory.step WHERE run_id=@id ORDER BY started_at,id", new { id }, cancellationToken: ct));
     var agentRunRows = await c.QueryAsync<AgentRunDetailsRow>(new CommandDefinition("""
-        SELECT id,run_id AS "RunId",agent,purpose,model,reasoning_effort AS "ReasoningEffort",selection_reason AS "SelectionReason",task_class AS "TaskClass",
+        SELECT id,run_id AS "RunId",agent,provider,purpose,model,reasoning_effort AS "ReasoningEffort",selection_reason AS "SelectionReason",task_class AS "TaskClass",
           started_at AS "StartedAt",completed_at AS "CompletedAt",duration_seconds AS "DurationSeconds",
           exit_code AS "ExitCode",status,stdout,stderr,quota_detected AS "QuotaDetected",attempt_number AS "AttemptNumber",needs_human AS "NeedsHuman",
           result_json::text AS "ResultJson",result_summary AS "ResultSummary",tests_run::text AS "TestsRunJson",tests_passed AS "TestsPassed",
-          files_changed::text AS "FilesChangedJson",risks::text AS "RisksJson",human_reason AS "HumanReason"
+          files_changed::text AS "FilesChangedJson",risks::text AS "RisksJson",human_reason AS "HumanReason",
+          input_tokens AS "InputTokens",cached_input_tokens AS "CachedInputTokens",output_tokens AS "OutputTokens",
+          reasoning_tokens AS "ReasoningTokens",cache_write_input_tokens AS "CacheWriteInputTokens",
+          input_tokens_includes_cached_input AS "InputTokensIncludesCachedInput",usage_source AS "UsageSource"
         FROM factory.agent_run WHERE run_id=@id ORDER BY started_at,id
         """, new { id }, cancellationToken: ct));
     return Results.Ok(new { run, steps, agentRuns = agentRunRows.Select(AgentRunDetailsMapper.Map) });
@@ -1129,6 +1135,7 @@ app.MapGet("/api/metrics/agents", Query("""
       count(*) AS runs,count(*) FILTER(WHERE status='Succeeded') AS successful,avg(duration_seconds) AS "averageDurationSeconds"
     FROM factory.agent_run GROUP BY 1
     """));
+app.MapAgentRunUsageEndpoints();
 
 await app.RunAsync();
 
