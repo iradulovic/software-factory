@@ -30,6 +30,86 @@ public sealed class DatabaseEndpointTests : IClassFixture<RootEndpointTests.Fact
     public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
+    public async Task Agent_usage_endpoints_show_per_run_counts_and_aggregate_unknown_history()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING") ?? new FactoryOptions().ConnectionString;
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var suffix = Guid.NewGuid().ToString("N");
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('api-agent-usage-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/{suffix}.git" });
+        var taskId = Guid.NewGuid();
+        await connection.ExecuteAsync("""
+            INSERT INTO factory.task(id,repository_id,title,status,base_branch)
+            VALUES(@taskId,@repositoryId,'Agent usage API test','Pending','main')
+            """, new { taskId, repositoryId });
+        try
+        {
+            var store = new PostgresTaskStore(Options.Create(new FactoryOptions { ConnectionString = connectionString }), new SystemClock());
+            var runId = await store.StartRunAsync(taskId, "api-agent-usage-test", CancellationToken.None);
+            var usage = new AgentTokenUsage(100, 70, 25, 5, null, true, "codex.exec-json.turn.completed.usage");
+            var knownStepId = await store.StartStepAsync(runId, "AgentImplementation", 1, CancellationToken.None);
+            var knownRunId = Guid.NewGuid();
+            await store.SaveAgentRunAsync(new AgentRunRecord(knownRunId, taskId, runId, knownStepId, "Codex",
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 2, 0, "Succeeded", null, null, false, null, 1, false, null,
+                Model: "gpt-6-luna-usage-test", Purpose: "Implement", TaskClass: "quick", Provider: "Codex", TokenUsage: usage), CancellationToken.None);
+            var unknownStepId = await store.StartStepAsync(runId, "AgentImplementation", 2, CancellationToken.None);
+            var unknownRunId = Guid.NewGuid();
+            await store.SaveAgentRunAsync(new AgentRunRecord(unknownRunId, taskId, runId, unknownStepId, "Codex",
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1, 0, "Succeeded", null, null, false, null, 2, false, null,
+                Model: "gpt-6-luna-usage-test", Purpose: "Implement", TaskClass: "quick", Provider: "Codex"), CancellationToken.None);
+
+            var perRunResponse = await client.GetAsync($"/api/agent-runs/{knownRunId}");
+            Assert.Equal(HttpStatusCode.OK, perRunResponse.StatusCode);
+            using var perRun = JsonDocument.Parse(await perRunResponse.Content.ReadAsStringAsync());
+            Assert.Equal("Codex", perRun.RootElement.GetProperty("provider").GetString());
+            Assert.Equal("Succeeded", perRun.RootElement.GetProperty("outcome").GetString());
+            var perRunUsage = perRun.RootElement.GetProperty("usage");
+            Assert.True(perRunUsage.GetProperty("isKnown").GetBoolean());
+            Assert.Equal("tokens", perRunUsage.GetProperty("tokenUnit").GetString());
+            Assert.Equal(100, perRunUsage.GetProperty("totalInputTokens").GetInt64());
+            Assert.Equal(0.7, perRunUsage.GetProperty("cachedInputShare").GetDouble(), 3);
+            Assert.Equal(25, perRunUsage.GetProperty("outputTokens").GetInt64());
+
+            var unknownResponse = await client.GetAsync($"/api/agent-runs/{unknownRunId}");
+            Assert.Equal(HttpStatusCode.OK, unknownResponse.StatusCode);
+            using var unknown = JsonDocument.Parse(await unknownResponse.Content.ReadAsStringAsync());
+            var unknownUsage = unknown.RootElement.GetProperty("usage");
+            Assert.False(unknownUsage.GetProperty("isKnown").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, unknownUsage.GetProperty("inputTokens").ValueKind);
+            Assert.Equal(JsonValueKind.Null, unknownUsage.GetProperty("cachedInputShare").ValueKind);
+
+            var aggregateResponse = await client.GetAsync("/api/metrics/agent-usage");
+            Assert.Equal(HttpStatusCode.OK, aggregateResponse.StatusCode);
+            using var aggregateDocument = JsonDocument.Parse(await aggregateResponse.Content.ReadAsStringAsync());
+            var aggregate = Assert.Single(aggregateDocument.RootElement.EnumerateArray(), item =>
+                item.GetProperty("provider").GetString() == "Codex"
+                && item.GetProperty("model").GetString() == "gpt-6-luna-usage-test"
+                && item.GetProperty("purpose").GetString() == "Implement"
+                && item.GetProperty("taskClass").GetString() == "quick");
+            Assert.Equal(2, aggregate.GetProperty("runCount").GetInt32());
+            Assert.Equal(1, aggregate.GetProperty("knownUsageRunCount").GetInt32());
+            Assert.Equal(1, aggregate.GetProperty("unknownUsageRunCount").GetInt32());
+            Assert.Equal(100, aggregate.GetProperty("totalInputTokens").GetInt64());
+            Assert.Equal(1, aggregate.GetProperty("inputUsageRunCount").GetInt32());
+            Assert.Equal(0.7, aggregate.GetProperty("cachedInputShare").GetDouble(), 3);
+            Assert.Equal(2, aggregate.GetProperty("successfulRunCount").GetInt32());
+        }
+        finally
+        {
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.agent_run WHERE task_id=@taskId;
+                DELETE FROM factory.step WHERE run_id IN (SELECT id FROM factory.run WHERE task_id=@taskId);
+                DELETE FROM factory.run WHERE task_id=@taskId;
+                DELETE FROM factory.task WHERE id=@taskId;
+                DELETE FROM github.repository WHERE id=@repositoryId;
+                """, new { taskId, repositoryId });
+        }
+    }
+
+    [Fact]
     public async Task Tables_endpoint_lists_factory_and_github_schema_tables()
     {
         var response = await client.GetAsync("/api/database/tables");

@@ -94,6 +94,8 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
             _ => Prompt
         };
         var taskClass = request.TaskClass ?? "quick";
+        var capturesStructuredUsage = profile.EffectiveProvider.Equals("Codex", StringComparison.OrdinalIgnoreCase)
+            || profile.EffectiveProvider.Equals("Claude", StringComparison.OrdinalIgnoreCase);
         var selectedClass = profile.Classes?.FirstOrDefault(c => string.Equals(c.TaskClass, taskClass, StringComparison.OrdinalIgnoreCase));
         if (profile.Classes is not null && selectedClass is null)
             throw new InvalidOperationException($"Agent {profile.Name} has no configuration for coding class {taskClass}.");
@@ -114,19 +116,25 @@ public sealed class CliAgentRunner(AgentProfile profile, IProcessRunner processR
             : normalArguments;
 
         var invocation = profile.PromptDelivery == "argument"
-            ? new ProcessRequest(profile.Executable, [.. arguments, prompt], request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), LogPath: request.LogPath)
-            : new ProcessRequest(profile.Executable, arguments, request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), StandardInput: prompt, LogPath: request.LogPath);
+            ? new ProcessRequest(profile.Executable, [.. arguments, prompt], request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), LogPath: request.LogPath, CaptureFullStandardOutput: capturesStructuredUsage)
+            : new ProcessRequest(profile.Executable, arguments, request.WorkingDirectory, Timeout: TimeSpan.FromMinutes(profile.TimeoutMinutes), StandardInput: prompt, LogPath: request.LogPath, CaptureFullStandardOutput: capturesStructuredUsage);
         var process = await processRunner.RunAsync(invocation, cancellationToken);
+        var tokenUsage = AgentTokenUsageParser.Read(profile.EffectiveProvider, process.StandardOutput);
         var quota = QuotaClassifier.Classify(profile, process, clock.UtcNow);
         var sessionId = ProviderSessionExtractor.TryExtract(profile, process.StandardOutput);
+        // Structured CLI output may be much larger than the ordinary preview. Usage is parsed above, then only
+        // the same bounded preview used before this change is returned for persistence and task detail responses.
+        process = process with { StandardOutput = ProcessRunner.BoundPreview(process.StandardOutput) };
 
         if (reviewing)
         {
             var (reviewResult, reviewError) = await reviewResultReader.ReadAsync(request.WorkingDirectory, cancellationToken);
-            return new AgentRunResult(process, null, reviewError, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail, sessionId, reviewResult, model, effort);
+            return new AgentRunResult(process, null, reviewError, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind,
+                quota.Detail, sessionId, reviewResult, model, effort, profile.EffectiveProvider, tokenUsage);
         }
         var (result, error) = await resultReader.ReadAsync(request.WorkingDirectory, cancellationToken);
-        return new AgentRunResult(process, result, error, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind, quota.Detail, sessionId, Model: model, ReasoningEffort: effort);
+        return new AgentRunResult(process, result, error, quota.Detected, quota.ResetAt, quota.Window, quota.ResetKind,
+            quota.Detail, sessionId, Model: model, ReasoningEffort: effort, Provider: profile.EffectiveProvider, TokenUsage: tokenUsage);
     }
 
     public async Task<AgentConversationResult> ConverseAsync(AgentConversationRequest request, CancellationToken cancellationToken)

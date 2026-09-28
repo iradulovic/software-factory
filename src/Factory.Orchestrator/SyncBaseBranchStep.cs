@@ -150,7 +150,8 @@ public sealed class SyncBaseBranchStep(
             result.Process.StandardOutput, result.Process.StandardError, result.QuotaDetected, result.QuotaResetAt, attempt,
             needsHuman, agentResult, CountsAsImplementationAttempt: false, ProviderSessionId: result.ProviderSessionId,
             Model: result.Model ?? agent.Model, ReasoningEffort: result.ReasoningEffort ?? agent.ReasoningEffort,
-            SelectionReason: selectionReason, Purpose: AgentRunPurpose.BaseBranchConflict.ToString(), TaskClass: taskClass), cancellationToken);
+            SelectionReason: selectionReason, Purpose: AgentRunPurpose.BaseBranchConflict.ToString(), TaskClass: taskClass,
+            Provider: result.Provider ?? agent.Provider, TokenUsage: result.TokenUsage), cancellationToken);
         await tasks.RecordAgentQuotaStatusAsync(new AgentQuotaStatus(agent.Provider, result.QuotaDetected, result.Window,
             result.ResetKind, result.QuotaResetAt, result.Process.CompletedAt, result.QuotaDetail), cancellationToken);
         await tasks.SetResumableSessionAsync(context.Task.Id, agent.Name, result.ProviderSessionId, cancellationToken);

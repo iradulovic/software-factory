@@ -8,6 +8,40 @@ namespace Factory.IntegrationTests;
 
 public sealed class PostgresStoreIntegrationTests
 {
+    [Fact]
+    public async Task Agent_invocation_persists_provider_usage_with_unknown_values_left_null()
+    {
+        var fixture = await LeaseFixture.CreateAsync();
+        if (fixture is null) return;
+        await using (fixture)
+        {
+            var cancellationToken = CancellationToken.None;
+            var runId = await fixture.Tasks.StartRunAsync(fixture.TaskId, "usage-integration-worker", cancellationToken);
+            var stepId = await fixture.Tasks.StartStepAsync(runId, "AgentImplementation", 1, cancellationToken);
+            var usage = new AgentTokenUsage(100, 70, 24, 5, null, true, "codex.exec-json.turn.completed.usage");
+            await fixture.Tasks.SaveAgentRunAsync(new AgentRunRecord(Guid.NewGuid(), fixture.TaskId, runId, stepId, "Codex",
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 2.5, 0, "Succeeded", "bounded preview", "", false, null, 1, false, null,
+                Provider: "Codex", TokenUsage: usage), cancellationToken);
+
+            var row = await fixture.Connection.QuerySingleAsync<PersistedAgentUsageRow>("""
+                SELECT provider AS "Provider",input_tokens AS "InputTokens",cached_input_tokens AS "CachedInputTokens",
+                  output_tokens AS "OutputTokens",reasoning_tokens AS "ReasoningTokens",
+                  cache_write_input_tokens AS "CacheWriteInputTokens",
+                  input_tokens_includes_cached_input AS "InputTokensIncludesCachedInput",usage_source AS "UsageSource"
+                FROM factory.agent_run WHERE task_id=@TaskId
+                """, new { fixture.TaskId });
+
+            Assert.Equal("Codex", row.Provider);
+            Assert.Equal(100, row.InputTokens);
+            Assert.Equal(70, row.CachedInputTokens);
+            Assert.Equal(24, row.OutputTokens);
+            Assert.Equal(5, row.ReasoningTokens);
+            Assert.Null(row.CacheWriteInputTokens);
+            Assert.True(row.InputTokensIncludesCachedInput);
+            Assert.Equal("codex.exec-json.turn.completed.usage", row.UsageSource);
+        }
+    }
+
     [Theory]
     [InlineData("decision", "answer")]
     [InlineData("verification", "passed")]
@@ -2684,6 +2718,18 @@ public sealed class PostgresStoreIntegrationTests
     }
 
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
+
+    private sealed class PersistedAgentUsageRow
+    {
+        public string? Provider { get; init; }
+        public long? InputTokens { get; init; }
+        public long? CachedInputTokens { get; init; }
+        public long? OutputTokens { get; init; }
+        public long? ReasoningTokens { get; init; }
+        public long? CacheWriteInputTokens { get; init; }
+        public bool? InputTokensIncludesCachedInput { get; init; }
+        public string? UsageSource { get; init; }
+    }
 
     private sealed class LeaseFixture : IAsyncDisposable
     {

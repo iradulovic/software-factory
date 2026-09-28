@@ -36,14 +36,29 @@ export const runStepSchema = z.object({
   durationMs:z.number().nullable(),attempt:z.number(),error:z.string().nullable(),output:z.string().nullable(),hasLog:z.boolean(),outputTruncated:z.boolean()
 });
 export type FactoryRunStep = z.infer<typeof runStepSchema>;
+export const agentRunUsageViewSchema=z.object({
+  isKnown:z.boolean(),inputTokens:z.number().nullable(),cachedInputTokens:z.number().nullable(),outputTokens:z.number().nullable(),
+  reasoningTokens:z.number().nullable(),cacheWriteInputTokens:z.number().nullable(),inputTokensIncludesCachedInput:z.boolean().nullable(),
+  totalInputTokens:z.number().nullable(),cachedInputShare:z.number().nullable(),source:z.string().nullable(),tokenUnit:z.string()
+});
+export type AgentRunUsageView=z.infer<typeof agentRunUsageViewSchema>;
 export const runAgentSchema = z.object({
-  id:z.string(),runId:z.string(),agent:z.string(),purpose:z.string(),model:z.string().nullable(),reasoningEffort:z.string().nullable(),
+  id:z.string(),runId:z.string(),agent:z.string(),provider:z.string().nullable(),purpose:z.string(),model:z.string().nullable(),reasoningEffort:z.string().nullable(),
   selectionReason:z.string().nullable(),taskClass:z.string().nullable(),startedAt:z.string(),completedAt:z.string().nullable(),durationSeconds:z.number().nullable(),
   exitCode:z.number().nullable(),status:z.string(),stdout:z.string().nullable(),stderr:z.string().nullable(),quotaDetected:z.boolean(),attemptNumber:z.number(),
-  needsHuman:z.boolean(),resultJson:z.unknown().nullable(),resultSummary:z.string().nullable(),testsRun:z.array(z.string()),testsPassed:z.boolean().nullable(),
+  needsHuman:z.boolean(),usage:agentRunUsageViewSchema,resultJson:z.unknown().nullable(),resultSummary:z.string().nullable(),testsRun:z.array(z.string()),testsPassed:z.boolean().nullable(),
   filesChanged:z.array(z.string()),risks:z.array(z.string()),humanReason:z.string().nullable()
 });
 export const runDetailsSchema = z.object({run:runSchema,steps:z.array(runStepSchema),agentRuns:z.array(runAgentSchema)});
+export const agentUsageAggregateSchema=z.object({
+  provider:z.string(),model:z.string().nullable(),purpose:z.string(),taskClass:z.string().nullable(),
+  runCount:z.number(),knownUsageRunCount:z.number(),unknownUsageRunCount:z.number(),totalInputTokens:z.number().nullable(),inputUsageRunCount:z.number(),
+  totalCachedInputTokens:z.number().nullable(),cachedInputRunCount:z.number(),cachedInputShare:z.number().nullable(),cachedInputShareRunCount:z.number(),
+  totalOutputTokens:z.number().nullable(),outputUsageRunCount:z.number(),totalReasoningTokens:z.number().nullable(),reasoningUsageRunCount:z.number(),
+  totalCacheWriteInputTokens:z.number().nullable(),cacheWriteUsageRunCount:z.number(),totalAgentWallTimeSeconds:z.number().nullable(),averageDurationSeconds:z.number().nullable(),
+  successfulRunCount:z.number(),failedRunCount:z.number(),otherOutcomeRunCount:z.number(),tokenUnit:z.string()
+});
+export type AgentUsageAggregate=z.infer<typeof agentUsageAggregateSchema>;
 export const repositorySchema = z.object({
   id:z.number(),owner:z.string(),name:z.string(),cloneUrl:z.string(),defaultBranch:z.string(),isEnabled:z.boolean(),lastSyncedAt:z.string().nullable(),
   latestPublishedVersion:z.string().nullable().optional(),latestSyncFailure:z.string().nullable(),latestSyncFailureAt:z.string().nullable()

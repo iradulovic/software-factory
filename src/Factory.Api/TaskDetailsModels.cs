@@ -13,6 +13,7 @@ public sealed class AgentRunDetailsRow
     public Guid Id { get; init; }
     public Guid RunId { get; init; }
     public string Agent { get; init; } = "";
+    public string? Provider { get; init; }
     public string Purpose { get; init; } = "Implement";
     public string? Model { get; init; }
     public string? ReasoningEffort { get; init; }
@@ -35,6 +36,13 @@ public sealed class AgentRunDetailsRow
     public string? FilesChangedJson { get; init; }
     public string? RisksJson { get; init; }
     public string? HumanReason { get; init; }
+    public long? InputTokens { get; init; }
+    public long? CachedInputTokens { get; init; }
+    public long? OutputTokens { get; init; }
+    public long? ReasoningTokens { get; init; }
+    public long? CacheWriteInputTokens { get; init; }
+    public bool? InputTokensIncludesCachedInput { get; init; }
+    public string? UsageSource { get; init; }
 }
 
 public sealed record AgentRunDetails(
@@ -42,7 +50,8 @@ public sealed record AgentRunDetails(
     DateTimeOffset StartedAt, DateTimeOffset? CompletedAt, double? DurationSeconds,
     int? ExitCode, string Status, string? Stdout, string? Stderr, bool QuotaDetected, int AttemptNumber, bool NeedsHuman,
     JsonElement? ResultJson, string? ResultSummary, IReadOnlyList<string> TestsRun, bool? TestsPassed,
-    IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, string? HumanReason, string? TaskClass = null);
+    IReadOnlyList<string> FilesChanged, IReadOnlyList<string> Risks, string? HumanReason, string? TaskClass = null,
+    string? Provider = null, AgentRunUsageView? Usage = null);
 
 public static class AgentRunDetailsMapper
 {
@@ -51,7 +60,9 @@ public static class AgentRunDetailsMapper
         row.StartedAt, row.CompletedAt, row.DurationSeconds, row.ExitCode, row.Status,
         row.Stdout, row.Stderr, row.QuotaDetected, row.AttemptNumber, row.NeedsHuman,
         ParseDocument(row.ResultJson), row.ResultSummary, ParseList(row.TestsRunJson), row.TestsPassed,
-        ParseList(row.FilesChangedJson), ParseList(row.RisksJson), row.HumanReason, row.TaskClass);
+        ParseList(row.FilesChangedJson), ParseList(row.RisksJson), row.HumanReason, row.TaskClass, row.Provider,
+        AgentRunUsageMapper.Map(row.InputTokens, row.CachedInputTokens, row.OutputTokens, row.ReasoningTokens,
+            row.CacheWriteInputTokens, row.InputTokensIncludesCachedInput, row.UsageSource));
 
     private static JsonElement? ParseDocument(string? json) =>
         string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<JsonElement>(json);

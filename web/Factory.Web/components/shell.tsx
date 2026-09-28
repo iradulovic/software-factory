@@ -33,7 +33,7 @@ import {
 
 const navigation = [
   ["Overview", "/", CircleGauge], ["Ask", "/operator", MessageCircle], ["Releases", "/releases", Boxes], ["Integration releases", "/integration-releases", GitBranch], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo],
-  ["Runs", "/runs", Activity], ["Repositories", "/repositories", Boxes], ["Digest", "/digest", Newspaper], ["About", "/about", Info],
+  ["Runs", "/runs", Activity], ["Agent usage", "/metrics/agent-usage", Activity], ["Repositories", "/repositories", Boxes], ["Digest", "/digest", Newspaper], ["About", "/about", Info],
   ["Database", "/database", Database]
 ] as const;
 
