@@ -348,6 +348,9 @@ public sealed class PublicationExecutorTests
                 return Task.FromResult(harness.ExistingPullRequest);
             }
 
+            public Task<ReleasePullRequestResult?> FindExistingReleasePullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken) =>
+                Task.FromResult<ReleasePullRequestResult?>(null);
+
             public Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, bool draft, CancellationToken cancellationToken)
             {
                 harness.PullRequestCreateCalled = true;

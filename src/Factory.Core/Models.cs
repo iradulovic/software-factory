@@ -66,13 +66,82 @@ public sealed record RepositoryReleaseVersionState(string VersionFormat, string 
     IReadOnlyList<string> PlannedReleaseNumbers);
 
 public sealed record FactoryReleaseIssue(long GitHubIssueId, int IssueNumber, string Title, string State,
-    bool Eligible, string? TaskStatus, Guid? TaskId = null, string? TaskBaseBranch = null, Guid? TaskReleaseId = null);
+    bool Eligible, string? TaskStatus, Guid? TaskId = null, string? TaskBaseBranch = null, Guid? TaskReleaseId = null,
+    string? CiStatus = null, int? PullRequestNumber = null, string? PullRequestUrl = null);
+
+/// <summary>The durable operator review state for a release's integration-branch-to-target promotion PR.
+/// The frozen head, target, and issue set identify exactly what the operator is reviewing. Later source or base
+/// changes make the state stale and never trigger a merge or branch deletion.</summary>
+public sealed record FactoryReleasePromotion(string Status, int? PullRequestNumber, string? PullRequestUrl,
+    string? HeadCommit, string? TargetCommit, string? FrozenHeadCommit, string? FrozenTargetCommit,
+    string? MembershipHash, string? FrozenMembershipHash, IReadOnlyList<long> MembershipIssueIds,
+    string CiStatus, string MergeabilityStatus, DateTimeOffset? LastCheckedAt,
+    IReadOnlyList<string> RemainingIssues, IReadOnlyList<string> Blockers, IReadOnlyList<string> Conflicts,
+    bool BranchCleanupEligible, string? Error = null);
+
+public sealed record ReleasePromotionEvaluation(string CiStatus, IReadOnlyList<string> RemainingIssues,
+    IReadOnlyList<string> Blockers)
+{
+    public bool Ready => RemainingIssues.Count == 0 && Blockers.Count == 0 && CiStatus == PullRequestCiStatus.Success;
+}
+
+/// <summary>Derives release readiness from synchronized release membership and each issue's latest durable task,
+/// publication, and CI state. GitHub branch refs and final-PR mergeability are added by the API boundary.</summary>
+public static class ReleasePromotionReadiness
+{
+    public static ReleasePromotionEvaluation Evaluate(FactoryRelease release)
+    {
+        var blockers = new List<string>();
+        var remaining = new List<string>();
+        var ciStatuses = new List<string>();
+
+        if (release.Status != FactoryReleaseStatus.Active)
+            blockers.Add($"Release setup is {release.Status}; an active release is required.");
+        if (string.IsNullOrWhiteSpace(release.IntegrationBranch))
+            blockers.Add("The integration branch has not been prepared.");
+        if (string.IsNullOrWhiteSpace(release.TargetBranch))
+            blockers.Add("The target branch is not configured.");
+        if (release.Issues.Count == 0)
+            blockers.Add("No issues are selected for this release.");
+
+        foreach (var issue in release.Issues)
+        {
+            var label = $"#{issue.IssueNumber} · {issue.Title}";
+            if (issue.TaskStatus != FactoryTaskStatus.Completed.ToString())
+                remaining.Add($"{label} ({issue.TaskStatus ?? "no factory task"})");
+
+            if (!string.Equals(issue.State, "OPEN", StringComparison.OrdinalIgnoreCase))
+                blockers.Add($"{label} is {issue.State.ToLowerInvariant()} in GitHub.");
+            if (issue.TaskStatus is not null &&
+                (issue.TaskReleaseId != release.Id || issue.TaskBaseBranch != release.IntegrationBranch))
+                blockers.Add($"{label} is not assigned to this release's integration branch.");
+
+            if (issue.TaskStatus == FactoryTaskStatus.Completed.ToString())
+            {
+                if (issue.PullRequestNumber is null || string.IsNullOrWhiteSpace(issue.PullRequestUrl))
+                    blockers.Add($"{label} has no recorded task pull request.");
+                var ci = issue.CiStatus ?? PullRequestCiStatus.Unavailable;
+                ciStatuses.Add(ci);
+                if (ci != PullRequestCiStatus.Success)
+                    blockers.Add($"{label} pull request CI is {ci.ToLowerInvariant()}.");
+            }
+        }
+
+        var aggregateCi = ciStatuses.Count == 0 ? PullRequestCiStatus.Pending
+            : ciStatuses.Contains(PullRequestCiStatus.Failure) ? PullRequestCiStatus.Failure
+            : ciStatuses.Contains(PullRequestCiStatus.Unavailable) ? PullRequestCiStatus.Unavailable
+            : ciStatuses.Contains(PullRequestCiStatus.NoChecks) ? PullRequestCiStatus.NoChecks
+            : ciStatuses.Contains(PullRequestCiStatus.Pending) ? PullRequestCiStatus.Pending
+            : PullRequestCiStatus.Success;
+        return new ReleasePromotionEvaluation(aggregateCi, remaining, blockers.Distinct().ToArray());
+    }
+}
 
 public sealed record FactoryRelease(Guid Id, long RepositoryId, string Repository, string Name, string ReleaseNumber,
     string? IntegrationBranch, string TargetBranch, string? TargetCommit, FactoryReleaseStatus Status,
     DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, DateTimeOffset? BranchCreatedAt,
     long? GitHubMilestoneId, string? LastError, IReadOnlyList<FactoryReleaseIssue> Issues,
-    string? VersionReason = null, string? VersionOverrideReason = null);
+    string? VersionReason = null, string? VersionOverrideReason = null, FactoryReleasePromotion? Promotion = null);
 
 public sealed record FactoryReleaseDraft(long RepositoryId, string Name, string ReleaseNumber, string TargetBranch,
     long? GitHubMilestoneId = null, string? VersionReason = null, string? VersionOverrideReason = null);
@@ -437,13 +506,16 @@ public sealed record PublicationRequest(Guid Id, Guid TaskId, string BranchName,
 
 public sealed record PushResult(bool Succeeded, string? Error);
 public sealed record PullRequestResult(bool Succeeded, int? Number, string? Url, string? Error);
+public sealed record ReleasePullRequestResult(bool Succeeded, int? Number, string? Url, string? BaseBranch,
+    string? State, string? Body, string? Error);
 public sealed record GitHubWriteResult(bool Succeeded, string? Error);
 public sealed record ReleaseIssueWriteResult(bool Succeeded, int? IssueNumber, string? Url, string? Error);
 public sealed record PullRequestState(bool Merged, bool Closed);
 
 /// <summary>GitHub's merge calculation for the exact PR head and base observed in one read.</summary>
 public sealed record PullRequestMergeResult(bool Succeeded, bool Open, string? HeadSha, string? BaseSha,
-    string? Mergeable, string? MergeStateStatus, string? Error, string? HeadBranch = null, bool IsDraft = false)
+    string? Mergeable, string? MergeStateStatus, string? Error, string? HeadBranch = null, bool IsDraft = false,
+    string? BaseBranch = null)
 {
     public string Status => !Succeeded ? "Unavailable" : !Open ? "Closed"
         : Mergeable == "CONFLICTING" || MergeStateStatus == "DIRTY" ? "Conflict"
@@ -451,6 +523,9 @@ public sealed record PullRequestMergeResult(bool Succeeded, bool Open, string? H
         : MergeStateStatus is "BLOCKED" or "BEHIND" or "DRAFT" or "UNSTABLE" ? "Requirements"
         : Mergeable == "MERGEABLE" ? "Mergeable" : "Pending";
 }
+
+/// <summary>One exact GitHub branch ref lookup. A missing branch and a failed read are both explicit errors;</summary>
+public sealed record GitHubBranchCommitResult(bool Succeeded, string? Commit, string? Error);
 
 public sealed record TaskMergeStatus(Guid TaskId, string Status, string? HeadSha, string? BaseSha,
     string? Mergeable, string? MergeStateStatus, string? Error, DateTimeOffset SyncedAt);

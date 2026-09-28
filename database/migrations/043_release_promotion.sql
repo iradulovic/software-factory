@@ -1,0 +1,26 @@
+CREATE TABLE factory.release_promotion (
+    release_id uuid PRIMARY KEY REFERENCES factory.release(id) ON DELETE CASCADE,
+    status text NOT NULL CHECK (status IN ('NotChecked','Blocked','Ready','Stale','PullRequestOpen','Merged','Closed')),
+    pull_request_number integer,
+    pull_request_url text,
+    head_commit text,
+    target_commit text,
+    approved_head_commit text,
+    approved_target_commit text,
+    membership_hash text,
+    approved_membership_hash text,
+    membership_issue_ids bigint[],
+    ci_status text NOT NULL DEFAULT 'NotChecked',
+    mergeability_status text NOT NULL DEFAULT 'NotChecked',
+    last_checked_at timestamptz,
+    remaining_issues jsonb NOT NULL DEFAULT '[]'::jsonb,
+    blockers jsonb NOT NULL DEFAULT '[]'::jsonb,
+    conflicts jsonb NOT NULL DEFAULT '[]'::jsonb,
+    branch_cleanup_eligible boolean NOT NULL DEFAULT false,
+    error text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK ((approved_head_commit IS NULL AND approved_target_commit IS NULL AND approved_membership_hash IS NULL AND membership_issue_ids IS NULL)
+        OR (approved_head_commit IS NOT NULL AND approved_target_commit IS NOT NULL AND approved_membership_hash IS NOT NULL AND membership_issue_ids IS NOT NULL)),
+    CHECK ((pull_request_number IS NULL) = (pull_request_url IS NULL))
+);

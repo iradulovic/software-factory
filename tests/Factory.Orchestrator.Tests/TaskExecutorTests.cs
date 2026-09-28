@@ -1087,6 +1087,7 @@ public sealed class TaskExecutorTests
             public Task<bool> RetryAsync(Guid id, string? integrationBranch, string? targetBranch, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<bool> CancelAsync(Guid id, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<bool> ArchiveAsync(Guid id, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task SavePromotionAsync(Guid id, FactoryReleasePromotion promotion, CancellationToken cancellationToken) => throw new NotSupportedException();
         }
 
         private sealed class FakeRepositoryCache : IRepositoryCache
@@ -1217,6 +1218,7 @@ public sealed class TaskExecutorTests
         {
             public Task<PushResult> PushAsync(string worktreePath, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<PullRequestResult?> FindExistingPullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<ReleasePullRequestResult?> FindExistingReleasePullRequestAsync(string owner, string name, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<PullRequestResult> CreatePullRequestAsync(string owner, string name, string branchName, string baseBranch, string title, string body, bool draft, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<MergeResult> MergePullRequestAsync(string owner, string name, int number, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<MergeResult> MergePullRequestAtHeadAsync(string owner, string name, int number, string expectedHeadCommit, CancellationToken cancellationToken) => throw new NotSupportedException();
