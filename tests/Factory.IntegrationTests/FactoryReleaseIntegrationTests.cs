@@ -94,5 +94,70 @@ public sealed class FactoryReleaseIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Retry_clears_target_commit_when_target_changes_and_preserves_it_when_target_is_unchanged()
+    {
+        var options = Options.Create(new FactoryOptions
+        {
+            ConnectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING") ?? new FactoryOptions().ConnectionString
+        });
+        await new DatabaseMigrator(options).MigrateAsync(CancellationToken.None);
+        await using var connection = new NpgsqlConnection(options.Value.ConnectionString);
+        await connection.OpenAsync();
+
+        var suffix = Guid.NewGuid().ToString("N");
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('factory-release-retry-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/factory-release-retry-tests/{suffix}.git" });
+        var releaseStore = new PostgresFactoryReleaseStore(options);
+        Guid? releaseId = null;
+
+        try
+        {
+            var created = await releaseStore.CreateAsync(
+                new FactoryReleaseDraft(repositoryId, "Release retry", "2.4", "main"), [], CancellationToken.None);
+            Assert.NotNull(created);
+            releaseId = created.Id;
+
+            var originalCommit = new string('a', 40);
+            await connection.ExecuteAsync("UPDATE factory.release SET status='Creating' WHERE id=@releaseId", new { releaseId });
+            Assert.True(await releaseStore.RecordBranchPlanAsync(releaseId.Value, "release/original", originalCommit,
+                CancellationToken.None));
+            await releaseStore.RecordBranchFailureAsync(releaseId.Value, "uncertain push", CancellationToken.None);
+
+            Assert.True(await releaseStore.RetryAsync(releaseId.Value, "release/new-target", "develop",
+                CancellationToken.None));
+            var changedTarget = await releaseStore.GetAsync(releaseId.Value, CancellationToken.None);
+            Assert.Equal(FactoryReleaseStatus.Pending, changedTarget?.Status);
+            Assert.Equal("release/new-target", changedTarget?.IntegrationBranch);
+            Assert.Equal("develop", changedTarget?.TargetBranch);
+            Assert.Null(changedTarget?.TargetCommit);
+
+            var resolvedCommit = new string('b', 40);
+            await connection.ExecuteAsync("UPDATE factory.release SET status='Creating' WHERE id=@releaseId", new { releaseId });
+            Assert.True(await releaseStore.RecordBranchPlanAsync(releaseId.Value, "release/new-target", resolvedCommit,
+                CancellationToken.None));
+            await releaseStore.RecordBranchFailureAsync(releaseId.Value, "uncertain push", CancellationToken.None);
+
+            Assert.True(await releaseStore.RetryAsync(releaseId.Value, "release/same-target-retry", "develop",
+                CancellationToken.None));
+            var sameTarget = await releaseStore.GetAsync(releaseId.Value, CancellationToken.None);
+            Assert.Equal("release/same-target-retry", sameTarget?.IntegrationBranch);
+            Assert.Equal("develop", sameTarget?.TargetBranch);
+            Assert.Equal(resolvedCommit, sameTarget?.TargetCommit);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("""
+                DELETE FROM factory.release_issue WHERE release_id IN (
+                  SELECT id FROM factory.release WHERE repository_id=@repositoryId
+                );
+                DELETE FROM factory.release WHERE repository_id=@repositoryId;
+                DELETE FROM github.repository WHERE id=@repositoryId;
+                """, new { repositoryId });
+        }
+    }
+
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
 }
