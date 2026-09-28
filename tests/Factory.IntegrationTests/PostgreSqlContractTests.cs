@@ -62,6 +62,22 @@ public sealed class PostgreSqlContractTests
         Assert.Contains("CHECK (status IN ('Proposed','Approved','Active','Promoted'))", sql);
     }
 
+    [Fact]
+    public void Factory_release_migration_persists_branch_state_and_issue_membership_separately_from_tasks()
+    {
+        var sql = File.ReadAllText(Path.Combine(Root(), "database", "migrations", "039_factory_releases.sql"));
+        Assert.Contains("CREATE TABLE factory.release", sql);
+        Assert.Contains("UNIQUE(repository_id, release_number)", sql);
+        Assert.Contains("CREATE TABLE factory.release_issue", sql);
+        Assert.Contains("REFERENCES github.issue(id)", sql);
+        Assert.Contains("github_milestone_id bigint", sql);
+        Assert.Contains("branch_created_at timestamptz", sql);
+        var taskStore = File.ReadAllText(Path.Combine(Root(), "src", "Factory.Infrastructure", "Database.cs"));
+        Assert.Contains("'Pending','Creating','Failed'", taskStore);
+        Assert.Contains("rel.status='Active'", taskStore);
+        Assert.Contains("factory:ready", taskStore);
+    }
+
     private static string ReadMigration() => File.ReadAllText(Path.Combine(Root(), "database", "migrations", "001_initial.sql"));
     private static string Root()
     {

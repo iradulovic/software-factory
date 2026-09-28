@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { Activity, Bell, Boxes, CircleAlert, CircleGauge, Database, ListTodo, LoaderCircle, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
+import { Activity, Bell, Boxes, CircleAlert, CircleGauge, Database, GitBranch, ListTodo, LoaderCircle, MessageCircle, MessageSquareText, Moon, Newspaper, Pause, Play, Sun } from "lucide-react";
 import { agentStatusSchema, getJson, globalPauseScope, githubStatusSchema, pauseStateSchema, postPause, workerSchema, type AgentStatus, type Worker } from "@/lib/api";
 import { GitHubStatusPill } from "@/components/github-status-pill";
 import { AssistantDrawer } from "@/components/assistant-drawer";
@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/sidebar";
 
 const navigation = [
-  ["Overview", "/", CircleGauge], ["Ask", "/operator", MessageCircle], ["Releases", "/releases", Boxes], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo],
+  ["Overview", "/", CircleGauge], ["Ask", "/operator", MessageCircle], ["Releases", "/releases", Boxes], ["Integration releases", "/integration-releases", GitBranch], ["Issues", "/issues", MessageSquareText], ["Tasks", "/tasks", ListTodo],
   ["Runs", "/runs", Activity], ["Repositories", "/repositories", Boxes], ["Digest", "/digest", Newspaper],
   ["Database", "/database", Database]
 ] as const;

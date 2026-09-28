@@ -8,6 +8,23 @@ public enum FactoryTaskStatus
     ReadyForPublish, Published, WaitingForQuota, NeedsHuman, Completed, Rejected, Failed, Stopping, Cancelled
 }
 
+public enum FactoryReleaseStatus { Pending, Creating, Active, Failed, Cancelled, Archived }
+
+public sealed record FactoryReleaseIssue(long GitHubIssueId, int IssueNumber, string Title, string State,
+    bool Eligible, string? TaskStatus);
+
+public sealed record FactoryRelease(Guid Id, long RepositoryId, string Repository, string Name, string ReleaseNumber,
+    string? IntegrationBranch, string TargetBranch, string? TargetCommit, FactoryReleaseStatus Status,
+    DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, DateTimeOffset? BranchCreatedAt,
+    long? GitHubMilestoneId, string? LastError, IReadOnlyList<FactoryReleaseIssue> Issues);
+
+public sealed record FactoryReleaseDraft(long RepositoryId, string Name, string ReleaseNumber, string TargetBranch,
+    long? GitHubMilestoneId = null);
+
+/// <summary>The small queue record claimed by the orchestrator when it creates a release integration branch.</summary>
+public sealed record FactoryReleaseWorkItem(Guid Id, long RepositoryId, string ReleaseNumber, string Name,
+    string TargetBranch, string? IntegrationBranch, string? TargetCommit);
+
 public enum TaskCancellationOutcome { Stopping, Cancelled, NotCancellable }
 
 public enum ExecutionStatus { Pending, Running, Succeeded, Failed, Cancelled }

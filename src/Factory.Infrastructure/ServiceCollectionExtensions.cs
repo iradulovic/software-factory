@@ -59,6 +59,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDeploymentProvider, SupabaseDeploymentProvider>();
         services.AddSingleton<IDeploymentStore, PostgresDeploymentStore>();
         services.AddSingleton<IDeploymentProvisioner, DeploymentProvisioner>();
+        services.AddSingleton<IFactoryReleaseStore, PostgresFactoryReleaseStore>();
         services.AddSingleton<ITaskContextWriter, TaskContextWriter>();
         services.AddSingleton<IGitHubClient, GhCliClient>();
         services.AddSingleton<IGitHubPublisher, GhCliPublisher>();
