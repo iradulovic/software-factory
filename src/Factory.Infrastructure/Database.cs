@@ -74,11 +74,12 @@ internal sealed class TaskRow
     public string? AgentRoutingError { get; init; }
     public string? TaskClass { get; init; }
     public Guid? PostImplementationRequestId { get; init; }
+    public Guid? ReleaseId { get; init; }
 
     public FactoryTask ToModel() => new(Id, RepositoryId, GitHubIssueId, IssueNumber, Title, Description, TaskType, Priority,
         Enum.Parse<FactoryTaskStatus>(Status), PreferredAgent, BaseBranch, BranchName, WorktreePath, ClaimedBy, Offset(ClaimedAt), Offset(LeaseUntil),
         Offset(CreatedAt), Offset(StartedAt), Offset(CompletedAt), Offset(FailedAt), FailureReason, ResumableSessionId, ResumableSessionAgent,
-        PreferredAgentReason, AgentRoutingError, TaskClass, PostImplementationRequestId);
+        PreferredAgentReason, AgentRoutingError, TaskClass, PostImplementationRequestId, ReleaseId);
 
     private static DateTimeOffset Offset(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     private static DateTimeOffset? Offset(DateTime? value) => value is null ? null : Offset(value.Value);
@@ -147,6 +148,16 @@ public sealed partial class PostgresTaskStore(IOptions<FactoryOptions> options, 
               FROM candidate c WHERE c.recovered AND r.task_id=c.id AND r.status='Running'
             ), claimed AS (
               UPDATE factory.task t SET status='Claimed',claimed_by=@workerId,claimed_at=now(),lease_until=now()+@lease,
+                release_id=COALESCE(t.release_id,(
+                  SELECT rel.id FROM factory.release_issue ri JOIN factory.release rel ON rel.id=ri.release_id
+                  WHERE ri.github_issue_id=t.github_issue_id AND rel.repository_id=t.repository_id
+                    AND rel.status='Active' AND rel.integration_branch IS NOT NULL
+                  ORDER BY rel.created_at DESC LIMIT 1)),
+                base_branch=CASE WHEN t.release_id IS NULL THEN COALESCE((
+                  SELECT rel.integration_branch FROM factory.release_issue ri JOIN factory.release rel ON rel.id=ri.release_id
+                  WHERE ri.github_issue_id=t.github_issue_id AND rel.repository_id=t.repository_id
+                    AND rel.status='Active' AND rel.integration_branch IS NOT NULL
+                  ORDER BY rel.created_at DESC LIMIT 1),t.base_branch) ELSE t.base_branch END,
                 started_at=COALESCE(started_at,now()),failure_reason=NULL,current_agent=NULL,current_agent_reason=NULL
               FROM candidate c WHERE t.id=c.id
               RETURNING t.id,
@@ -172,7 +183,8 @@ public sealed partial class PostgresTaskStore(IOptions<FactoryOptions> options, 
                 t.failed_at AS "FailedAt",
                 t.failure_reason AS "FailureReason",
                 t.resumable_session_id AS "ResumableSessionId",
-                t.resumable_session_agent AS "ResumableSessionAgent"
+                t.resumable_session_agent AS "ResumableSessionAgent",
+                t.release_id AS "ReleaseId"
             ), logged AS (
               INSERT INTO factory.task_event(task_id,from_status,to_status,reason,actor)
               SELECT c.id,c.old_status,'Claimed',
@@ -204,7 +216,8 @@ public sealed partial class PostgresTaskStore(IOptions<FactoryOptions> options, 
               claimed."FailedAt",
               claimed."FailureReason",
               claimed."ResumableSessionId",
-              claimed."ResumableSessionAgent"
+              claimed."ResumableSessionAgent",
+              claimed."ReleaseId"
             FROM claimed;
             """;
         var executingStatuses = TaskStateMachine.ExecutingStatuses.Select(s => s.ToString()).ToList();
@@ -322,13 +335,18 @@ public sealed partial class PostgresTaskStore(IOptions<FactoryOptions> options, 
         var route = AgentIssueRouter.Resolve(issue.Labels);
         const string sql = """
             INSERT INTO factory.task(id,repository_id,github_issue_id,title,description,status,preferred_agent,
-              preferred_agent_reason,agent_routing_error,task_class,base_branch)
-            VALUES(@id,@repositoryId,@issueId,@title,@body,'Pending',@preferredAgent,@preferredAgentReason,@agentRoutingError,@taskClass,
-              COALESCE((SELECT rel.integration_branch FROM factory.release_issue ri
-                JOIN factory.release rel ON rel.id=ri.release_id
-                WHERE ri.github_issue_id=@issueId AND rel.status='Active'
-                  AND rel.integration_branch IS NOT NULL
-                ORDER BY rel.created_at DESC LIMIT 1),@baseBranch))
+              preferred_agent_reason,agent_routing_error,task_class,base_branch,release_id)
+            SELECT @id,@repositoryId,@issueId,@title,@body,'Pending',@preferredAgent,@preferredAgentReason,
+              @agentRoutingError,@taskClass,COALESCE(active_release.integration_branch,@baseBranch),active_release.id
+            FROM (SELECT 1) seed
+            LEFT JOIN LATERAL (
+              SELECT rel.id,rel.integration_branch
+              FROM factory.release_issue ri
+              JOIN factory.release rel ON rel.id=ri.release_id
+              WHERE ri.github_issue_id=@issueId AND rel.repository_id=@repositoryId
+                AND rel.status='Active' AND rel.integration_branch IS NOT NULL
+              ORDER BY rel.created_at DESC LIMIT 1
+            ) active_release ON true
             ON CONFLICT DO NOTHING;
             """;
         await using var connection = Connection();

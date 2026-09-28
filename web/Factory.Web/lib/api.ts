@@ -5,7 +5,8 @@ export const taskSchema = z.object({
   agent: z.string(), createdAt: z.string(), startedAt: z.string().nullable(), completedAt: z.string().nullable(),
   durationSeconds: z.number(), result: z.string().nullable(), branchName: z.string().nullable().optional(), worktreePath: z.string().nullable().optional(), failureReason: z.string().nullable().optional(),
   priority: z.number(), reviewMinutes: z.number().nullable().optional(), requireHumanMerge: z.boolean(),
-  agentModel: z.string().nullable(), agentReasoningEffort: z.string().nullable(), agentSelectionReason: z.string().nullable(), agentRoutingError: z.string().nullable(), taskClass: z.string().nullable()
+  agentModel: z.string().nullable(), agentReasoningEffort: z.string().nullable(), agentSelectionReason: z.string().nullable(), agentRoutingError: z.string().nullable(), taskClass: z.string().nullable(),
+  baseBranch:z.string(),releaseId:z.string().nullable(),releaseName:z.string().nullable(),releaseNumber:z.string().nullable()
 });
 export type FactoryTask = z.infer<typeof taskSchema>;
 export const currentExecutionSchema = z.object({
@@ -145,7 +146,8 @@ export type ReleasePlan = z.infer<typeof releasePlanSchema>;
 
 export const factoryReleaseIssueSchema = z.object({
   githubIssueId: z.number(), issueNumber: z.number(), title: z.string(), state: z.string(),
-  eligible: z.boolean(), taskStatus: z.string().nullable()
+  eligible: z.boolean(), taskStatus: z.string().nullable(), taskId:z.string().nullable(),
+  taskBaseBranch:z.string().nullable(),taskReleaseId:z.string().nullable()
 });
 export const factoryReleaseSchema = z.object({
   id: z.string(), repositoryId: z.number(), repository: z.string(), name: z.string(), releaseNumber: z.string(),

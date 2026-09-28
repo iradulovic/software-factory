@@ -10,7 +10,7 @@ public static class TaskStateMachine
             // silently released to run anyway — it needs an explicit operator decision instead.
             [FactoryTaskStatus.Pending] = [FactoryTaskStatus.Claimed, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Claimed] = [FactoryTaskStatus.Preparing, FactoryTaskStatus.Pending, FactoryTaskStatus.Failed, FactoryTaskStatus.Stopping, FactoryTaskStatus.Cancelled],
-            [FactoryTaskStatus.Preparing] = [FactoryTaskStatus.Planning, FactoryTaskStatus.Implementing, FactoryTaskStatus.Failed, FactoryTaskStatus.Stopping, FactoryTaskStatus.Cancelled],
+            [FactoryTaskStatus.Preparing] = [FactoryTaskStatus.Planning, FactoryTaskStatus.Implementing, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed, FactoryTaskStatus.Stopping, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Planning] = [FactoryTaskStatus.Implementing, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed, FactoryTaskStatus.Stopping, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Implementing] = [FactoryTaskStatus.Validating, FactoryTaskStatus.WaitingForQuota, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed, FactoryTaskStatus.Stopping, FactoryTaskStatus.Cancelled],
             [FactoryTaskStatus.Validating] = [FactoryTaskStatus.Reviewing, FactoryTaskStatus.ReadyForPublish, FactoryTaskStatus.NeedsHuman, FactoryTaskStatus.Failed, FactoryTaskStatus.Stopping, FactoryTaskStatus.Cancelled],

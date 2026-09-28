@@ -19,15 +19,15 @@ public sealed class FactoryReleaseIntegrationTests
         await using var connection = new NpgsqlConnection(options.Value.ConnectionString);
         await connection.OpenAsync();
         await connection.ExecuteAsync("""
+            DELETE FROM factory.task WHERE repository_id IN (
+              SELECT id FROM github.repository WHERE owner='factory-release-tests'
+            );
             DELETE FROM factory.release_issue WHERE release_id IN (
               SELECT r.id FROM factory.release r JOIN github.repository gr ON gr.id=r.repository_id
               WHERE gr.owner='factory-release-tests'
             );
             DELETE FROM factory.release r USING github.repository gr
               WHERE gr.id=r.repository_id AND gr.owner='factory-release-tests';
-            DELETE FROM factory.task WHERE repository_id IN (
-              SELECT id FROM github.repository WHERE owner='factory-release-tests'
-            );
             DELETE FROM github.issue WHERE repository_id IN (
               SELECT id FROM github.repository WHERE owner='factory-release-tests'
             );
@@ -71,25 +71,92 @@ public sealed class FactoryReleaseIntegrationTests
             var taskId = await connection.ExecuteScalarAsync<Guid>("SELECT id FROM factory.task WHERE github_issue_id=@issueId", new { issueId });
             var originalBaseBranch = await connection.ExecuteScalarAsync<string>("SELECT base_branch FROM factory.task WHERE id=@taskId", new { taskId });
             Assert.Equal("main", originalBaseBranch);
+            Assert.Null(await connection.ExecuteScalarAsync<Guid?>("SELECT release_id FROM factory.task WHERE id=@taskId", new { taskId }));
 
             await connection.ExecuteAsync("UPDATE factory.release SET status='Creating' WHERE id=@releaseId", new { releaseId });
             Assert.True(await restarted.CompleteBranchCreationAsync(releaseId, "release/2-4-account-settings",
                 new string('a', 40), CancellationToken.None));
             Assert.Equal("release/2-4-account-settings", await connection.ExecuteScalarAsync<string>(
                 "SELECT base_branch FROM factory.task WHERE id=@taskId", new { taskId }));
+            Assert.Equal(releaseId, await connection.ExecuteScalarAsync<Guid?>("SELECT release_id FROM factory.task WHERE id=@taskId", new { taskId }));
+            await connection.ExecuteAsync("UPDATE factory.task SET priority=2147483647 WHERE id=@taskId", new { taskId });
+            var claimed = await taskStore.ClaimNextAsync("release-test-worker", TimeSpan.FromMinutes(2), CancellationToken.None);
+            Assert.Equal(taskId, claimed?.Id);
+            Assert.Equal(releaseId, claimed?.ReleaseId);
+            Assert.Equal("release/2-4-account-settings", claimed?.BaseBranch);
             var afterRestart = await new PostgresFactoryReleaseStore(options).GetAsync(releaseId, CancellationToken.None);
             Assert.Equal(FactoryReleaseStatus.Active, afterRestart?.Status);
             Assert.Equal(new string('a', 40), afterRestart?.TargetCommit);
+            Assert.Equal(taskId, afterRestart?.Issues.Single().TaskId);
+            Assert.Equal(releaseId, afterRestart?.Issues.Single().TaskReleaseId);
+            Assert.Equal("release/2-4-account-settings", afterRestart?.Issues.Single().TaskBaseBranch);
             Assert.Equal(FactoryReleaseStatus.Active, (await restarted.ListAsync(CancellationToken.None))
                 .Single(release => release.Id == releaseId).Status);
         }
         finally
         {
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE github_issue_id=@issueId", new { issueId });
             await connection.ExecuteAsync("DELETE FROM factory.release_issue WHERE github_issue_id=@issueId", new { issueId });
             if (releaseId != Guid.Empty) await connection.ExecuteAsync("DELETE FROM factory.release WHERE id=@releaseId", new { releaseId });
             await connection.ExecuteAsync("DELETE FROM factory.release WHERE repository_id=@repositoryId", new { repositoryId });
-            await connection.ExecuteAsync("DELETE FROM factory.task WHERE github_issue_id=@issueId", new { issueId });
             await connection.ExecuteAsync("DELETE FROM github.issue WHERE id=@issueId", new { issueId });
+            await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
+        }
+    }
+
+    [Fact]
+    public async Task Release_assignment_updates_a_never_started_pending_task_but_rejects_a_dispatched_task()
+    {
+        var options = Options.Create(new FactoryOptions
+        {
+            ConnectionString = Environment.GetEnvironmentVariable("FACTORY_TEST_CONNECTION_STRING") ?? new FactoryOptions().ConnectionString
+        });
+        await new DatabaseMigrator(options).MigrateAsync(CancellationToken.None);
+        await using var connection = new NpgsqlConnection(options.Value.ConnectionString);
+        await connection.OpenAsync();
+        var suffix = Guid.NewGuid().ToString("N");
+        var repositoryId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.repository(owner,name,clone_url,default_branch,is_enabled)
+            VALUES('factory-release-late-assignment-tests',@suffix,@cloneUrl,'main',true) RETURNING id
+            """, new { suffix, cloneUrl = $"https://example.invalid/factory-release-late-assignment-tests/{suffix}.git" });
+        var pendingIssueId = await InsertReadyIssueAsync(connection, repositoryId, 1, "Pending issue");
+        var dispatchedIssueId = await InsertReadyIssueAsync(connection, repositoryId, 2, "Started issue");
+        var taskStore = new PostgresTaskStore(options, new TestClock());
+        Guid? releaseId = null;
+        try
+        {
+            var pendingIssue = Issue(pendingIssueId, repositoryId, 1, "Pending issue");
+            var dispatchedIssue = Issue(dispatchedIssueId, repositoryId, 2, "Started issue");
+            Assert.True(await taskStore.CreateForIssueIfEligibleAsync(pendingIssue, "main", CancellationToken.None));
+            Assert.True(await taskStore.CreateForIssueIfEligibleAsync(dispatchedIssue, "main", CancellationToken.None));
+            var dispatchedTaskId = await connection.ExecuteScalarAsync<Guid>("SELECT id FROM factory.task WHERE github_issue_id=@issueId", new { issueId = dispatchedIssueId });
+            await connection.ExecuteAsync("UPDATE factory.task SET status='Implementing',started_at=now() WHERE id=@dispatchedTaskId", new { dispatchedTaskId });
+
+            var releases = new PostgresFactoryReleaseStore(options);
+            var created = await releases.CreateAsync(new FactoryReleaseDraft(repositoryId, "Late assignment", "3.0", "main"),
+                [pendingIssueId], CancellationToken.None);
+            Assert.NotNull(created);
+            releaseId = created.Id;
+            await connection.ExecuteAsync("UPDATE factory.release SET status='Creating' WHERE id=@releaseId", new { releaseId });
+            Assert.True(await releases.CompleteBranchCreationAsync(releaseId.Value, "release/3-0-late-assignment",
+                new string('c', 40), CancellationToken.None));
+            var pendingTask = await connection.QuerySingleAsync<LateTaskRow>("""
+                SELECT base_branch AS "BaseBranch",release_id AS "ReleaseId" FROM factory.task WHERE github_issue_id=@issueId
+                """, new { issueId = pendingIssueId });
+            Assert.Equal("release/3-0-late-assignment", pendingTask.BaseBranch);
+            Assert.Equal(releaseId, pendingTask.ReleaseId);
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => releases.CreateAsync(
+                new FactoryReleaseDraft(repositoryId, "Conflicting assignment", "3.1", "main"),
+                [dispatchedIssueId], CancellationToken.None));
+            Assert.Contains("started or previously dispatched", exception.Message);
+        }
+        finally
+        {
+            await connection.ExecuteAsync("DELETE FROM factory.task WHERE repository_id=@repositoryId", new { repositoryId });
+            await connection.ExecuteAsync("DELETE FROM factory.release_issue WHERE release_id IN (SELECT id FROM factory.release WHERE repository_id=@repositoryId)", new { repositoryId });
+            await connection.ExecuteAsync("DELETE FROM factory.release WHERE repository_id=@repositoryId", new { repositoryId });
+            await connection.ExecuteAsync("DELETE FROM github.issue WHERE repository_id=@repositoryId", new { repositoryId });
             await connection.ExecuteAsync("DELETE FROM github.repository WHERE id=@repositoryId", new { repositoryId });
         }
     }
@@ -160,4 +227,19 @@ public sealed class FactoryReleaseIntegrationTests
     }
 
     private sealed class TestClock : IClock { public DateTimeOffset UtcNow => DateTimeOffset.UtcNow; }
+    private sealed class LateTaskRow { public string BaseBranch { get; init; } = ""; public Guid? ReleaseId { get; init; } }
+
+    private static async Task<long> InsertReadyIssueAsync(NpgsqlConnection connection, long repositoryId, int issueNumber, string title)
+    {
+        var issueId = await connection.ExecuteScalarAsync<long>("""
+            INSERT INTO github.issue(repository_id,github_issue_id,issue_number,title,body,state,author,created_at,updated_at)
+            VALUES(@repositoryId,@issueNumber,@issueNumber,@title,'','OPEN','operator',now(),now()) RETURNING id
+            """, new { repositoryId, issueNumber, title });
+        await connection.ExecuteAsync("INSERT INTO github.issue_label(issue_id,name) VALUES(@issueId,'factory:ready')", new { issueId });
+        return issueId;
+    }
+
+    private static GitHubIssue Issue(long issueId, long repositoryId, int issueNumber, string title) =>
+        new(issueId, repositoryId, issueNumber, issueNumber, title, "", "OPEN", "operator", DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow, ["factory:ready"], []);
 }

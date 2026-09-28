@@ -8,6 +8,7 @@ builder.Services.AddFactoryTelemetry(builder.Configuration, "Factory.Orchestrato
 builder.Services.AddFactoryInfrastructure(builder.Configuration);
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<PrepareRepositoryStep>();
+builder.Services.AddSingleton<ValidateReleaseBaseBranchStep>();
 builder.Services.AddSingleton<CreateWorktreeStep>();
 builder.Services.AddSingleton<WriteContextStep>();
 builder.Services.AddSingleton<AgentSelector>();

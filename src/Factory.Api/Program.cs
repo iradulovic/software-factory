@@ -31,8 +31,10 @@ const string TaskListSql = $"""
       CASE WHEN t.current_agent IS NULL THEN (SELECT ar.model FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1) END AS "agentModel",
       CASE WHEN t.current_agent IS NULL THEN (SELECT ar.reasoning_effort FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1) END AS "agentReasoningEffort",
       COALESCE(t.current_agent_reason,(SELECT ar.selection_reason FROM factory.agent_run ar WHERE ar.task_id=t.id AND ar.purpose='Implement' ORDER BY ar.started_at DESC LIMIT 1),t.preferred_agent_reason) AS "agentSelectionReason",
-      t.agent_routing_error AS "agentRoutingError", t.task_class AS "taskClass", t.base_branch AS "baseBranch"
+      t.agent_routing_error AS "agentRoutingError", t.task_class AS "taskClass", t.base_branch AS "baseBranch",
+      t.release_id AS "releaseId",fr.name AS "releaseName",fr.release_number AS "releaseNumber"
     FROM factory.task t JOIN github.repository gr ON gr.id=t.repository_id LEFT JOIN github.issue i ON i.id=t.github_issue_id
+    LEFT JOIN factory.release fr ON fr.id=t.release_id
     """;
 
 static TaskResponse AddConfiguredAgentMetadata(TaskResponse task, IEnumerable<IAgentRunner> agents)

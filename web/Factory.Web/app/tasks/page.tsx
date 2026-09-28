@@ -21,6 +21,7 @@ function AgentCell({task}:{task:FactoryTask}) {
 const columns = [
   column.accessor("title",{header:"Task",cell:i=><Link className="font-medium hover:text-emerald-400" href={`/tasks/${i.row.original.id}`}>{i.getValue()}</Link>}),
   column.accessor("repository",{header:"Repository"}), column.accessor("issueNumber",{header:"Issue",cell:i=>i.getValue()?`#${i.getValue()}`:"—"}),
+  column.display({id:"pullRequestBase",header:"PR base",cell:({row})=><div className="min-w-36"><p className="font-mono text-xs">{row.original.baseBranch}</p>{row.original.releaseId&&<Link className="text-xs text-emerald-700 hover:underline dark:text-emerald-300" href={`/integration-releases/${row.original.releaseId}`}>{row.original.releaseName} · {row.original.releaseNumber}</Link>}</div>}),
   column.accessor("status",{header:"Status",cell:i=><Badge value={i.getValue()}/>}), column.accessor("agent",{header:"Agent",cell:i=><AgentCell task={i.row.original}/>}),
   column.accessor("requireHumanMerge",{header:"Merge policy",cell:i=><MergePolicyBadge requireHumanMerge={i.getValue()}/>}),
   column.accessor("priority",{header:"Priority",cell:i=>i.getValue()?<span className="tabular-nums">{i.getValue()}</span>:<span className="text-muted-foreground/60">—</span>}),

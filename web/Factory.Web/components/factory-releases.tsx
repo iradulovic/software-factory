@@ -171,6 +171,7 @@ export function FactoryReleasesView() {
               <Badge variant="outline" className={statusTone(release.status)}>{release.status}</Badge>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{release.repository} · {release.issues.length} associated issue{release.issues.length === 1 ? "" : "s"}</p>
+            <p className="mt-1 text-xs text-muted-foreground">PR destination: <span className="font-mono text-foreground">{release.integrationBranch ?? "Pending branch setup"}</span></p>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">{progress(release)}</p>
           </Link>)}
         </div>
@@ -239,14 +240,17 @@ export function FactoryReleaseDetails({ id }: { id: string }) {
     </section>
 
     <section className="rounded-xl border border-[var(--border)] bg-card p-4">
-      <div className="flex items-center justify-between gap-2"><h2 className="text-base font-semibold">Associated issues</h2><span className="text-xs text-muted-foreground">{release.issues.length}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-base font-semibold">Associated issues</h2><p className="mt-1 text-xs text-muted-foreground">Pull request destination: <span className="font-mono text-foreground">{release.integrationBranch??"Integration branch pending"}</span></p></div><span className="text-xs text-muted-foreground">{release.issues.length}</span></div>
       {release.issues.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No issues are associated with this release.</p> :
         <div className="mt-3 divide-y divide-[var(--border)]">
           {release.issues.map(issue => <div key={issue.githubIssueId} className="flex flex-wrap items-center justify-between gap-3 py-3">
             <Link href={`/issues/${issue.githubIssueId}`} className="min-w-0 text-sm font-medium hover:underline">#{issue.issueNumber} · {issue.title}</Link>
-            <div className="flex items-center gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
               <Badge variant="outline" className={issue.eligible ? statusTone("Active") : ""}>{issue.eligible ? "factory:ready" : "not ready"}</Badge>
-              {issue.taskStatus ? <span className="text-muted-foreground">Task: {issue.taskStatus}</span> : <span className="text-muted-foreground">No factory task</span>}
+              {issue.taskId ? <Link className="text-muted-foreground hover:underline" href={`/tasks/${issue.taskId}`}>Task: {issue.taskStatus}</Link> : <span className="text-muted-foreground">No factory task</span>}
+              <span className="text-muted-foreground">PR base: {issue.taskId
+                ? `${issue.taskBaseBranch ?? "Unknown"}${issue.taskReleaseId === release.id ? "" : " (task is not assigned to this release)"}`
+                : release.integrationBranch ?? "Pending"}</span>
             </div>
           </div>)}
         </div>}
