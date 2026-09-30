@@ -4,6 +4,16 @@ A local, observable development orchestrator that turns labeled GitHub issues in
 
 Work enters the factory only through GitHub issues labeled `factory:ready`; PostgreSQL stores the resulting factory task state. [`TASKS.md`](TASKS.md) is an archived historical record and is no longer ingested or updated.
 
+## Screenshots
+
+**Overview — a task in progress.** Codex is implementing issue [#221](https://github.com/iradulovic/software-factory/issues/221) in its own worktree; the system events timeline and a live tail of the agent's process output update as it runs.
+
+![Overview page showing a running Codex implementation attempt, its system events timeline, and a live process output tail](docs/screenshots/overview.webp)
+
+**Task Details — the second-agent review and fix loop.** Claude independently reviewed Codex's implementation, scored it 2/5, and flagged a high-severity finding that blocked publication (`FixRequired`). Codex then addressed it in the same pull request (`Agent Review Fix`), and a second Claude review scored the result 4/5 with only advisory findings remaining.
+
+![Task Details page showing Claude's review of Codex's work, a 2/5 score with a high-severity finding, the resulting fix step, and a second review scoring 4/5](docs/screenshots/review-fix-loop.webp)
+
 ## What works
 
 The bootstrap vertical slice imports open factory:ready issues, runs the configured CLI agent in an isolated Git worktree, independently validates the result, and records task/run state in PostgreSQL and the dashboard. Publication and merge are separate decisions: publish is manual by default (or can be requested automatically), while requireHumanMerge defaults to true when omitted. A false requireHumanMerge value lets the orchestrator merge the pull request after GitHub CI succeeds, unless the issue has a HUMAN REVIEW marker, which always requires a human merge. The factory writes issue comments and factory:* state labels, pushes its task branch, opens its pull request, and never deploys.
