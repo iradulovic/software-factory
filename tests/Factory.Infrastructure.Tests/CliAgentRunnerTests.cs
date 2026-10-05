@@ -219,6 +219,31 @@ public sealed class CliAgentRunnerTests
         Assert.False(agent.AllowAutomaticFallback);
     }
 
+    [Theory]
+    [InlineData("quick")]
+    [InlineData("deep")]
+    public async Task Grok_appends_the_headless_prompt_without_overriding_the_CLI_default_model(string taskClass)
+    {
+        var runner = new RecordingRunner(new ProcessResult("grok", [], ".", Now, Now, 0, "done", "", false, false));
+        var profile = new AgentProfile("Grok", "grok",
+            ["--no-auto-update", "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "plain", "-p"],
+            "argument", 90, [], ["--version"], 10, 5, Provider: "Grok");
+        var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
+
+        var result = await agent.RunAsync(new AgentRunRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), ".", 1,
+            TaskClass: taskClass), CancellationToken.None);
+
+        Assert.Equal(profile.Arguments, runner.Request!.Arguments.Take(profile.Arguments.Count));
+        Assert.Equal("-p", runner.Request.Arguments[^2]);
+        Assert.Contains("Implement the task described in .factory/task.md", runner.Request.Arguments[^1]);
+        Assert.Null(runner.Request.StandardInput);
+        Assert.Equal(TimeSpan.FromMinutes(90), runner.Request.Timeout);
+        Assert.Equal("Grok", result.Provider);
+        Assert.Null(result.Model);
+        Assert.Null(result.ReasoningEffort);
+        Assert.Null(result.TokenUsage);
+    }
+
     [Fact]
     public async Task No_resume_requested_uses_the_normal_arguments_even_when_the_profile_supports_resume()
     {

@@ -12,6 +12,8 @@ Assert $rejected 'Unknown package ID was accepted.'
 
 $original = (Get-Command Invoke-SetupProbe).ScriptBlock
 try {
+    $script:grokProbeAuthenticated = $true
+    $script:grokProbeErrorStream = $false
     function Invoke-SetupProbe([string]$Executable, [string[]]$Arguments) {
         switch ($Executable) {
             'dotnet' { return [pscustomobject]@{ ok=$true; output='9.0.1 [path]' } }
@@ -40,5 +42,27 @@ try {
 
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $profiles = @(Get-AgentProfiles $root)
-Assert ($profiles.Count -eq 3) 'Configured profiles were not read.'
+Assert ($profiles.Count -eq 4) 'Configured profiles were not read.'
+
+$original = (Get-Command Invoke-SetupProbe).ScriptBlock
+try {
+    function Invoke-SetupProbe([string]$Executable, [string[]]$Arguments) {
+        Assert ($Executable -eq 'grok') 'Grok readiness must use the configured executable.'
+        Assert (($Arguments -join ' ') -in @('--version', 'models')) 'Grok readiness must not invoke a model or login flow.'
+        if ($Arguments[0] -eq '--version') { return [pscustomobject]@{ ok=$true; output='grok 1.0.46'; errorOutput='' } }
+        $message = if ($script:grokProbeAuthenticated) { 'You are logged in with grok.com.' } else { 'You are not authenticated.' }
+        return [pscustomobject]@{ ok=$true; output=$(if ($script:grokProbeErrorStream) { '' } else { $message }); errorOutput=$(if ($script:grokProbeErrorStream) { $message } else { '' }) }
+    }
+    $grok = Test-AgentProfile ($profiles | Where-Object { $_.Name -eq 'Grok' })
+    Assert ($grok.State -eq 'ready' -and $grok.Detail -match 'auth check passed') 'Grok must pass version and authentication probes.'
+    $script:grokProbeAuthenticated = $false
+    foreach ($errorStream in @($false, $true)) {
+        $script:grokProbeErrorStream = $errorStream
+        $grok = Test-AgentProfile ($profiles | Where-Object { $_.Name -eq 'Grok' })
+        Assert ($grok.State -eq 'operator') 'Signed-out Grok must fail readiness even with exit 0 on either stream.'
+        Assert ($grok.Detail -notmatch 'You are not authenticated') 'Provider auth output must not be included in setup results.'
+    }
+} finally {
+    Set-Item Function:Invoke-SetupProbe $original
+}
 Write-Host 'setup tests passed'

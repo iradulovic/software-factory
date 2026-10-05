@@ -33,6 +33,39 @@ public sealed class CodexIssueRouterTests
 
 public sealed class AgentIssueRouterTests
 {
+    [Theory]
+    [InlineData("factory:agent=grok", null, "quick")]
+    [InlineData("FACTORY:AGENT=GROK", "coding:quick", "quick")]
+    [InlineData("factory:agent=grok", "coding:deep", "deep")]
+    public void Grok_uses_the_requested_provider_neutral_class(string label, string? classLabel, string expectedClass)
+    {
+        var route = AgentIssueRouter.Resolve(classLabel is null ? [label] : [label, classLabel]);
+        Assert.Equal("Grok", route.PreferredAgent);
+        Assert.Equal(expectedClass, route.TaskClass);
+        Assert.Contains(AgentIssueRouter.GrokLabel, route.Reason);
+        Assert.Null(route.Error);
+    }
+
+    [Theory]
+    [InlineData("codex:sol")]
+    [InlineData("codex:luna")]
+    [InlineData("factory:agent=pi")]
+    public void Grok_cannot_be_combined_with_another_provider_label(string otherLabel)
+    {
+        var route = AgentIssueRouter.Resolve([AgentIssueRouter.GrokLabel, otherLabel]);
+        Assert.Null(route.PreferredAgent);
+        Assert.NotNull(route.Error);
+        Assert.Contains("Conflicting agent routing labels", route.Error);
+    }
+
+    [Fact]
+    public void Grok_does_not_bypass_conflicting_class_validation()
+    {
+        var route = AgentIssueRouter.Resolve([AgentIssueRouter.GrokLabel, CodexIssueRouter.DeepLabel, CodexIssueRouter.QuickLabel]);
+        Assert.Null(route.PreferredAgent);
+        Assert.Contains("mutually exclusive", route.Error);
+    }
+
     [Fact]
     public void Pi_can_receive_a_provider_neutral_class()
     {
