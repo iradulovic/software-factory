@@ -17,6 +17,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'setup.lib.ps1')
+. (Join-Path $PSScriptRoot 'cli-paths.ps1')
+Add-GrokBinToPath
 
 if ($Repository -and $Repository -notmatch '^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$') {
     throw 'Repository must be OWNER/NAME using letters, numbers, periods, underscores, or hyphens.'
@@ -161,7 +163,7 @@ try {
     } elseif ($readyAgents -eq 0) {
         Write-Host 'Install and sign in to at least one configured agent before starting services.'
     } else {
-        Write-Host "`nSign in in this non-admin user session: gh auth login -h github.com; codex login; claude login; pi auth check --model moonshotai/kimi-k2.6 --json (if Pi is used)."
+        Write-Host "`nSign in in this non-admin user session: gh auth login -h github.com; codex login; claude login; pi auth check --model moonshotai/kimi-k2.6 --json (if Pi is used); grok login (if Grok is used)."
         if ((Read-Host 'Have you completed the required sign-ins and started the container daemon? [y/N]') -eq 'y') {
             $runtime = Get-ContainerReadiness -RepoRoot $repoRoot
             if ($runtime.State -ne 'ready') { throw $runtime.Action }

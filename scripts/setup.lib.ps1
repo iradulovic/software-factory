@@ -119,6 +119,7 @@ function Test-AgentProfile($Profile) {
             'Codex' { @('login', 'status') }
             'Claude' { @('auth', 'status') }
             'Pi' { @('auth', 'check', '--model', 'moonshotai/kimi-k2.6', '--json') }
+            'Grok' { @('models') }
             default { @() }
         }
         if ($authArgs.Count -eq 0) { return [pscustomobject]@{ State='ready'; Detail="$($Profile.Executable) responds; verify sign-in in its own CLI session."; Action='' } }
@@ -130,6 +131,7 @@ function Test-AgentProfile($Profile) {
         'Codex' { 'Install the Codex CLI, then run codex login in your own terminal.' }
         'Claude' { 'Install Claude Code from its official guide, then run claude login in your own terminal.' }
         'Pi' { 'Install Pi using its official guide, then run pi auth check --model moonshotai/kimi-k2.6 --json.' }
+        'Grok' { 'Install Grok Build from https://x.ai/cli, then run grok login in your own terminal.' }
         default { "Install the configured $($Profile.Executable) executable and sign in as the service user." }
     }
     return [pscustomobject]@{ State='operator'; Detail="$($Profile.Executable) is missing or does not respond."; Action=$hint }

@@ -111,6 +111,23 @@ public sealed class AgentSelectorTests
         Assert.Null(await selector.SelectAsync("Codex", CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData("quick")]
+    [InlineData("deep")]
+    public async Task Grok_can_be_preferred_or_used_as_fallback_and_obeys_its_provider_pause(string taskClass)
+    {
+        var store = new FakeTaskStore();
+        var grok = new StubAgent("Grok");
+        var selector = new AgentSelector([new StubAgent("Codex"), new StubAgent("Claude"), grok], store);
+
+        Assert.Same(grok, await selector.SelectAsync("Grok", CancellationToken.None, taskClass));
+        store.PausedAgents.Add("Codex");
+        store.AgentsAtQuota.Add("Claude");
+        Assert.Same(grok, await selector.SelectAsync("Codex", CancellationToken.None, taskClass));
+        store.PausedAgents.Add("Grok");
+        Assert.Null(await selector.SelectAsync("Grok", CancellationToken.None, taskClass));
+    }
+
     [Fact]
     public async Task No_preference_uses_configured_order()
     {

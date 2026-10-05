@@ -153,6 +153,8 @@ function Add-NpmGlobalPrefixToPath {
 }
 
 Add-NpmGlobalPrefixToPath
+. (Join-Path $PSScriptRoot 'cli-paths.ps1')
+Add-GrokBinToPath
 
 # ---------------------------------------------------------------------------------------------
 # CLI availability and authentication - checked here, proactively and visibly, rather than only
@@ -181,6 +183,7 @@ Test-Cli -Name 'gh' -CheckArgs @('auth', 'status') -Hint 'Run "gh auth login".' 
 Test-Cli -Name 'codex' -CheckArgs @('--version') -Hint 'Run "codex login".' | Out-Null
 Test-Cli -Name 'claude' -CheckArgs @('--version') -Hint 'Run "claude login" (or sign in on first use).' | Out-Null
 Test-Cli -Name 'pi' -CheckArgs @('--version') -Hint 'Install with "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" and sign in for the configured model.' | Out-Null
+Test-Cli -Name 'grok' -CheckArgs @('models') -Hint 'Install Grok Build from https://x.ai/cli and run "grok login".' | Out-Null
 Test-Cli -Name 'docker' -CheckArgs @('version', '--format', '{{.Server.Version}}') -Hint 'Start Docker Desktop.' | Out-Null
 
 function Get-ApiHealth {

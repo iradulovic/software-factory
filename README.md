@@ -34,6 +34,7 @@ On Windows, start with `./scripts/setup.ps1` from a fresh clone. The terminal wi
 - [Codex CLI](https://developers.openai.com/codex/cli/) (the default configured agent profile; any other CLI coding agent can be added through configuration, see below)
 - Claude Code CLI (the configured alternate provider)
 - [Pi CLI](https://pi.dev/docs/latest/quickstart) (configured as a third agent profile; install with `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`)
+- [Grok Build CLI](https://x.ai/cli) (configured as a fourth agent profile, using its locally configured default model)
 
 Authenticate the local tools once as the Windows user who will run the factory:
 
@@ -41,6 +42,7 @@ Authenticate the local tools once as the Windows user who will run the factory:
 - Run codex login.
 - Run claude login.
 - Sign in to the provider used by Pi's pinned `moonshotai/kimi-k2.6` model, then verify readiness with `pi auth check --model moonshotai/kimi-k2.6 --json`.
+- Sign in with `grok login`, configure the default model in Grok Build, and verify readiness with `grok models`.
 
 The factory uses the authenticated local GitHub and agent CLIs; it does not store their credentials in the repository or database. The GitHub CLI account acts with its existing permissions, which may be broader than this one repository.
 
@@ -64,7 +66,7 @@ Registration is automatic rather than an edit to `GitHub:Repositories`: the sync
 
 ## Repository and agent configuration
 
-Each profile declares a non-mutating `AuthenticationArguments` probe (`codex login status`, `claude auth status`, or Pi's `pi auth check ... --no-refresh`). The factory caches the pre-flight briefly, skips unauthenticated providers with structured logs, and never handles credentials or starts a login flow itself.
+Each profile declares a non-mutating `AuthenticationArguments` probe (`codex login status`, `claude auth status`, Pi's `pi auth check ... --no-refresh`, or Grok's `grok models`). The factory caches the pre-flight briefly, skips unauthenticated providers with structured logs, and never handles credentials or starts a login flow itself.
 Every CLI provider is configured under `Agents:Profiles`. Codex is one provider and one operational agent. Its `Classes` map chooses invocation arguments, model ID, and reasoning effort immediately before each run:
 
 | Coding class | Issue label | Codex model | Effort |
@@ -86,7 +88,9 @@ Coding invocations request structured usage output from Codex (`exec --json`) an
 
 A task's shown agent reflects the provider actually invoking it, then its last implementation provider, then its preference. The header and Overview each show one Codex status. Codex's pause, quota, busy state, and invocation counts aggregate the new `Codex` rows and historical `Codex-Luna`/`Codex-Sol` rows. `Verified` means this provider has at least one successful CLI invocation; it does not certify any particular model. A task or run with no recorded invocation model displays “Not recorded” rather than borrowing today's quick model. Historical invocation names and missing model data stay visible in run details. Process success is separate from task validation.
 
-Pi's quota response has not yet been observed in the factory's service environment. Its profile intentionally has no guessed quota signatures or reset pattern, so configure those only after capturing representative Pi output; until then, a quota error follows the normal failed-invocation path instead of being mislabeled as a quota event.
+Grok is explicitly selected with `factory:agent=grok` alongside `factory:ready`, and can also serve as an automatic fallback after Codex and Claude. Its profile runs `grok --no-auto-update --permission-mode auto --sandbox workspace-write --output-format plain -p <prompt>` through the shared process runner. Auto mode checks tool calls before approving them; operations requiring interactive approval can still fail in headless mode. No model or effort flags are supplied, so both quick and deep coding classes use the default configured in the local Grok CLI. Invocation model/effort and token usage stay unknown rather than being inferred from today's CLI defaults. The factory uses the existing Grok login and checks readiness with `grok models`; it never starts a login flow. `scripts/start.ps1` and `scripts/setup.ps1` add `GROK_HOME/bin` (default `~/.grok/bin`) to the process PATH when present, including terminals opened before installation. Grok session resume is disabled by default.
+
+Pi's and Grok's quota responses have not yet been observed in the factory's service environment. Their profiles intentionally have no guessed quota signatures or reset pattern, so configure those only after capturing representative output; until then, a quota error follows the normal failed-invocation path instead of being mislabeled as a quota event.
 
 The navbar's global dispatch control, and a Pause/Resume control on each agent row in the agent status table, let the operator reserve capacity for interactive use. A global pause (`POST /api/control/pause`, with no reason body) stops the orchestrator from claiming any new task — a task already claimed and executing always finishes — while a per-agent pause (`POST /api/agents/{agent}/pause`) excludes just that agent from selection, exactly like being at quota, so `AgentSelector` falls back to another configured agent instead. Neither ever touches publication: pushing and opening a pull request for already-validated work consumes no agent's subscription, so `PublicationWorker` runs regardless of pause state, and the dispatch control explains that explicitly. Pause state is durable (`factory.dispatch_pause`, survives a restart) and never bypasses quota: resuming a paused agent only makes a `WaitingForQuota` task eligible again if that agent is also not currently at quota. Pause is a distinct action from cancellation — pausing never stops or cancels work already in progress, only new dispatch.
 
@@ -244,7 +248,7 @@ The single documented entry point (SF-615) starts everything — PostgreSQL, Syn
 ./scripts/start.ps1
 ```
 
-Before starting, the script checks GitHub CLI authentication, verifies that the gh, Codex, Claude Code, and Docker commands are available, and confirms Docker can reach its server. It then starts PostgreSQL and the local services, writes per-service stdout/stderr logs under logs/, checks Factory.Api health against the database, and reports worker heartbeat freshness from GET /api/workers.
+Before starting, the script checks GitHub CLI authentication, verifies that the gh, Codex, Claude Code, Pi, Grok Build, and Docker commands are available, checks Grok readiness with `grok models`, and confirms Docker can reach its server. It then starts PostgreSQL and the local services, writes per-service stdout/stderr logs under logs/, checks Factory.Api health against the database, and reports worker heartbeat freshness from GET /api/workers.
 
 Every service (Sync, Orchestrator, Api, and the dashboard) runs from a **dedicated Git worktree** at `.worktrees/services` (gitignored), not from the repository root you have checked out interactively (SF-716). On every run, `start.ps1` fetches `origin/main` and hard-resets that worktree to it (creating it first if missing), then starts every service from there. This means switching the branch checked out in your own working copy — to review a PR, work on a different task, or just look around — can never change what the *running* services actually execute; only a fresh `git push` to `main` does, and only takes effect on the next `start.ps1` run. `Factory:RootDirectory`/`Factory:LogsDirectory` (both configured as relative paths) resolve inside that dedicated worktree, so state is never silently split across each project's own subdirectory or across whichever branch happened to be checked out - this does mean `factory-data/` now lives under `.worktrees/services/factory-data`, a new location the first time this runs after upgrading; it's safe to delete any prior `factory-data/` left at the repository root or inside a project's own subdirectory from a manual `dotnet run`, since it only ever held reconstructible Git repository caches and task worktrees, never the database (PostgreSQL, unaffected by any of this, remains the durable source of truth for task history). PostgreSQL is started the same way, from the dedicated worktree's `docker-compose.yml`, with the Compose project name pinned explicitly to your checkout's directory name so it always resolves to the same container and data volume regardless of which worktree provided the compose file. `-StatusOnly` reports the dedicated worktree's current pinned commit (and, for reference only, what branch your own interactive checkout happens to be on) without touching either.
 

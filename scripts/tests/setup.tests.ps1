@@ -40,5 +40,18 @@ try {
 
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $profiles = @(Get-AgentProfiles $root)
-Assert ($profiles.Count -eq 3) 'Configured profiles were not read.'
+Assert ($profiles.Count -eq 4) 'Configured profiles were not read.'
+
+$original = (Get-Command Invoke-SetupProbe).ScriptBlock
+try {
+    function Invoke-SetupProbe([string]$Executable, [string[]]$Arguments) {
+        Assert ($Executable -eq 'grok') 'Grok readiness must use the configured executable.'
+        Assert (($Arguments -join ' ') -in @('--version', 'models')) 'Grok readiness must not invoke a model or login flow.'
+        return [pscustomobject]@{ ok=$true; output='ready' }
+    }
+    $grok = Test-AgentProfile ($profiles | Where-Object { $_.Name -eq 'Grok' })
+    Assert ($grok.State -eq 'ready' -and $grok.Detail -match 'auth check passed') 'Grok must pass version and authentication probes.'
+} finally {
+    Set-Item Function:Invoke-SetupProbe $original
+}
 Write-Host 'setup tests passed'
