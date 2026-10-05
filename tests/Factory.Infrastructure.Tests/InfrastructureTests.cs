@@ -110,6 +110,32 @@ public sealed class InfrastructureTests
         Assert.Contains("re-authenticate", availability.Error);
     }
 
+    [Theory]
+    [InlineData("You are not authenticated.\nDefault model: grok-4.6", "", false)]
+    [InlineData("Default model: grok-4.6", "You are not authenticated.", false)]
+    [InlineData("YOU ARE NOT AUTHENTICATED.", "", false)]
+    [InlineData("You are logged in with grok.com.\nDefault model: grok-4.7", "", true)]
+    [InlineData("Using XAI_API_KEY.\nDefault model: grok-4.7", "", true)]
+    public async Task Grok_zero_exit_authentication_probe_checks_failure_messages_in_both_streams(
+        string output, string errorOutput, bool expectedAvailable)
+    {
+        var authentication = Successful(output) with { StandardError = errorOutput };
+        var runner = new SequenceResultRunner(Successful("grok 1.0.46"), authentication);
+        var profile = DefaultProfile with
+        {
+            Name = "Grok", Executable = "grok", AuthenticationArguments = ["models"],
+            AuthenticationFailureSignatures = ["", " ", "You are not authenticated."]
+        };
+
+        var availability = await new CliAgentAvailabilityChecker(profile, runner).CheckAsync(CancellationToken.None);
+
+        Assert.Equal(expectedAvailable, availability.Available);
+        Assert.Equal("grok 1.0.46", availability.Version);
+        Assert.Equal(["models"], runner.Requests[1].Arguments);
+        if (!expectedAvailable) Assert.Equal("Authentication check failed; re-authenticate the Grok CLI.", availability.Error);
+        else Assert.Null(availability.Error);
+    }
+
     [Fact]
     public async Task Availability_checker_reports_authentication_timeout_distinctly()
     {

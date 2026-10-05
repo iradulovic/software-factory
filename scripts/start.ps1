@@ -154,6 +154,7 @@ function Add-NpmGlobalPrefixToPath {
 
 Add-NpmGlobalPrefixToPath
 . (Join-Path $PSScriptRoot 'cli-paths.ps1')
+. (Join-Path $PSScriptRoot 'cli-auth.ps1')
 Add-GrokBinToPath
 
 # ---------------------------------------------------------------------------------------------
@@ -164,12 +165,15 @@ Add-GrokBinToPath
 # rather than crashing), it just gets called out clearly up front instead of silently.
 # ---------------------------------------------------------------------------------------------
 function Test-Cli {
-    param([string]$Name, [string[]]$CheckArgs, [string]$Hint)
+    param([string]$Name, [string[]]$CheckArgs, [string]$Hint, [string[]]$FailureSignatures)
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if (-not $cmd) { Write-FailLine "$Name not found on PATH. $Hint"; return $false }
     try {
-        $null = & $Name @CheckArgs 2>&1
-        if ($LASTEXITCODE -eq 0) { Write-Ok "$Name is installed and responding"; return $true }
+        $checkOutput = & $Name @CheckArgs 2>&1 | Out-String
+        if (Test-AuthenticationProbe -Succeeded ($LASTEXITCODE -eq 0) -StandardOutput $checkOutput -FailureSignatures $FailureSignatures) {
+            Write-Ok "$Name is installed and responding"; return $true
+        }
+        if ($LASTEXITCODE -eq 0) { Write-WarnLine "$Name reported an authentication failure. $Hint"; return $false }
         Write-WarnLine "$Name is installed but '$Name $($CheckArgs -join ' ')' exited $LASTEXITCODE - it may need authentication ($Hint)."
         return $false
     } catch {
@@ -183,7 +187,8 @@ Test-Cli -Name 'gh' -CheckArgs @('auth', 'status') -Hint 'Run "gh auth login".' 
 Test-Cli -Name 'codex' -CheckArgs @('--version') -Hint 'Run "codex login".' | Out-Null
 Test-Cli -Name 'claude' -CheckArgs @('--version') -Hint 'Run "claude login" (or sign in on first use).' | Out-Null
 Test-Cli -Name 'pi' -CheckArgs @('--version') -Hint 'Install with "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" and sign in for the configured model.' | Out-Null
-Test-Cli -Name 'grok' -CheckArgs @('models') -Hint 'Install Grok Build from https://x.ai/cli and run "grok login".' | Out-Null
+$grokProfileSettings = (Get-Content -LiteralPath (Join-Path $repoRoot 'src/Factory.Orchestrator/appsettings.json') -Raw | ConvertFrom-Json).Agents.Profiles | Where-Object { $_.Name -eq 'Grok' }
+Test-Cli -Name 'grok' -CheckArgs @('models') -FailureSignatures $grokProfileSettings.AuthenticationFailureSignatures -Hint 'Install Grok Build from https://x.ai/cli and run "grok login".' | Out-Null
 Test-Cli -Name 'docker' -CheckArgs @('version', '--format', '{{.Server.Version}}') -Hint 'Start Docker Desktop.' | Out-Null
 
 function Get-ApiHealth {

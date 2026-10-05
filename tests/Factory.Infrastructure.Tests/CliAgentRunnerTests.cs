@@ -226,7 +226,7 @@ public sealed class CliAgentRunnerTests
     {
         var runner = new RecordingRunner(new ProcessResult("grok", [], ".", Now, Now, 0, "done", "", false, false));
         var profile = new AgentProfile("Grok", "grok",
-            ["--no-auto-update", "--permission-mode", "auto", "--sandbox", "workspace-write", "--output-format", "plain", "-p"],
+            ["--no-auto-update", "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "plain", "-p"],
             "argument", 90, [], ["--version"], 10, 5, Provider: "Grok");
         var agent = new CliAgentRunner(profile, runner, new NoResultReader(), new NoReviewResultReader(), new FixedClock(Now));
 

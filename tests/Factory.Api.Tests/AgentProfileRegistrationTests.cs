@@ -26,6 +26,7 @@ public sealed class AgentProfileRegistrationTests : IClassFixture<AgentProfileRe
         Assert.Equal(apiProfile.Executable, orchestratorProfile.Executable);
         Assert.Equal(apiProfile.Arguments, orchestratorProfile.Arguments);
         Assert.Equal(apiProfile.AuthenticationArguments, orchestratorProfile.AuthenticationArguments);
+        Assert.Equal(apiProfile.AuthenticationFailureSignatures, orchestratorProfile.AuthenticationFailureSignatures);
         Assert.Equal(apiProfile.PromptDelivery, orchestratorProfile.PromptDelivery);
         Assert.Equal(apiProfile.Provider, orchestratorProfile.Provider);
         Assert.Null(orchestratorProfile.Model);
@@ -68,8 +69,9 @@ public sealed class AgentProfileRegistrationTests : IClassFixture<AgentProfileRe
         Assert.False(piProfile.AllowAutomaticFallback);
 
         var grokProfile = configuredProfiles.Single(p => p.Name == "Grok");
-        Assert.Equal(["--no-auto-update", "--permission-mode", "auto", "--sandbox", "workspace-write", "--output-format", "plain", "-p"], grokProfile.Arguments);
+        Assert.Equal(["--no-auto-update", "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "plain", "-p"], grokProfile.Arguments);
         Assert.Equal(["models"], grokProfile.AuthenticationArguments);
+        Assert.Equal(["You are not authenticated."], grokProfile.AuthenticationFailureSignatures);
         Assert.Equal("argument", grokProfile.PromptDelivery);
         Assert.Null(grokProfile.Model);
         Assert.Null(grokProfile.ReasoningEffort);

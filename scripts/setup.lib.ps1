@@ -1,4 +1,5 @@
 # Pure planning helpers and bounded read-only probes for setup.ps1.
+. (Join-Path $PSScriptRoot 'cli-auth.ps1')
 function Get-WingetInstallArgs([string]$PackageId) {
     if ($PackageId -notin @('Git.Git', 'GitHub.cli', 'Microsoft.DotNet.SDK.10', 'OpenJS.NodeJS')) {
         throw "Unapproved package ID: $PackageId"
@@ -30,15 +31,16 @@ function Invoke-SetupProbe([string]$Executable, [string[]]$Arguments) {
             return [pscustomobject]@{ ok=$false; output='' }
         }
         $output = $stdout.GetAwaiter().GetResult()
-        $null = $stderr.GetAwaiter().GetResult()
+        $errorOutput = $stderr.GetAwaiter().GetResult()
         $code = $process.ExitCode
     } catch {
         $output = ''
+        $errorOutput = ''
         $code = 1
     } finally {
         if ($process) { $process.Dispose() }
     }
-    return [pscustomobject]@{ ok=($code -eq 0); output=([string]$output).Trim() }
+    return [pscustomobject]@{ ok=($code -eq 0); output=([string]$output).Trim(); errorOutput=([string]$errorOutput).Trim() }
 }
 
 function Test-Prerequisite($Tool) {
@@ -115,16 +117,22 @@ function Test-AgentProfile($Profile) {
     $args = if ($Profile.VersionArguments) { @($Profile.VersionArguments) } else { @('--version') }
     $probe = Invoke-SetupProbe $Profile.Executable $args
     if ($probe.ok) {
-        $authArgs = switch ($Profile.Name) {
-            'Codex' { @('login', 'status') }
-            'Claude' { @('auth', 'status') }
-            'Pi' { @('auth', 'check', '--model', 'moonshotai/kimi-k2.6', '--json') }
-            'Grok' { @('models') }
-            default { @() }
+        $authArgs = if ($Profile.AuthenticationArguments) {
+            @($Profile.AuthenticationArguments)
+        } else {
+            switch ($Profile.Name) {
+                'Codex' { @('login', 'status') }
+                'Claude' { @('auth', 'status') }
+                'Pi' { @('auth', 'check', '--model', 'moonshotai/kimi-k2.6', '--json') }
+                'Grok' { @('models') }
+                default { @() }
+            }
         }
         if ($authArgs.Count -eq 0) { return [pscustomobject]@{ State='ready'; Detail="$($Profile.Executable) responds; verify sign-in in its own CLI session."; Action='' } }
         $auth = Invoke-SetupProbe $Profile.Executable $authArgs
-        if ($auth.ok) { return [pscustomobject]@{ State='ready'; Detail="$($Profile.Executable) responds and its auth check passed."; Action='' } }
+        if (Test-AuthenticationProbe -Succeeded $auth.ok -StandardOutput $auth.output -StandardError $auth.errorOutput -FailureSignatures $Profile.AuthenticationFailureSignatures) {
+            return [pscustomobject]@{ State='ready'; Detail="$($Profile.Executable) responds and its auth check passed."; Action='' }
+        }
         return [pscustomobject]@{ State='operator'; Detail="$($Profile.Executable) responds but its auth check did not pass."; Action="Sign in with the $($Profile.Name) CLI in your own non-admin terminal, then rerun." }
     }
     $hint = switch ($Profile.Name) {

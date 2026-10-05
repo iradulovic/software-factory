@@ -819,6 +819,9 @@ public sealed record AgentProfile(
     /// provider's documented status command.</summary>
     public IReadOnlyList<string> AuthenticationArguments { get; init; } = Array.Empty<string>();
 
+    /// <summary>Failure messages emitted by a provider's authentication probe even when it exits successfully.</summary>
+    public IReadOnlyList<string> AuthenticationFailureSignatures { get; init; } = Array.Empty<string>();
+
     /// <summary>How long the last authentication/version result may be reused by dispatch and status readers.</summary>
     public int AuthenticationCacheSeconds { get; init; } = 30;
 
